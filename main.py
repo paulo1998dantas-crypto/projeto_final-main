@@ -155,30 +155,45 @@ ETAPA_REGRAS = {
 async def home(request: Request, db: Session = Depends(database.get_db), modelo: str = None, etapa: str = None):
     query = db.query(models.Veiculo)
 
-    # Filtragem por texto (Modelo ou Chassi)
+    # Filtragem por texto (Modelo, Chassi, Ar Condicionado, CJ. BCO, Localização)
     # Adicionado func.coalesce para evitar que valores NULL quebrem a busca LIKE
     if modelo and modelo.strip():
         termo = f"%{modelo.strip().upper()}%"
         query = query.filter(
             or_(
                 func.upper(func.coalesce(cast(models.Veiculo.modelo, String), "")).like(termo),
-                func.upper(func.coalesce(cast(models.Veiculo.chassi, String), "")).like(termo)
+                func.upper(func.coalesce(cast(models.Veiculo.chassi, String), "")).like(termo),
+                func.upper(func.coalesce(cast(models.Veiculo.ar_condicionado, String), "")).like(termo),
+                func.upper(func.coalesce(cast(models.Veiculo.cj_bco, String), "")).like(termo),
+                func.upper(func.coalesce(cast(models.Veiculo.localizacao, String), "")).like(termo)
             )
         )
 
     veiculos_db = query.order_by(models.Veiculo.ordem.asc()).all()
     veiculos_exibicao = []
 
+    chassis = [str(v.chassi).strip() for v in veiculos_db]
+    apontamentos = []
+    if chassis:
+        apontamentos = db.query(models.Apontamento).filter(
+            func.trim(cast(models.Apontamento.chassi, String)).in_(chassis)
+        ).all()
+
+    apont_por_chassi = {}
+    for a in apontamentos:
+        ch_key = str(a.chassi).strip()
+        if ch_key not in apont_por_chassi:
+            apont_por_chassi[ch_key] = []
+        apont_por_chassi[ch_key].append(a)
+
     for v in veiculos_db:
         chassi_key = str(v.chassi).strip()
-        apontamentos = db.query(models.Apontamento).filter(
-            func.trim(cast(models.Apontamento.chassi, String)) == chassi_key
-        ).all()
+        aponts = apont_por_chassi.get(chassi_key, [])
 
         # Cria mapeamento de status atualizado para o veículo
         status_map = {
             str(a.etapa).strip().upper(): str(a.status).strip().upper()
-            for a in apontamentos
+            for a in aponts
         }
 
         # Cálculo de progresso
