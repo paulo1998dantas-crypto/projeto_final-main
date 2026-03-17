@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <title>Acompanhamento de Produção</title>
+</head>
+<body class="bg-slate-50 min-h-screen">
+    <header class="bg-slate-900 p-4 text-white shadow-lg">
+        <div class="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
+            <div class="flex items-center gap-3">
+                <div class="bg-blue-600 p-2 rounded-lg font-bold">VE</div>
+                <h1 class="text-xl font-bold tracking-tight">Controle Veicular</h1>
+            </div>
+            <div class="flex gap-2">
+                <a href="/importar" class="bg-blue-600 px-4 py-2 rounded text-sm font-bold hover:bg-blue-700 transition">Importar</a>
+                <a href="/exportar_historico" class="bg-emerald-600 px-4 py-2 rounded text-sm font-bold hover:bg-emerald-700 transition">Exportar Logs</a>
+                <a href="/limpar_historico" onclick="return confirm('Apagar todos os logs permanentemente?')"
+                   class="bg-rose-600 px-4 py-2 rounded text-sm font-bold hover:bg-rose-700 transition">Limpar Logs</a>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto p-6">
+        <section class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 mb-8">
+            <form method="get" action="/" class="flex flex-col md:flex-row gap-4">
+                <div class="flex-1 relative">
+                    <input type="text" name="modelo" value="{{ termo_busca }}"
+                           placeholder="Buscar por Chassi ou Modelo..."
+                           class="w-full border border-slate-300 p-3 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition">
+                </div>
+
+                <select name="etapa" class="border border-slate-300 p-3 rounded-xl bg-white outline-none focus:ring-2 focus:ring-blue-500">
+                    <option value="">Todas as Etapas</option>
+                    {% for e in etapas %}
+                    <option value="{{ e }}" {% if request.query_params.get('etapa') == e %}selected{% endif %}>{{ e }}</option>
+                    {% endfor %}
+                </select>
+
+                <button type="submit" class="bg-slate-900 text-white px-8 py-3 rounded-xl font-bold hover:bg-slate-800 transition shadow-md">
+                    Filtrar
+                </button>
+
+                <a href="/" class="flex items-center justify-center px-4 text-slate-400 hover:text-slate-600 transition text-sm">
+                    Limpar Filtros
+                </a>
+            </form>
+        </section>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            {% for v in veiculos %}
+            <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden hover:shadow-md transition group">
+                <div class="p-5">
+                    <div class="flex justify-between items-start mb-4 gap-2">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center font-black text-base shadow">
+                                {{ loop.index }}
+                            </div>
+                            <div>
+                                <h2 class="font-bold text-slate-800 leading-tight uppercase">{{ v.modelo }}</h2>
+                                <p class="text-[10px] text-slate-400 font-semibold uppercase">Sequência</p>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <span class="text-[10px] bg-slate-100 px-2 py-1 rounded font-mono text-slate-500">{{ v.chassi }}</span>
+                            <div class="text-[10px] text-slate-500 mt-1">Loc.: {{ v.localizacao or "-" }}</div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 gap-1 mb-4 text-[11px] text-slate-600">
+                        <div><span class="font-semibold text-slate-500">Ar condicionado:</span> {{ v.ar_condicionado or "-" }}</div>
+                        <div><span class="font-semibold text-slate-500">CJ. BCO:</span> {{ v.cj_bco or "-" }}</div>
+                        <div><span class="font-semibold text-slate-500">Cliente:</span> {{ v.cliente or "-" }}</div>
+                        <div><span class="font-semibold text-slate-500">Destino:</span> {{ v.destino or "-" }}</div>
+                    </div>
+
+                    <div class="mb-4">
+                        <p class="text-xs text-slate-400 uppercase font-bold mb-1 tracking-wider">Status Atual</p>
+                        <p class="text-sm font-bold text-blue-600">{{ v.etapa_atual }}</p>
+                    </div>
+
+                    <div class="relative pt-1">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-xs font-semibold inline-block text-blue-600 uppercase">Progresso</span>
+                            <span class="text-xs font-semibold inline-block text-blue-600">{{ v.progresso }}%</span>
+                        </div>
+                        <div class="overflow-hidden h-2 text-xs flex rounded bg-slate-100">
+                            <div style="width:{{ v.progresso }}%" class="shadow-none flex flex-col text-center whitespace-nowrap text-white justify-center bg-blue-500 transition-all duration-500"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <a href="/veiculo/{{ v.chassi }}" class="block w-full bg-slate-50 border-t border-slate-100 p-3 text-center text-sm font-bold text-slate-600 group-hover:bg-blue-600 group-hover:text-white transition">
+                    VER DETALHES
+                </a>
+            </div>
+            {% endfor %}
+        </div>
+
+        {% if veiculos|length == 0 %}
+        <div class="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-slate-200 mt-6">
+            <p class="text-slate-400 font-medium">Nenhum veículo encontrado para esta busca.</p>
+        </div>
+        {% endif %}
+    </main>
+</body>
+</html>

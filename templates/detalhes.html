@@ -1,1 +1,112 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <title>Checklist</title>
+</head>
+<body class="bg-slate-50">
+    <header class="bg-slate-900 p-4 sticky top-0 z-50 flex justify-between items-center text-white">
+        <a href="/" class="text-yellow-400 font-bold">← VOLTAR</a>
+        <img src="/static/logo.png" class="h-6">
+    </header>
 
+    <main class="p-4 max-w-md mx-auto">
+        <div class="bg-white p-5 rounded-2xl shadow-sm mb-6 border-l-4 border-blue-600 space-y-2">
+            <div>
+                <h1 class="text-xl font-black text-slate-800 uppercase">{{ veiculo.modelo }}</h1>
+                <p class="text-xs text-slate-400">CHASSI: {{ veiculo.chassi }}</p>
+            </div>
+            <div>
+                <label class="text-[10px] text-slate-400 font-bold uppercase">Localização do chassi</label>
+                <select class="w-full border border-slate-200 rounded-lg p-2 text-xs" onchange="salvarLocalizacao(this)">
+                    <option value="">Selecione</option>
+                    {% for loc in localizacoes %}
+                    <option value="{{ loc }}" {% if veiculo.localizacao == loc %}selected{% endif %}>{{ loc }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+
+        <div class="space-y-3">
+            {% for etapa in etapas %}
+            {% set ap = apont_map.get(etapa) %}
+            {% set status = ap.status if ap else "" %}
+            <div class="bg-white p-4 rounded-xl border shadow-sm space-y-3 etapa-row" data-etapa="{{ etapa }}" data-status="{{ status }}">
+                <div class="flex justify-between items-center">
+                    <span class="font-bold text-slate-700 text-[11px] uppercase">{{ etapa }}</span>
+                    <div class="flex gap-1">
+                        <button onclick="salvar('{{ etapa }}', 'N/A', this)" class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'N/A' %} bg-slate-600 text-white border-slate-800 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">N/A</button>
+                        <button onclick="salvar('{{ etapa }}', 'NÃO', this)" class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'NÃO' %} bg-red-500 text-white border-red-700 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">X</button>
+                        <button onclick="salvar('{{ etapa }}', 'SIM', this)" class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'SIM' %} bg-green-500 text-white border-green-700 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">OK</button>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 gap-2">
+                    <input type="text" placeholder="Responsável" value="{{ ap.responsavel if ap else '' }}"
+                           class="w-full border border-slate-200 rounded-lg p-2 text-xs"
+                           onblur="salvarCampos(this)">
+                    <div class="grid grid-cols-2 gap-2">
+                        <input type="datetime-local" placeholder="Início" value="{{ ap.inicio_str if ap else '' }}"
+                               class="w-full border border-slate-200 rounded-lg p-2 text-xs"
+                               onblur="salvarCampos(this)">
+                        <input type="datetime-local" placeholder="Término" value="{{ ap.termino_str if ap else '' }}"
+                               class="w-full border border-slate-200 rounded-lg p-2 text-xs"
+                               onblur="salvarCampos(this)">
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </main>
+
+    <script>
+    function getRow(el) {
+        return el.closest('.etapa-row');
+    }
+
+    function getPayload(row, statusOverride) {
+        const inputs = row.querySelectorAll('input');
+        const responsavel = inputs[0].value || "";
+        const inicio = inputs[1].value || "";
+        const termino = inputs[2].value || "";
+        const status = statusOverride || row.dataset.status || "";
+        return {
+            chassi: "{{ veiculo.chassi }}",
+            etapa: row.dataset.etapa,
+            status: status,
+            responsavel: responsavel,
+            inicio: inicio,
+            termino: termino
+        };
+    }
+
+    async function salvar(etapa, status, btn) {
+        const row = getRow(btn);
+        const payload = getPayload(row, status);
+        const res = await fetch('/apontar', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+        if (res.ok) {
+            row.dataset.status = status;
+            btn.parentElement.querySelectorAll('button').forEach(b => {
+                b.className = "w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 bg-slate-100 text-slate-400 border-slate-300";
+            });
+            if (status === 'SIM') btn.className = "w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 bg-green-500 text-white border-green-700";
+            else if (status === 'NÃO') btn.className = "w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 bg-red-500 text-white border-red-700";
+            else btn.className = "w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 bg-slate-600 text-white border-slate-800";
+        }
+    }
+
+    async function salvarCampos(el) {
+        const row = getRow(el);
+        const payload = getPayload(row);
+        await fetch('/apontar', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+    }
+
+    async function salvarLocalizacao(sel) {
+        const payload = { chassi: "{{ veiculo.chassi }}", localizacao: sel.value };
+        await fetch('/veiculo_localizacao', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+    }
+    </script>
+</body>
+</html>
