@@ -2,8 +2,8 @@ import sys
 import os
 import pandas as pd
 import io
-from fastapi import FastAPI, Request, Depends, Body, UploadFile, File
-from fastapi.responses import StreamingResponse, RedirectResponse
+from fastapi import FastAPI, Request, Depends, Body, UploadFile, File, Form
+from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
@@ -48,6 +48,10 @@ def ensure_columns():
             conn.execute(text("ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS destino VARCHAR"))
         if "localizacao" not in veiculo_cols:
             conn.execute(text("ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS localizacao VARCHAR"))
+        if "banco_presente" not in veiculo_cols:
+            conn.execute(text("ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS banco_presente VARCHAR"))
+        if "banco_comentario" not in veiculo_cols:
+            conn.execute(text("ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS banco_comentario VARCHAR"))
 
         apont_cols = column_names("apontamentos")
         if "responsavel" not in apont_cols:
@@ -79,17 +83,19 @@ app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), na
 ETAPAS_PRODUCAO = [
     "VIDROS",
     "A/C",
-    "PREP",
-    "SERRA",
-    "EXPE.",
     "DESMONT",
-    "ELETRICA",
+    "ELÉTRICA",
     "REVEST",
+    "PREP",
     "BCO",
     "ACESSÓ.",
     "PLOTA.",
-    "LIBERA"
+    "LIBERA."
 ]
+
+ETAPAS_STATUS_ATUAL = ["VIDROS", "A/C", "DESMONT", "REVEST", "BCO", "LIBERA."]
+
+ETAPAS_FILTRO = [e for e in ETAPAS_PRODUCAO if e != "A/C"] + ["GE", "CLIM"]
 
 LOCALIZACOES = [
     "Pátio",
@@ -112,10 +118,15 @@ LOCALIZACOES = [
 def parse_local_dt(value):
     if not value:
         return None
-    try:
-        dt = datetime.datetime.fromisoformat(value)
-    except ValueError:
-        return None
+    if isinstance(value, pd.Timestamp):
+        value = value.to_pydatetime()
+    if isinstance(value, datetime.datetime):
+        dt = value
+    else:
+        try:
+            dt = datetime.datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
     if dt.tzinfo is None:
         return dt.replace(tzinfo=LOCAL_TZ)
     return dt.astimezone(LOCAL_TZ)
@@ -134,25 +145,45 @@ def to_input_dt(value):
         value = value.astimezone(LOCAL_TZ)
     return value.strftime("%Y-%m-%dT%H:%M")
 
+def get_user_name(request: Request):
+    return (request.cookies.get("pcp_nome") or "").strip()
+
+def require_login(request: Request):
+    nome = get_user_name(request)
+    return nome
+
+def normalize_etapa(value: str) -> str:
+    if not value:
+        return ""
+    v = str(value).strip().upper()
+    v = v.replace("ELETRICA", "ELÉTRICA")
+    v = v.replace("ACESSO.", "ACESSÓ.")
+    v = v.replace("ACESSO", "ACESSÓ.")
+    if v == "LIBERA":
+        v = "LIBERA."
+    if v == "AC":
+        v = "A/C"
+    return v
+
 # Define regras de filtragem por etapa
 # Ajustado para validar contra "NÃO" e "SIM" conforme consta no banco de dados
 ETAPA_REGRAS = {
     "VIDROS": lambda s: s.get("VIDROS") == "NÃO",
     "A/C": lambda s: s.get("A/C") == "NÃO",
-    "PREP": lambda s: s.get("PREP") == "NÃO",
-    "SERRA": lambda s: s.get("SERRA") == "NÃO",
-    "EXPE.": lambda s: s.get("EXPE.") == "NÃO",
     "DESMONT": lambda s: s.get("VIDROS") in ["SIM", "N/A"] and s.get("A/C") in ["SIM", "N/A"] and s.get("DESMONT") == "NÃO",
-    "ELETRICA": lambda s: s.get("DESMONT") in ["SIM", "N/A"] and s.get("ELETRICA") == "NÃO",
+    "ELÉTRICA": lambda s: s.get("DESMONT") in ["SIM", "N/A"] and s.get("ELÉTRICA") == "NÃO",
     "REVEST": lambda s: s.get("DESMONT") in ["SIM", "N/A"] and s.get("REVEST") == "NÃO",
+    "PREP": lambda s: s.get("PREP") == "NÃO",
     "BCO": lambda s: s.get("REVEST") in ["SIM", "N/A"] and s.get("BCO") == "NÃO",
     "ACESSÓ.": lambda s: s.get("ACESSÓ.") == "NÃO",
     "PLOTA.": lambda s: s.get("PLOTA.") == "NÃO",
-    "LIBERA": lambda s: s.get("BCO") in ["SIM", "N/A"] and s.get("LIBERA") == "NÃO"
+    "LIBERA.": lambda s: s.get("BCO") in ["SIM", "N/A"] and s.get("LIBERA.") == "NÃO"
 }
 
 @app.get("/")
 async def home(request: Request, db: Session = Depends(database.get_db), modelo: str = None, etapa: str = None):
+    if not require_login(request):
+        return RedirectResponse(url="/login", status_code=303)
     query = db.query(models.Veiculo)
 
     # Filtragem por texto (Modelo, Chassi, Ar Condicionado, CJ. BCO, Localização)
@@ -192,7 +223,7 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
 
         # Cria mapeamento de status atualizado para o veículo
         status_map = {
-            str(a.etapa).strip().upper(): str(a.status).strip().upper()
+            normalize_etapa(a.etapa): str(a.status).strip().upper()
             for a in aponts
         }
 
@@ -205,7 +236,7 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
 
         # Determinação da etapa atual
         v.etapa_atual = "FINALIZADO"
-        for e in ETAPAS_PRODUCAO:
+        for e in ETAPAS_STATUS_ATUAL:
             if status_map.get(e.upper()) not in ["SIM", "S", "OK", "N/A"]:
                 v.etapa_atual = e
                 break
@@ -213,8 +244,17 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
         # FILTRAGEM POR ETAPA (Lógica de Negócio)
         if etapa and etapa.strip():
             filtro = etapa.strip().upper()
+            if filtro in ["GE", "CLIM"]:
+                status_map_s = {normalize_etapa(k): v.strip().upper() for k, v in status_map.items()}
+                if (v.ar_condicionado or "").strip().upper() == filtro and ETAPA_REGRAS["A/C"](status_map_s):
+                    veiculos_exibicao.append(v)
+                continue
+            if filtro == "BCO":
+                banco_flag = (v.banco_presente or "").strip().upper()
+                if banco_flag in ["N", "NAO", "NÃO", "NAO TEM", "SEM", "0"]:
+                    continue
             # Normalização para garantir comparação correta
-            status_map_s = {k.strip().upper(): v.strip().upper() for k, v in status_map.items()}
+            status_map_s = {normalize_etapa(k): v.strip().upper() for k, v in status_map.items()}
             
             if filtro in ETAPA_REGRAS:
                 if ETAPA_REGRAS[filtro](status_map_s):
@@ -227,7 +267,7 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
         {
             "request": request,
             "veiculos": veiculos_exibicao,
-            "etapas": ETAPAS_PRODUCAO,
+            "etapas": ETAPAS_FILTRO,
             "termo_busca": modelo or "",
             "etapa_selecionada": etapa or ""
         }
@@ -235,7 +275,10 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
 
 @app.get("/veiculo/{chassi}")
 async def detalhes(request: Request, chassi: str, db: Session = Depends(database.get_db)):
+    if not require_login(request):
+        return RedirectResponse(url="/login", status_code=303)
     c_limpo = chassi.strip()
+    user_name = get_user_name(request)
 
     veiculo = db.query(models.Veiculo).filter(
         func.trim(cast(models.Veiculo.chassi, String)) == c_limpo
@@ -250,7 +293,7 @@ async def detalhes(request: Request, chassi: str, db: Session = Depends(database
         f.termino_str = to_input_dt(f.termino)
 
     apont_map = {
-        str(f.etapa).strip().upper(): f
+        normalize_etapa(f.etapa): f
         for f in feitos
     }
 
@@ -261,12 +304,17 @@ async def detalhes(request: Request, chassi: str, db: Session = Depends(database
             "veiculo": veiculo,
             "etapas": ETAPAS_PRODUCAO,
             "apont_map": apont_map,
-            "localizacoes": LOCALIZACOES
+            "localizacoes": LOCALIZACOES,
+            "user_name": user_name
         }
     )
 
 @app.post("/upload")
-async def upload_base(file: UploadFile = File(...), db: Session = Depends(database.get_db)):
+async def upload_base(request: Request, file: UploadFile = File(...), db: Session = Depends(database.get_db)):
+    # Protege upload com login simples
+    # (mantém compatível sem usuários cadastrados)
+    if not require_login(request):
+        return {"status": "erro", "detail": "Login necessário"}
     try:
         content = await file.read()
 
@@ -287,6 +335,8 @@ async def upload_base(file: UploadFile = File(...), db: Session = Depends(databa
                     return str(val).strip()
             return ""
 
+        etapas_col = {normalize_etapa(c): c for c in df.columns}
+
         # Limpa dados anteriores para nova carga
         db.query(models.Apontamento).delete()
         db.query(models.Veiculo).delete()
@@ -303,6 +353,8 @@ async def upload_base(file: UploadFile = File(...), db: Session = Depends(databa
             cliente = get_col(row, "CLIENTE")
             destino = get_col(row, "DESTINO")
             localizacao = get_col(row, "LOCALIZACAO", "LOCALIZAÇÃO")
+            banco_presente = get_col(row, "BANCO", "BANCO_PRESENTE", "POSSUI BANCO", "TEM BANCO")
+            banco_comentario = get_col(row, "COMENTARIO BANCO", "COMENTARIO_BANCO", "BANCO OBS", "OBS BANCO")
 
             db.add(models.Veiculo(
                 chassi=ch_raw,
@@ -312,12 +364,15 @@ async def upload_base(file: UploadFile = File(...), db: Session = Depends(databa
                 cj_bco=cj_bco,
                 cliente=cliente,
                 destino=destino,
-                localizacao=localizacao
+                localizacao=localizacao,
+                banco_presente=banco_presente,
+                banco_comentario=banco_comentario
             ))
 
             for etapa in ETAPAS_PRODUCAO:
-                if etapa in df.columns:
-                    val = str(row[etapa]).strip().upper()
+                col_name = etapas_col.get(normalize_etapa(etapa))
+                if col_name:
+                    val = str(row[col_name]).strip().upper()
                     status = (
                         "SIM" if val in ["S", "SIM", "OK"]
                         else "NÃO" if val in ["N", "NÃO", "X"]
@@ -338,16 +393,84 @@ async def upload_base(file: UploadFile = File(...), db: Session = Depends(databa
         db.rollback()
         return {"status": "erro", "detail": str(e)}
 
+@app.post("/upload_apontamentos")
+async def upload_apontamentos(request: Request, file: UploadFile = File(...), db: Session = Depends(database.get_db)):
+    if not require_login(request):
+        return {"status": "erro", "detail": "Login necessário"}
+    try:
+        content = await file.read()
+
+        df = (
+            pd.read_excel(io.BytesIO(content))
+            if file.filename.endswith(".xlsx")
+            else pd.read_csv(io.BytesIO(content))
+        )
+
+        df.columns = [str(c).upper().strip() for c in df.columns]
+
+        for _, row in df.iterrows():
+            ch_raw = str(row.get("CHASSI", "")).strip().split(".")[0]
+            if not ch_raw or ch_raw.lower() == "nan":
+                continue
+            etapa = normalize_etapa(row.get("ETAPA", ""))
+
+            banco_presente = str(row.get("BANCO", "")).strip()
+            banco_comentario = str(row.get("COMENTARIO BANCO", row.get("COMENTARIO_BANCO", ""))).strip()
+
+            if banco_presente or banco_comentario:
+                update_data = {}
+                if banco_presente:
+                    update_data["banco_presente"] = banco_presente
+                if banco_comentario:
+                    update_data["banco_comentario"] = banco_comentario
+                if update_data:
+                    db.query(models.Veiculo).filter(
+                        func.trim(cast(models.Veiculo.chassi, String)) == ch_raw
+                    ).update(update_data)
+
+            if not etapa:
+                continue
+
+            inicio = parse_local_dt(row.get("INICIO"))
+            termino = parse_local_dt(row.get("TERMINO"))
+            responsavel = str(row.get("RESPONSAVEL", "")).strip()
+
+            ap = db.query(models.Apontamento).filter(
+                func.trim(cast(models.Apontamento.chassi, String)) == ch_raw,
+                func.trim(cast(models.Apontamento.etapa, String)) == etapa
+            ).first()
+
+            if not ap:
+                ap = models.Apontamento(
+                    chassi=ch_raw,
+                    etapa=etapa,
+                    status="N/A"
+                )
+                db.add(ap)
+
+            ap.inicio = inicio
+            ap.termino = termino
+            ap.responsavel = responsavel
+
+        db.commit()
+        return {"status": "sucesso"}
+
+    except Exception as e:
+        db.rollback()
+        return {"status": "erro", "detail": str(e)}
+
 @app.post("/apontar")
-async def salvar(data: dict = Body(...), db: Session = Depends(database.get_db)):
+async def salvar(request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
     ch = str(data["chassi"]).strip()
-    et = str(data["etapa"]).strip().upper()
+    et = normalize_etapa(data["etapa"])
     st = str(data.get("status", "")).strip().upper()
     if not st:
         st = "N/A"
     responsavel = str(data.get("responsavel", "")).strip()
     inicio = parse_local_dt(data.get("inicio"))
     termino = parse_local_dt(data.get("termino"))
+
+    registrar_historico = bool(data.get("registrar_historico", True))
 
     # Atualiza ou cria o apontamento
     db.query(models.Apontamento).filter(
@@ -369,17 +492,18 @@ async def salvar(data: dict = Body(...), db: Session = Depends(database.get_db))
         func.trim(cast(models.Veiculo.chassi, String)) == ch
     ).first()
 
-    # Registra no histórico
-    db.add(models.Historico(
-        chassi=ch,
-        modelo=v.modelo if v else "N/A",
-        etapa=et,
-        status=st,
-        responsavel=responsavel,
-        inicio=inicio,
-        termino=termino,
-        localizacao=None
-    ))
+    # Registra no histórico apenas quando for status (SIM/NÃO/N/A) e explícito
+    if registrar_historico:
+        db.add(models.Historico(
+            chassi=ch,
+            modelo=v.modelo if v else "N/A",
+            etapa=et,
+            status=st,
+            responsavel=responsavel,
+            inicio=inicio,
+            termino=termino,
+            localizacao=None
+        ))
 
     db.commit()
     return {"status": "ok"}
@@ -397,6 +521,23 @@ async def atualizar_localizacao(data: dict = Body(...), db: Session = Depends(da
     db.commit()
     return {"status": "ok"}
 
+@app.post("/veiculo_banco")
+async def atualizar_banco(data: dict = Body(...), db: Session = Depends(database.get_db)):
+    ch = str(data.get("chassi", "")).strip()
+    banco_presente = str(data.get("banco_presente", "")).strip()
+    banco_comentario = str(data.get("banco_comentario", "")).strip()
+    if not ch:
+        return {"status": "erro", "detail": "Chassi inválido"}
+
+    db.query(models.Veiculo).filter(
+        func.trim(cast(models.Veiculo.chassi, String)) == ch
+    ).update({
+        "banco_presente": banco_presente,
+        "banco_comentario": banco_comentario
+    })
+    db.commit()
+    return {"status": "ok"}
+
 @app.get("/exportar_historico")
 async def exportar(db: Session = Depends(database.get_db)):
     logs = db.query(models.Historico).all()
@@ -405,16 +546,20 @@ async def exportar(db: Session = Depends(database.get_db)):
 
     veiculos = db.query(models.Veiculo).all()
     loc_map = {str(v.chassi).strip(): v.localizacao for v in veiculos}
+    apont_map = {}
+    aponts = db.query(models.Apontamento).all()
+    for a in aponts:
+        apont_map[(str(a.chassi).strip(), normalize_etapa(a.etapa))] = a
 
     df = pd.DataFrame([
         {
             "CHASSI": l.chassi,
             "MODELO": l.modelo,
-            "ETAPA": l.etapa,
+            "ETAPA": normalize_etapa(l.etapa),
             "STATUS": l.status,
-            "RESPONSAVEL": l.responsavel,
-            "INICIO": to_excel_dt(l.inicio),
-            "TERMINO": to_excel_dt(l.termino),
+            "RESPONSAVEL": (apont_map.get((str(l.chassi).strip(), normalize_etapa(l.etapa))) or l).responsavel,
+            "INICIO": to_excel_dt((apont_map.get((str(l.chassi).strip(), normalize_etapa(l.etapa))) or l).inicio),
+            "TERMINO": to_excel_dt((apont_map.get((str(l.chassi).strip(), normalize_etapa(l.etapa))) or l).termino),
             "LOCALIZACAO": loc_map.get(str(l.chassi).strip()),
             "DATA": to_excel_dt(l.data_apontamento)
         }
@@ -433,6 +578,38 @@ async def exportar(db: Session = Depends(database.get_db)):
         headers={"Content-Disposition": "attachment; filename=relatorio.xlsx"}
     )
 
+@app.get("/exportar_tempos")
+async def exportar_tempos(db: Session = Depends(database.get_db)):
+    aponts = db.query(models.Apontamento).all()
+    veiculos = db.query(models.Veiculo).all()
+    loc_map = {str(v.chassi).strip(): v.localizacao for v in veiculos}
+    modelo_map = {str(v.chassi).strip(): v.modelo for v in veiculos}
+
+    df = pd.DataFrame([
+        {
+            "CHASSI": a.chassi,
+            "MODELO": modelo_map.get(str(a.chassi).strip()),
+            "ETAPA": normalize_etapa(a.etapa),
+            "RESPONSAVEL": a.responsavel,
+            "INICIO": to_excel_dt(a.inicio),
+            "TERMINO": to_excel_dt(a.termino),
+            "LOCALIZACAO": loc_map.get(str(a.chassi).strip())
+        }
+        for a in aponts
+    ])
+
+    out = io.BytesIO()
+    with pd.ExcelWriter(out, engine="openpyxl") as w:
+        df.to_excel(w, index=False)
+
+    out.seek(0)
+
+    return StreamingResponse(
+        out,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=tempos_localizacao.xlsx"}
+    )
+
 @app.get("/limpar_historico")
 async def limpar_logs(db: Session = Depends(database.get_db)):
     db.query(models.Historico).delete()
@@ -441,7 +618,22 @@ async def limpar_logs(db: Session = Depends(database.get_db)):
 
 @app.get("/importar")
 async def pg_importar(request: Request):
+    if not require_login(request):
+        return RedirectResponse(url="/login", status_code=303)
     return templates.TemplateResponse("importar.html", {"request": request})
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    return templates.TemplateResponse("login.html", {"request": request})
+
+@app.post("/login")
+async def login_post(request: Request, nome: str = Form(...)):
+    nome_limpo = str(nome).strip()
+    if not nome_limpo:
+        return RedirectResponse(url="/login", status_code=303)
+    resp = RedirectResponse(url="/", status_code=303)
+    resp.set_cookie("pcp_nome", nome_limpo, max_age=60 * 60 * 24 * 30)
+    return resp
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8001))

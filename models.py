@@ -15,6 +15,8 @@ class Veiculo(Base):
     cliente = Column(String)
     destino = Column(String)
     localizacao = Column(String)
+    banco_presente = Column(String)
+    banco_comentario = Column(String)
 
 class Apontamento(Base):
     __tablename__ = "apontamentos"
