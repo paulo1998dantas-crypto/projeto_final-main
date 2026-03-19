@@ -44,9 +44,13 @@
                 </div>
 
                 <div class="grid grid-cols-1 gap-2">
-                    <input type="text" placeholder="Responsável" value="{{ ap.responsavel if ap else '' }}"
-                           class="w-full border border-slate-200 rounded-lg p-2 text-xs"
-                           onblur="salvarCampos(this)">
+                    <div class="flex gap-2">
+                        <input type="text" placeholder="Responsável" value="{{ ap.responsavel if ap and ap.responsavel else '' }}"
+                               class="w-full border border-slate-200 rounded-lg p-2 text-xs"
+                               onblur="salvarCampos(this)">
+                        <button type="button" class="px-3 text-[10px] font-bold uppercase bg-slate-100 text-slate-600 rounded-lg border border-slate-200"
+                                onclick="usarMeuNome(this)">Meu nome</button>
+                    </div>
                     <div class="grid grid-cols-2 gap-2">
                         <input type="datetime-local" placeholder="Início" value="{{ ap.inicio_str if ap else '' }}"
                                class="w-full border border-slate-200 rounded-lg p-2 text-xs"
@@ -85,6 +89,7 @@
     async function salvar(etapa, status, btn) {
         const row = getRow(btn);
         const payload = getPayload(row, status);
+        payload.registrar_historico = true;
         const res = await fetch('/apontar', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
         if (res.ok) {
             row.dataset.status = status;
@@ -100,12 +105,20 @@
     async function salvarCampos(el) {
         const row = getRow(el);
         const payload = getPayload(row);
+        payload.registrar_historico = false;
         await fetch('/apontar', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
     }
 
     async function salvarLocalizacao(sel) {
         const payload = { chassi: "{{ veiculo.chassi }}", localizacao: sel.value };
         await fetch('/veiculo_localizacao', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+    }
+
+    function usarMeuNome(btn) {
+        const row = getRow(btn);
+        const input = row.querySelector('input[type="text"]');
+        input.value = "{{ user_name }}";
+        salvarCampos(input);
     }
     </script>
 </body>

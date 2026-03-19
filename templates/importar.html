@@ -12,14 +12,29 @@
         <h1 class="font-bold">UPLOAD BASE</h1>
     </header>
     <main class="p-6 max-w-md mx-auto">
-        <div class="bg-white p-8 rounded-3xl shadow-xl text-center">
-            <a href="/static/modelo_upload.csv" class="inline-block mb-4 text-sm font-bold text-blue-700 hover:text-blue-900 underline">
-                Baixar modelo de planilha
+        <div class="bg-white p-8 rounded-3xl shadow-xl text-center space-y-8">
+            <a href="/static/modelo_upload.xlsx" class="inline-block mb-2 text-sm font-bold text-blue-700 hover:text-blue-900 underline">
+                Baixar modelo de planilha (Base)
             </a>
-            <form id="upForm" class="space-y-6" enctype="multipart/form-data">
-                <input type="file" id="file" accept=".xlsx,.csv" class="w-full text-sm" required>
-                <button type="submit" class="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold">PROCESSAR PLANILHA</button>
-            </form>
+            <a href="/static/modelo_complementar.xlsx" class="inline-block mb-4 text-sm font-bold text-emerald-700 hover:text-emerald-900 underline">
+                Baixar modelo de planilha (Complementar)
+            </a>
+            <div class="space-y-4">
+                <h2 class="text-sm font-bold text-slate-700 uppercase">Importação Base</h2>
+                <form id="upForm" class="space-y-4" enctype="multipart/form-data">
+                    <input type="file" id="file" accept=".xlsx,.csv" class="w-full text-sm" required>
+                    <button type="submit" class="w-full py-3 bg-blue-600 text-white rounded-2xl font-bold">PROCESSAR BASE</button>
+                </form>
+            </div>
+
+            <div class="space-y-4">
+                <h2 class="text-sm font-bold text-slate-700 uppercase">Importação Complementar</h2>
+                <p class="text-xs text-slate-500">Colunas: CHASSI, ETAPA, INICIO, TERMINO, RESPONSAVEL, BANCO (opcional), COMENTARIO BANCO (opcional)</p>
+                <form id="upFormComplementar" class="space-y-4" enctype="multipart/form-data">
+                    <input type="file" id="fileComplementar" accept=".xlsx,.csv" class="w-full text-sm" required>
+                    <button type="submit" class="w-full py-3 bg-emerald-600 text-white rounded-2xl font-bold">PROCESSAR COMPLEMENTAR</button>
+                </form>
+            </div>
             <p id="msg" class="mt-4 font-bold text-sm"></p>
         </div>
     </main>
@@ -38,6 +53,32 @@
 
             try {
                 const response = await fetch('/upload', { method: 'POST', body: fd });
+                const data = await response.json();
+                if (response.ok) {
+                    document.getElementById('msg').textContent = data.status;
+                    setTimeout(() => { window.location.href = "/"; }, 1500);
+                } else {
+                    document.getElementById('msg').textContent = data.detail || "Erro ao enviar";
+                }
+            } catch (err) {
+                document.getElementById('msg').textContent = "Erro na requisição: " + err.message;
+            }
+        };
+
+        document.getElementById('upFormComplementar').onsubmit = async (e) => {
+            e.preventDefault();
+            const fileInput = document.getElementById('fileComplementar');
+            if (!fileInput.files.length) {
+                document.getElementById('msg').textContent = "Selecione um arquivo!";
+                return;
+            }
+
+            const f = fileInput.files[0];
+            const fd = new FormData();
+            fd.append('file', f);
+
+            try {
+                const response = await fetch('/upload_apontamentos', { method: 'POST', body: fd });
                 const data = await response.json();
                 if (response.ok) {
                     document.getElementById('msg').textContent = data.status;

@@ -16,6 +16,7 @@
             <div class="flex gap-2">
                 <a href="/importar" class="bg-blue-600 px-4 py-2 rounded text-sm font-bold hover:bg-blue-700 transition">Importar</a>
                 <a href="/exportar_historico" class="bg-emerald-600 px-4 py-2 rounded text-sm font-bold hover:bg-emerald-700 transition">Exportar Logs</a>
+                <a href="/exportar_tempos" class="bg-indigo-600 px-4 py-2 rounded text-sm font-bold hover:bg-indigo-700 transition">Exportar Tempos</a>
                 <a href="/limpar_historico" onclick="return confirm('Apagar todos os logs permanentemente?')"
                    class="bg-rose-600 px-4 py-2 rounded text-sm font-bold hover:bg-rose-700 transition">Limpar Logs</a>
             </div>
@@ -50,9 +51,9 @@
 
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
             {% for v in veiculos %}
-            <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden hover:shadow-md transition group">
+            <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden hover:shadow-md transition group veiculo-card">
                 <div class="p-5">
-                    <div class="flex justify-between items-start mb-4 gap-2">
+                    <div class="flex justify-between items-start mb-3 gap-2">
                         <div class="flex items-center gap-3">
                             <div class="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center font-black text-base shadow">
                                 {{ loop.index }}
@@ -66,6 +67,21 @@
                             <span class="text-[10px] bg-slate-100 px-2 py-1 rounded font-mono text-slate-500">{{ v.chassi }}</span>
                             <div class="text-[10px] text-slate-500 mt-1">Loc.: {{ v.localizacao or "-" }}</div>
                         </div>
+                    </div>
+
+                    <div class="flex items-center gap-2 mb-4">
+                        <select class="border border-slate-200 rounded-lg p-2 text-xs banco-presente"
+                                onchange="salvarBanco(this)"
+                                data-chassi="{{ v.chassi }}">
+                            <option value="">Banco?</option>
+                            <option value="SIM" {% if v.banco_presente and v.banco_presente|upper == 'SIM' %}selected{% endif %}>SIM</option>
+                            <option value="NÃO" {% if v.banco_presente and v.banco_presente|upper in ['NÃO','NAO','N'] %}selected{% endif %}>NÃO</option>
+                        </select>
+                        <input type="text" placeholder="Comentário banco (MDBUS, INCORPOL...)"
+                               class="flex-1 border border-slate-200 rounded-lg p-2 text-xs banco-comentario"
+                               value="{{ v.banco_comentario or '' }}"
+                               onblur="salvarBanco(this)"
+                               data-chassi="{{ v.chassi }}">
                     </div>
 
                     <div class="grid grid-cols-1 gap-1 mb-4 text-[11px] text-slate-600">
@@ -105,4 +121,20 @@
         {% endif %}
     </main>
 </body>
+<script>
+async function salvarBanco(el) {
+    const wrapper = el.closest('.veiculo-card');
+    const chassi = el.dataset.chassi;
+    const bancoPresente = wrapper.querySelector('.banco-presente')?.value || "";
+    const bancoComentario = wrapper.querySelector('.banco-comentario')?.value || "";
+
+    const payload = { chassi: chassi, banco_presente: bancoPresente, banco_comentario: bancoComentario };
+
+    await fetch('/veiculo_banco', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    });
+}
+</script>
 </html>
