@@ -83,10 +83,12 @@ app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), na
 ETAPAS_PRODUCAO = [
     "VIDROS",
     "A/C",
+    "PREP",
+    "SERRA.",
+    "EXPE.",
     "DESMONT",
     "ELÉTRICA",
     "REVEST",
-    "PREP",
     "BCO",
     "ACESSÓ.",
     "PLOTA.",
@@ -157,8 +159,12 @@ def normalize_etapa(value: str) -> str:
         return ""
     v = str(value).strip().upper()
     v = v.replace("ELETRICA", "ELÉTRICA")
+    v = v.replace("ELÉTRIC.", "ELÉTRICA")
+    v = v.replace("ELÉTRIC", "ELÉTRICA")
     v = v.replace("ACESSO.", "ACESSÓ.")
     v = v.replace("ACESSO", "ACESSÓ.")
+    v = v.replace("SERRA", "SERRA.")
+    v = v.replace("DESMON", "DESMONT")
     if v == "LIBERA":
         v = "LIBERA."
     if v == "AC":
@@ -170,10 +176,12 @@ def normalize_etapa(value: str) -> str:
 ETAPA_REGRAS = {
     "VIDROS": lambda s: s.get("VIDROS") == "NÃO",
     "A/C": lambda s: s.get("A/C") == "NÃO",
+    "PREP": lambda s: s.get("PREP") == "NÃO",
+    "SERRA.": lambda s: s.get("SERRA.") == "NÃO",
+    "EXPE.": lambda s: s.get("EXPE.") == "NÃO",
     "DESMONT": lambda s: s.get("VIDROS") in ["SIM", "N/A"] and s.get("A/C") in ["SIM", "N/A"] and s.get("DESMONT") == "NÃO",
     "ELÉTRICA": lambda s: s.get("DESMONT") in ["SIM", "N/A"] and s.get("ELÉTRICA") == "NÃO",
     "REVEST": lambda s: s.get("DESMONT") in ["SIM", "N/A"] and s.get("REVEST") == "NÃO",
-    "PREP": lambda s: s.get("PREP") == "NÃO",
     "BCO": lambda s: s.get("REVEST") in ["SIM", "N/A"] and s.get("BCO") == "NÃO",
     "ACESSÓ.": lambda s: s.get("ACESSÓ.") == "NÃO",
     "PLOTA.": lambda s: s.get("PLOTA.") == "NÃO",
