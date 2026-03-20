@@ -419,49 +419,71 @@ async def upload_apontamentos(request: Request, file: UploadFile = File(...), db
 
         df.columns = [str(c).upper().strip() for c in df.columns]
 
+        # Normaliza e agrega para evitar N+1
+        rows = {}
+        banco_updates = {}
+
         for _, row in df.iterrows():
             ch_raw = str(row.get("CHASSI", "")).strip().split(".")[0]
             if not ch_raw or ch_raw.lower() == "nan":
                 continue
+
             etapa = normalize_etapa(row.get("ETAPA", ""))
-
-            banco_presente = str(row.get("BANCO", "")).strip()
-            banco_comentario = str(row.get("COMENTARIO BANCO", row.get("COMENTARIO_BANCO", ""))).strip()
-
-            if banco_presente or banco_comentario:
-                update_data = {}
-                if banco_presente:
-                    update_data["banco_presente"] = banco_presente
-                if banco_comentario:
-                    update_data["banco_comentario"] = banco_comentario
-                if update_data:
-                    db.query(models.Veiculo).filter(
-                        func.trim(cast(models.Veiculo.chassi, String)) == ch_raw
-                    ).update(update_data)
-
-            if not etapa:
-                continue
-
             inicio = parse_local_dt(row.get("INICIO"))
             termino = parse_local_dt(row.get("TERMINO"))
             responsavel = str(row.get("RESPONSAVEL", "")).strip()
 
-            ap = db.query(models.Apontamento).filter(
-                func.trim(cast(models.Apontamento.chassi, String)) == ch_raw,
-                func.trim(cast(models.Apontamento.etapa, String)) == etapa
-            ).first()
+            banco_presente = str(row.get("BANCO", "")).strip()
+            banco_comentario = str(row.get("COMENTARIO BANCO", row.get("COMENTARIO_BANCO", ""))).strip()
+            if banco_presente or banco_comentario:
+                banco_updates[ch_raw] = {
+                    "banco_presente": banco_presente,
+                    "banco_comentario": banco_comentario
+                }
 
-            if not ap:
-                ap = models.Apontamento(
-                    chassi=ch_raw,
-                    etapa=etapa,
-                    status="N/A"
-                )
-                db.add(ap)
+            if not etapa:
+                continue
 
-            ap.inicio = inicio
-            ap.termino = termino
-            ap.responsavel = responsavel
+            rows[(ch_raw, etapa)] = {
+                "inicio": inicio,
+                "termino": termino,
+                "responsavel": responsavel
+            }
+
+        # Atualiza banco/comentário em lote
+        for ch_raw, data in banco_updates.items():
+            update_data = {}
+            if data.get("banco_presente"):
+                update_data["banco_presente"] = data["banco_presente"]
+            if data.get("banco_comentario"):
+                update_data["banco_comentario"] = data["banco_comentario"]
+            if update_data:
+                db.query(models.Veiculo).filter(
+                    func.trim(cast(models.Veiculo.chassi, String)) == ch_raw
+                ).update(update_data)
+
+        if rows:
+            chassis = list({k[0] for k in rows.keys()})
+            existentes = db.query(models.Apontamento).filter(
+                func.trim(cast(models.Apontamento.chassi, String)).in_(chassis)
+            ).all()
+            existentes_map = {
+                (str(a.chassi).strip(), normalize_etapa(a.etapa)): a
+                for a in existentes
+            }
+
+            for (ch_raw, etapa), data in rows.items():
+                ap = existentes_map.get((ch_raw, etapa))
+                if not ap:
+                    ap = models.Apontamento(
+                        chassi=ch_raw,
+                        etapa=etapa,
+                        status="N/A"
+                    )
+                    db.add(ap)
+                ap.inicio = data["inicio"]
+                ap.termino = data["termino"]
+                ap.responsavel = data["responsavel"]
 
         db.commit()
         return {"status": "sucesso"}
