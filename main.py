@@ -118,7 +118,7 @@ LOCALIZACOES = [
 ]
 
 def parse_local_dt(value):
-    if not value:
+    if value is None or (hasattr(pd, "isna") and pd.isna(value)) or value == "":
         return None
     if isinstance(value, pd.Timestamp):
         value = value.to_pydatetime()
@@ -153,6 +153,11 @@ def get_user_name(request: Request):
 def require_login(request: Request):
     nome = get_user_name(request)
     return nome
+
+def safe_str(value):
+    if value is None or (hasattr(pd, "isna") and pd.isna(value)):
+        return ""
+    return str(value).strip()
 
 def normalize_etapa(value: str) -> str:
     if not value:
@@ -424,17 +429,17 @@ async def upload_apontamentos(request: Request, file: UploadFile = File(...), db
         banco_updates = {}
 
         for _, row in df.iterrows():
-            ch_raw = str(row.get("CHASSI", "")).strip().split(".")[0]
+            ch_raw = safe_str(row.get("CHASSI", "")).split(".")[0]
             if not ch_raw or ch_raw.lower() == "nan":
                 continue
 
-            etapa = normalize_etapa(row.get("ETAPA", ""))
+            etapa = normalize_etapa(safe_str(row.get("ETAPA", "")))
             inicio = parse_local_dt(row.get("INICIO"))
             termino = parse_local_dt(row.get("TERMINO"))
-            responsavel = str(row.get("RESPONSAVEL", "")).strip()
+            responsavel = safe_str(row.get("RESPONSAVEL", ""))
 
-            banco_presente = str(row.get("BANCO", "")).strip()
-            banco_comentario = str(row.get("COMENTARIO BANCO", row.get("COMENTARIO_BANCO", ""))).strip()
+            banco_presente = safe_str(row.get("BANCO", ""))
+            banco_comentario = safe_str(row.get("COMENTARIO BANCO", row.get("COMENTARIO_BANCO", "")))
             if banco_presente or banco_comentario:
                 banco_updates[ch_raw] = {
                     "banco_presente": banco_presente,
