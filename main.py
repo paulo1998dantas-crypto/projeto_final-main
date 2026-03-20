@@ -158,17 +158,20 @@ def normalize_etapa(value: str) -> str:
     if not value:
         return ""
     v = str(value).strip().upper()
-    v = v.replace("ELETRICA", "ELÉTRICA")
-    v = v.replace("ELÉTRIC.", "ELÉTRICA")
-    v = v.replace("ELÉTRIC", "ELÉTRICA")
-    v = v.replace("ACESSO.", "ACESSÓ.")
-    v = v.replace("ACESSO", "ACESSÓ.")
-    v = v.replace("SERRA", "SERRA.")
-    v = v.replace("DESMON", "DESMONT")
-    if v == "LIBERA":
-        v = "LIBERA."
-    if v == "AC":
-        v = "A/C"
+    v = v.replace("  ", " ")
+
+    if v in ["AC", "A/C"]:
+        return "A/C"
+    if v in ["LIBERA", "LIBERA."]:
+        return "LIBERA."
+    if v in ["ACESSO", "ACESSO.", "ACESSÓ", "ACESSÓ."]:
+        return "ACESSÓ."
+    if v in ["SERRA", "SERRA."]:
+        return "SERRA."
+    if v in ["DESMON", "DESMONT"]:
+        return "DESMONT"
+    if v in ["ELETRICA", "ELÉTRICA", "ELÉTRIC", "ELÉTRIC."]:
+        return "ELÉTRICA"
     return v
 
 # Define regras de filtragem por etapa
