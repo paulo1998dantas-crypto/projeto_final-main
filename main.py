@@ -117,6 +117,18 @@ LOCALIZACOES = [
     "R11",
 ]
 
+STATUS_CONCLUIDO = ["SIM", "S", "OK", "N/A"]
+
+def normalize_status(value) -> str:
+    val = safe_str(value).upper()
+    if val in ["S", "SIM", "OK"]:
+        return "SIM"
+    if val in ["N", "NAO", "NÃO", "X"]:
+        return "NÃO"
+    if val in ["?", "PARCIAL"]:
+        return "PARCIAL"
+    return "N/A"
+
 def parse_local_dt(value):
     if value is None or (hasattr(pd, "isna") and pd.isna(value)) or value == "":
         return None
@@ -246,14 +258,14 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
         # Cálculo de progresso
         concluidos = sum(
             1 for e in ETAPAS_PRODUCAO
-            if status_map.get(e.upper()) in ["SIM", "S", "OK", "N/A"]
+            if status_map.get(e.upper()) in STATUS_CONCLUIDO
         )
         v.progresso = int((concluidos / len(ETAPAS_PRODUCAO)) * 100) if ETAPAS_PRODUCAO else 0
 
         # Determinação da etapa atual
         v.etapa_atual = "FINALIZADO"
         for e in ETAPAS_STATUS_ATUAL:
-            if status_map.get(e.upper()) not in ["SIM", "S", "OK", "N/A"]:
+            if status_map.get(e.upper()) not in STATUS_CONCLUIDO:
                 v.etapa_atual = e
                 break
 
@@ -279,6 +291,7 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
             veiculos_exibicao.append(v)
 
     return templates.TemplateResponse(
+        request,
         "index.html",
         {
             "request": request,
@@ -314,6 +327,7 @@ async def detalhes(request: Request, chassi: str, db: Session = Depends(database
     }
 
     return templates.TemplateResponse(
+        request,
         "detalhes.html",
         {
             "request": request,
@@ -388,12 +402,7 @@ async def upload_base(request: Request, file: UploadFile = File(...), db: Sessio
             for etapa in ETAPAS_PRODUCAO:
                 col_name = etapas_col.get(normalize_etapa(etapa))
                 if col_name:
-                    val = str(row[col_name]).strip().upper()
-                    status = (
-                        "SIM" if val in ["S", "SIM", "OK"]
-                        else "NÃO" if val in ["N", "NÃO", "X"]
-                        else "N/A"
-                    )
+                    status = normalize_status(row[col_name])
                 else:
                     status = "N/A"
                 db.add(models.Apontamento(
@@ -501,7 +510,7 @@ async def upload_apontamentos(request: Request, file: UploadFile = File(...), db
 async def salvar(request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
     ch = str(data["chassi"]).strip()
     et = normalize_etapa(data["etapa"])
-    st = str(data.get("status", "")).strip().upper()
+    st = normalize_status(data.get("status", ""))
     if not st:
         st = "N/A"
     responsavel = str(data.get("responsavel", "")).strip()
@@ -530,7 +539,7 @@ async def salvar(request: Request, data: dict = Body(...), db: Session = Depends
         func.trim(cast(models.Veiculo.chassi, String)) == ch
     ).first()
 
-    # Registra no histórico apenas quando for status (SIM/NÃO/N/A) e explícito
+    # Registra no histórico apenas quando for status (SIM/NÃO/N/A/PARCIAL) e explícito
     if registrar_historico:
         db.add(models.Historico(
             chassi=ch,
@@ -658,11 +667,11 @@ async def limpar_logs(db: Session = Depends(database.get_db)):
 async def pg_importar(request: Request):
     if not require_login(request):
         return RedirectResponse(url="/login", status_code=303)
-    return templates.TemplateResponse("importar.html", {"request": request})
+    return templates.TemplateResponse(request, "importar.html", {"request": request})
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    return templates.TemplateResponse("login.html", {"request": request})
+    return templates.TemplateResponse(request, "login.html", {"request": request})
 
 @app.post("/login")
 async def login_post(request: Request, nome: str = Form(...)):
