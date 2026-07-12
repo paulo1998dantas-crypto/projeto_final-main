@@ -739,8 +739,8 @@ async def login_post(request: Request, nome: str = Form(...)):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8010))
-    host = os.environ.get("HOST", "127.0.0.1")
+    host = os.environ.get("HOST", "0.0.0.0")
     url = f"http://127.0.0.1:{port}"
-    if os.environ.get("OPEN_BROWSER", "1") != "0":
+    if not os.environ.get("RENDER") and os.environ.get("OPEN_BROWSER", "1") != "0":
         threading.Timer(1.2, lambda: webbrowser.open(url)).start()
     uvicorn.run(app, host=host, port=port)
