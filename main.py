@@ -2,6 +2,8 @@ import sys
 import os
 import pandas as pd
 import io
+import threading
+import webbrowser
 from fastapi import FastAPI, Request, Depends, Body, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -11,6 +13,7 @@ from sqlalchemy import or_, func, cast, String, text, inspect
 import uvicorn
 from zoneinfo import ZoneInfo
 import datetime
+import unicodedata
 
 # Configuração de diretórios e templates
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -46,6 +49,8 @@ def ensure_columns():
             conn.execute(text("ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS cliente VARCHAR"))
         if "destino" not in veiculo_cols:
             conn.execute(text("ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS destino VARCHAR"))
+        if "data_entrega" not in veiculo_cols:
+            conn.execute(text(f"ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS data_entrega {ts_tz}"))
         if "localizacao" not in veiculo_cols:
             conn.execute(text("ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS localizacao VARCHAR"))
         if "banco_presente" not in veiculo_cols:
@@ -97,7 +102,7 @@ ETAPAS_PRODUCAO = [
 
 ETAPAS_STATUS_ATUAL = ["VIDROS", "A/C", "DESMONT", "REVEST", "BCO", "LIBERA."]
 
-ETAPAS_FILTRO = [e for e in ETAPAS_PRODUCAO if e != "A/C"] + ["GE", "CLIM"]
+ETAPAS_FILTRO = [e for e in ETAPAS_PRODUCAO if e != "A/C"] + ["GE", "CLIM", "LIBERAÇÃO"]
 
 LOCALIZACOES = [
     "Pátio",
@@ -145,6 +150,31 @@ def parse_local_dt(value):
         return dt.replace(tzinfo=LOCAL_TZ)
     return dt.astimezone(LOCAL_TZ)
 
+def parse_data_entrega(value):
+    if value is None or (hasattr(pd, "isna") and pd.isna(value)) or value == "":
+        return None
+    if isinstance(value, pd.Timestamp):
+        value = value.to_pydatetime()
+    if isinstance(value, datetime.date) and not isinstance(value, datetime.datetime):
+        value = datetime.datetime.combine(value, datetime.time.min)
+    if isinstance(value, datetime.datetime):
+        dt = value
+    else:
+        parsed = pd.to_datetime(value, dayfirst=True, errors="coerce")
+        if pd.isna(parsed):
+            return None
+        dt = parsed.to_pydatetime()
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=LOCAL_TZ)
+    return dt.astimezone(LOCAL_TZ)
+
+def format_data_entrega(value):
+    if not value:
+        return ""
+    if value.tzinfo is not None:
+        value = value.astimezone(LOCAL_TZ)
+    return value.strftime("%d/%m/%Y")
+
 def to_excel_dt(value):
     if not value:
         return None
@@ -170,6 +200,16 @@ def safe_str(value):
     if value is None or (hasattr(pd, "isna") and pd.isna(value)):
         return ""
     return str(value).strip()
+
+def normalize_filter(value: str) -> str:
+    text = safe_str(value).upper()
+    return "".join(
+        ch for ch in unicodedata.normalize("NFKD", text)
+        if not unicodedata.combining(ch)
+    )
+
+def is_liberacao_filter(value: str) -> bool:
+    return normalize_filter(value) == "LIBERACAO"
 
 def normalize_etapa(value: str) -> str:
     if not value:
@@ -209,10 +249,15 @@ ETAPA_REGRAS = {
 }
 
 @app.get("/")
-async def home(request: Request, db: Session = Depends(database.get_db), modelo: str = None, etapa: str = None):
+async def home(request: Request, db: Session = Depends(database.get_db), modelo: str = None, etapa: str = None, visao: str = "resumida"):
     if not require_login(request):
         return RedirectResponse(url="/login", status_code=303)
     query = db.query(models.Veiculo)
+    modo_liberacao = is_liberacao_filter(etapa)
+    visao_atual = "completa" if safe_str(visao).lower() == "completa" else "resumida"
+    if modo_liberacao:
+        visao_atual = "resumida"
+    modo_resumido = modo_liberacao or visao_atual == "resumida"
 
     # Filtragem por texto (Modelo, Chassi, Ar Condicionado, CJ. BCO, Localização)
     # Adicionado func.coalesce para evitar que valores NULL quebrem a busca LIKE
@@ -224,6 +269,7 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
                 func.upper(func.coalesce(cast(models.Veiculo.chassi, String), "")).like(termo),
                 func.upper(func.coalesce(cast(models.Veiculo.ar_condicionado, String), "")).like(termo),
                 func.upper(func.coalesce(cast(models.Veiculo.cj_bco, String), "")).like(termo),
+                func.upper(func.coalesce(cast(models.Veiculo.data_entrega, String), "")).like(termo),
                 func.upper(func.coalesce(cast(models.Veiculo.localizacao, String), "")).like(termo)
             )
         )
@@ -246,6 +292,7 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
         apont_por_chassi[ch_key].append(a)
 
     for v in veiculos_db:
+        v.data_entrega_fmt = format_data_entrega(v.data_entrega)
         chassi_key = str(v.chassi).strip()
         aponts = apont_por_chassi.get(chassi_key, [])
 
@@ -270,7 +317,7 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
                 break
 
         # FILTRAGEM POR ETAPA (Lógica de Negócio)
-        if etapa and etapa.strip():
+        if etapa and etapa.strip() and not modo_liberacao:
             filtro = etapa.strip().upper()
             if filtro in ["GE", "CLIM"]:
                 status_map_s = {normalize_etapa(k): v.strip().upper() for k, v in status_map.items()}
@@ -298,7 +345,10 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
             "veiculos": veiculos_exibicao,
             "etapas": ETAPAS_FILTRO,
             "termo_busca": modelo or "",
-            "etapa_selecionada": etapa or ""
+            "etapa_selecionada": etapa or "",
+            "modo_liberacao": modo_liberacao,
+            "modo_resumido": modo_resumido,
+            "visao_atual": visao_atual
         }
     )
 
@@ -325,6 +375,9 @@ async def detalhes(request: Request, chassi: str, db: Session = Depends(database
         normalize_etapa(f.etapa): f
         for f in feitos
     }
+
+    if veiculo:
+        veiculo.data_entrega_fmt = format_data_entrega(veiculo.data_entrega)
 
     return templates.TemplateResponse(
         request,
@@ -382,6 +435,7 @@ async def upload_base(request: Request, file: UploadFile = File(...), db: Sessio
             cj_bco = get_col(row, "CJ. BCO", "CJ BCO", "CJ_BCO", "CJ-BCO")
             cliente = get_col(row, "CLIENTE")
             destino = get_col(row, "DESTINO")
+            data_entrega = parse_data_entrega(get_col(row, "DATA DE ENTREGA", "DATA_ENTREGA", "DT ENTREGA", "ENTREGA"))
             localizacao = get_col(row, "LOCALIZACAO", "LOCALIZAÇÃO")
             banco_presente = get_col(row, "BANCO", "BANCO_PRESENTE", "POSSUI BANCO", "TEM BANCO")
             banco_comentario = get_col(row, "COMENTARIO BANCO", "COMENTARIO_BANCO", "BANCO OBS", "OBS BANCO")
@@ -394,6 +448,7 @@ async def upload_base(request: Request, file: UploadFile = File(...), db: Sessio
                 cj_bco=cj_bco,
                 cliente=cliente,
                 destino=destino,
+                data_entrega=data_entrega,
                 localizacao=localizacao,
                 banco_presente=banco_presente,
                 banco_comentario=banco_comentario
@@ -683,5 +738,9 @@ async def login_post(request: Request, nome: str = Form(...)):
     return resp
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8001))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT", 8010))
+    host = os.environ.get("HOST", "127.0.0.1")
+    url = f"http://127.0.0.1:{port}"
+    if os.environ.get("OPEN_BROWSER", "1") != "0":
+        threading.Timer(1.2, lambda: webbrowser.open(url)).start()
+    uvicorn.run(app, host=host, port=port)

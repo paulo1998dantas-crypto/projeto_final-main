@@ -14,6 +14,7 @@ class Veiculo(Base):
     cj_bco = Column(String)
     cliente = Column(String)
     destino = Column(String)
+    data_entrega = Column(DateTime(timezone=True))
     localizacao = Column(String)
     banco_presente = Column(String)
     banco_comentario = Column(String)
