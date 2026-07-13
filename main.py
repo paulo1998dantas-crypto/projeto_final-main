@@ -123,6 +123,7 @@ LOCALIZACOES = [
 ]
 
 STATUS_CONCLUIDO = ["SIM", "S", "OK", "N/A"]
+STATUS_PENDENTE = ["NÃO", "PARCIAL"]
 
 def normalize_status(value) -> str:
     val = safe_str(value).upper()
@@ -232,20 +233,23 @@ def normalize_etapa(value: str) -> str:
     return v
 
 # Define regras de filtragem por etapa
-# Ajustado para validar contra "NÃO" e "SIM" conforme consta no banco de dados
+# Ajustado para validar contra pendências reais da produção
+def etapa_pendente(status_map, etapa):
+    return status_map.get(etapa) in STATUS_PENDENTE
+
 ETAPA_REGRAS = {
-    "VIDROS": lambda s: s.get("VIDROS") == "NÃO",
-    "A/C": lambda s: s.get("A/C") == "NÃO",
-    "PREP": lambda s: s.get("PREP") == "NÃO",
-    "SERRA.": lambda s: s.get("SERRA.") == "NÃO",
-    "EXPE.": lambda s: s.get("EXPE.") == "NÃO",
-    "DESMONT": lambda s: s.get("VIDROS") in ["SIM", "N/A"] and s.get("A/C") in ["SIM", "N/A"] and s.get("DESMONT") == "NÃO",
-    "ELÉTRICA": lambda s: s.get("DESMONT") in ["SIM", "N/A"] and s.get("ELÉTRICA") == "NÃO",
-    "REVEST": lambda s: s.get("DESMONT") in ["SIM", "N/A"] and s.get("REVEST") == "NÃO",
-    "BCO": lambda s: s.get("REVEST") in ["SIM", "N/A"] and s.get("BCO") == "NÃO",
-    "ACESSÓ.": lambda s: s.get("ACESSÓ.") == "NÃO",
-    "PLOTA.": lambda s: s.get("PLOTA.") == "NÃO",
-    "LIBERA.": lambda s: s.get("BCO") in ["SIM", "N/A"] and s.get("LIBERA.") == "NÃO"
+    "VIDROS": lambda s: etapa_pendente(s, "VIDROS"),
+    "A/C": lambda s: etapa_pendente(s, "A/C"),
+    "PREP": lambda s: etapa_pendente(s, "PREP"),
+    "SERRA.": lambda s: etapa_pendente(s, "SERRA."),
+    "EXPE.": lambda s: etapa_pendente(s, "EXPE."),
+    "DESMONT": lambda s: s.get("VIDROS") in ["SIM", "N/A"] and s.get("A/C") in ["SIM", "N/A"] and etapa_pendente(s, "DESMONT"),
+    "ELÉTRICA": lambda s: s.get("DESMONT") in ["SIM", "N/A"] and etapa_pendente(s, "ELÉTRICA"),
+    "REVEST": lambda s: s.get("DESMONT") in ["SIM", "N/A"] and etapa_pendente(s, "REVEST"),
+    "BCO": lambda s: s.get("REVEST") in ["SIM", "N/A"] and etapa_pendente(s, "BCO"),
+    "ACESSÓ.": lambda s: etapa_pendente(s, "ACESSÓ."),
+    "PLOTA.": lambda s: etapa_pendente(s, "PLOTA."),
+    "LIBERA.": lambda s: s.get("BCO") in ["SIM", "N/A"] and etapa_pendente(s, "LIBERA.")
 }
 
 @app.get("/")
