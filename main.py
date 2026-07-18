@@ -486,7 +486,7 @@ def carregar_veiculos_dashboard(db: Session, modelo: str = None):
 ensure_default_admin()
 
 @app.get("/")
-async def home(request: Request, db: Session = Depends(database.get_db), modelo: str = None, etapa: str = None, visao: str = "resumida"):
+async def home(request: Request, db: Session = Depends(database.get_db), modelo: str = None, etapa: str = None, visao: str = "gerencial"):
     current_user = require_login(request, db)
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
