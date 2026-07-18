@@ -29,19 +29,21 @@
 
     <main class="max-w-7xl mx-auto p-3 md:p-6">
         <section class="bg-white p-4 md:p-6 rounded-xl md:rounded-2xl shadow-sm border border-slate-200 mb-4 md:mb-8">
-            <form method="get" action="/" class="grid grid-cols-1 md:grid-cols-[1fr_auto_auto_auto_auto] gap-3 md:gap-4">
+            <form method="get" action="/" class="grid grid-cols-1 {% if modo_gerencial %}md:grid-cols-[1fr_auto_auto_auto]{% else %}md:grid-cols-[1fr_auto_auto_auto_auto]{% endif %} gap-3 md:gap-4">
                 <div class="flex-1 relative">
                     <input type="text" name="modelo" value="{{ termo_busca }}"
-                           placeholder="Buscar por Chassi ou Modelo..."
+                           placeholder="Buscar por chassi, modelo, cliente ou destino..."
                            class="w-full border border-slate-300 p-3 rounded-lg md:rounded-xl focus:ring-2 focus:ring-blue-500 outline-none transition">
                 </div>
 
+                {% if not modo_gerencial %}
                 <select name="etapa" class="border border-slate-300 p-3 rounded-lg md:rounded-xl bg-white outline-none focus:ring-2 focus:ring-blue-500">
                     <option value="">Todas as Etapas</option>
                     {% for e in etapas %}
                     <option value="{{ e }}" {% if request.query_params.get('etapa') == e %}selected{% endif %}>{{ e }}</option>
                     {% endfor %}
                 </select>
+                {% endif %}
 
                 <select name="visao" class="border border-slate-300 p-3 rounded-lg md:rounded-xl bg-white outline-none focus:ring-2 focus:ring-blue-500">
                     <option value="resumida" {% if visao_atual == 'resumida' %}selected{% endif %}>Visão resumida</option>
@@ -53,7 +55,7 @@
                     Filtrar
                 </button>
 
-                <a href="/" class="flex items-center justify-center px-4 py-2 text-slate-400 hover:text-slate-600 transition text-sm">
+                <a href="/?visao={{ visao_atual }}" class="flex items-center justify-center px-4 py-2 text-slate-400 hover:text-slate-600 transition text-sm">
                     Limpar Filtros
                 </a>
             </form>
@@ -76,48 +78,37 @@
             <div id="kanban-scroll" class="overflow-x-auto pb-3">
                 <div id="kanban-board" class="flex min-w-max gap-3 md:gap-4">
                     {% for coluna in kanban_colunas %}
-                    <section class="w-72 shrink-0 rounded-xl border border-slate-200 bg-slate-100/70">
-                        <div class="sticky top-0 z-10 flex items-center justify-between border-b border-slate-200 bg-slate-100/95 px-3 py-3 rounded-t-xl">
+                    <section class="w-64 shrink-0 rounded-xl border border-slate-200 bg-slate-100/70">
+                        <div class="sticky top-0 z-10 flex items-center justify-between border-b border-slate-200 bg-slate-100/95 px-3 py-2.5 rounded-t-xl">
                             <div class="min-w-0">
-                                <p class="truncate text-sm font-black text-slate-800">{{ coluna.titulo }}</p>
+                                <p class="truncate text-[13px] font-black text-slate-800">{{ coluna.titulo }}</p>
                                 <p class="text-[10px] font-bold uppercase text-slate-400">{{ coluna.grupo }}</p>
                             </div>
                             <span class="rounded-full bg-white px-2 py-1 text-xs font-black text-slate-700 border border-slate-200">{{ coluna.total }}</span>
                         </div>
-                        <div class="space-y-2 p-2 min-h-[55vh]">
+                        <div class="space-y-2 p-2 min-h-[52vh]">
                             {% for card in coluna.cards %}
-                            <a href="/veiculo/{{ card.chassi }}" class="block rounded-lg border border-slate-200 bg-white p-3 shadow-sm hover:border-blue-400 hover:shadow-md transition">
+                            <a href="/veiculo/{{ card.chassi }}" class="block rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm hover:border-blue-400 hover:shadow-md transition">
                                 <div class="flex items-start justify-between gap-2">
                                     <div class="min-w-0">
-                                        <p class="truncate text-sm font-black uppercase text-slate-800">{{ card.modelo }}</p>
+                                        <p class="truncate text-[13px] font-black uppercase text-slate-800">{{ card.modelo }}</p>
                                         <p class="truncate font-mono text-[10px] font-semibold text-slate-500">{{ card.chassi }}</p>
                                     </div>
-                                    <span class="shrink-0 rounded bg-amber-50 px-2 py-1 text-[10px] font-black text-amber-700">{{ "P" if card.status == "PARCIAL" else "NOK" }}</span>
+                                    <span class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-black {% if card.status == 'PARCIAL' %}bg-amber-50 text-amber-700{% else %}bg-rose-50 text-rose-700{% endif %}">{{ "P" if card.status == "PARCIAL" else "NOK" }}</span>
                                 </div>
-                                <div class="mt-2 grid grid-cols-2 gap-x-2 gap-y-1 text-[11px] text-slate-600">
-                                    <div class="min-w-0 col-span-2">
-                                        <span class="font-bold text-slate-400">Cliente:</span>
-                                        <span class="truncate align-bottom inline-block max-w-[190px]" title="{{ card.cliente }}">{{ card.cliente }}</span>
-                                    </div>
-                                    <div class="min-w-0">
-                                        <span class="font-bold text-slate-400">Entrega:</span>
-                                        <span class="block truncate">{{ card.data_entrega }}</span>
-                                    </div>
-                                    <div class="min-w-0">
-                                        <span class="font-bold text-slate-400">Loc.:</span>
-                                        <span class="block truncate">{{ card.localizacao }}</span>
-                                    </div>
-                                    <div class="min-w-0">
-                                        <span class="font-bold text-slate-400">A/C:</span>
-                                        <span class="block truncate">{{ card.ar_condicionado }}</span>
-                                    </div>
-                                    <div class="min-w-0">
-                                        <span class="font-bold text-slate-400">CJ. BCO:</span>
-                                        <span class="block truncate">{{ card.cj_bco }}</span>
+                                <div class="mt-2 space-y-1 text-[11px] text-slate-600">
+                                    <p class="truncate" title="{{ card.cliente }}"><span class="font-bold text-slate-400">Cliente:</span> {{ card.cliente }}</p>
+                                    <p class="truncate" title="{{ card.destino }}"><span class="font-bold text-slate-400">Destino:</span> {{ card.destino }}</p>
+                                    <div class="flex flex-wrap gap-1 pt-0.5">
+                                        <span class="rounded bg-slate-100 px-1.5 py-0.5 font-bold text-slate-500">{{ card.data_entrega }}</span>
+                                        <span class="rounded bg-slate-100 px-1.5 py-0.5 font-bold text-slate-500">Loc. {{ card.localizacao }}</span>
+                                        {% if card.ar_condicionado != "-" %}
+                                        <span class="rounded bg-blue-50 px-1.5 py-0.5 font-bold text-blue-700">{{ card.ar_condicionado }}</span>
+                                        {% endif %}
                                     </div>
                                 </div>
                                 <div class="mt-2 flex items-center gap-2">
-                                    <div class="h-1.5 flex-1 overflow-hidden rounded bg-slate-100">
+                                    <div class="h-1 flex-1 overflow-hidden rounded bg-slate-100">
                                         <div style="width:{{ card.progresso }}%" class="h-full bg-blue-500"></div>
                                     </div>
                                     <span class="text-[10px] font-bold text-blue-600">{{ card.progresso }}%</span>
@@ -269,45 +260,35 @@ function escapeHtml(value) {
 
 function kanbanStatusBadge(status) {
     return status === "PARCIAL"
-        ? '<span class="shrink-0 rounded bg-amber-50 px-2 py-1 text-[10px] font-black text-amber-700">P</span>'
-        : '<span class="shrink-0 rounded bg-rose-50 px-2 py-1 text-[10px] font-black text-rose-700">NOK</span>';
+        ? '<span class="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-black text-amber-700">P</span>'
+        : '<span class="shrink-0 rounded bg-rose-50 px-1.5 py-0.5 text-[10px] font-black text-rose-700">NOK</span>';
 }
 
 function renderKanbanCard(card) {
     const progresso = Number(card.progresso || 0);
+    const arCondicionado = card.ar_condicionado && card.ar_condicionado !== "-"
+        ? `<span class="rounded bg-blue-50 px-1.5 py-0.5 font-bold text-blue-700">${escapeHtml(card.ar_condicionado)}</span>`
+        : "";
     return `
-        <a href="/veiculo/${encodeURIComponent(card.chassi)}" class="block rounded-lg border border-slate-200 bg-white p-3 shadow-sm hover:border-blue-400 hover:shadow-md transition">
+        <a href="/veiculo/${encodeURIComponent(card.chassi)}" class="block rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm hover:border-blue-400 hover:shadow-md transition">
             <div class="flex items-start justify-between gap-2">
                 <div class="min-w-0">
-                    <p class="truncate text-sm font-black uppercase text-slate-800">${escapeHtml(card.modelo)}</p>
+                    <p class="truncate text-[13px] font-black uppercase text-slate-800">${escapeHtml(card.modelo)}</p>
                     <p class="truncate font-mono text-[10px] font-semibold text-slate-500">${escapeHtml(card.chassi)}</p>
                 </div>
                 ${kanbanStatusBadge(card.status)}
             </div>
-            <div class="mt-2 grid grid-cols-2 gap-x-2 gap-y-1 text-[11px] text-slate-600">
-                <div class="min-w-0 col-span-2">
-                    <span class="font-bold text-slate-400">Cliente:</span>
-                    <span class="truncate align-bottom inline-block max-w-[190px]" title="${escapeHtml(card.cliente)}">${escapeHtml(card.cliente)}</span>
-                </div>
-                <div class="min-w-0">
-                    <span class="font-bold text-slate-400">Entrega:</span>
-                    <span class="block truncate">${escapeHtml(card.data_entrega)}</span>
-                </div>
-                <div class="min-w-0">
-                    <span class="font-bold text-slate-400">Loc.:</span>
-                    <span class="block truncate">${escapeHtml(card.localizacao)}</span>
-                </div>
-                <div class="min-w-0">
-                    <span class="font-bold text-slate-400">A/C:</span>
-                    <span class="block truncate">${escapeHtml(card.ar_condicionado)}</span>
-                </div>
-                <div class="min-w-0">
-                    <span class="font-bold text-slate-400">CJ. BCO:</span>
-                    <span class="block truncate">${escapeHtml(card.cj_bco)}</span>
+            <div class="mt-2 space-y-1 text-[11px] text-slate-600">
+                <p class="truncate" title="${escapeHtml(card.cliente)}"><span class="font-bold text-slate-400">Cliente:</span> ${escapeHtml(card.cliente)}</p>
+                <p class="truncate" title="${escapeHtml(card.destino)}"><span class="font-bold text-slate-400">Destino:</span> ${escapeHtml(card.destino)}</p>
+                <div class="flex flex-wrap gap-1 pt-0.5">
+                    <span class="rounded bg-slate-100 px-1.5 py-0.5 font-bold text-slate-500">${escapeHtml(card.data_entrega)}</span>
+                    <span class="rounded bg-slate-100 px-1.5 py-0.5 font-bold text-slate-500">Loc. ${escapeHtml(card.localizacao)}</span>
+                    ${arCondicionado}
                 </div>
             </div>
             <div class="mt-2 flex items-center gap-2">
-                <div class="h-1.5 flex-1 overflow-hidden rounded bg-slate-100">
+                <div class="h-1 flex-1 overflow-hidden rounded bg-slate-100">
                     <div style="width:${Math.max(0, Math.min(100, progresso))}%" class="h-full bg-blue-500"></div>
                 </div>
                 <span class="text-[10px] font-bold text-blue-600">${progresso}%</span>
@@ -319,15 +300,15 @@ function renderKanbanCard(card) {
 function renderKanbanColumn(coluna) {
     const cards = (coluna.cards || []).map(renderKanbanCard).join("");
     return `
-        <section class="w-72 shrink-0 rounded-xl border border-slate-200 bg-slate-100/70">
-            <div class="sticky top-0 z-10 flex items-center justify-between border-b border-slate-200 bg-slate-100/95 px-3 py-3 rounded-t-xl">
+        <section class="w-64 shrink-0 rounded-xl border border-slate-200 bg-slate-100/70">
+            <div class="sticky top-0 z-10 flex items-center justify-between border-b border-slate-200 bg-slate-100/95 px-3 py-2.5 rounded-t-xl">
                 <div class="min-w-0">
-                    <p class="truncate text-sm font-black text-slate-800">${escapeHtml(coluna.titulo)}</p>
+                    <p class="truncate text-[13px] font-black text-slate-800">${escapeHtml(coluna.titulo)}</p>
                     <p class="text-[10px] font-bold uppercase text-slate-400">${escapeHtml(coluna.grupo)}</p>
                 </div>
                 <span class="rounded-full bg-white px-2 py-1 text-xs font-black text-slate-700 border border-slate-200">${Number(coluna.total || 0)}</span>
             </div>
-            <div class="space-y-2 p-2 min-h-[55vh]">${cards}</div>
+            <div class="space-y-2 p-2 min-h-[52vh]">${cards}</div>
         </section>
     `;
 }

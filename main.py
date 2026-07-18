@@ -398,6 +398,7 @@ def montar_card_kanban(veiculo, status_map, etapa):
         "chassi": veiculo.chassi,
         "modelo": veiculo.modelo or "-",
         "cliente": veiculo.cliente or "-",
+        "destino": veiculo.destino or "-",
         "data_entrega": veiculo.data_entrega_fmt or "-",
         "localizacao": veiculo.localizacao or "-",
         "ar_condicionado": veiculo.ar_condicionado or "-",
@@ -433,6 +434,8 @@ def carregar_veiculos_dashboard(db: Session, modelo: str = None):
                 func.upper(func.coalesce(cast(models.Veiculo.chassi, String), "")).like(termo),
                 func.upper(func.coalesce(cast(models.Veiculo.ar_condicionado, String), "")).like(termo),
                 func.upper(func.coalesce(cast(models.Veiculo.cj_bco, String), "")).like(termo),
+                func.upper(func.coalesce(cast(models.Veiculo.cliente, String), "")).like(termo),
+                func.upper(func.coalesce(cast(models.Veiculo.destino, String), "")).like(termo),
                 func.upper(func.coalesce(cast(models.Veiculo.data_entrega, String), "")).like(termo),
                 func.upper(func.coalesce(cast(models.Veiculo.localizacao, String), "")).like(termo)
             )
@@ -488,12 +491,12 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
     query = db.query(models.Veiculo)
-    modo_liberacao = is_liberacao_filter(etapa)
     visao_param = safe_str(visao).lower()
     visao_atual = visao_param if visao_param in ["resumida", "completa", "gerencial"] else "resumida"
+    modo_gerencial = visao_atual == "gerencial"
+    modo_liberacao = is_liberacao_filter(etapa) and not modo_gerencial
     if modo_liberacao:
         visao_atual = "resumida"
-    modo_gerencial = visao_atual == "gerencial"
     modo_resumido = modo_liberacao or visao_atual == "resumida"
 
     # Filtragem por texto (Modelo, Chassi, Ar Condicionado, CJ. BCO, Localização)
@@ -506,6 +509,8 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
                 func.upper(func.coalesce(cast(models.Veiculo.chassi, String), "")).like(termo),
                 func.upper(func.coalesce(cast(models.Veiculo.ar_condicionado, String), "")).like(termo),
                 func.upper(func.coalesce(cast(models.Veiculo.cj_bco, String), "")).like(termo),
+                func.upper(func.coalesce(cast(models.Veiculo.cliente, String), "")).like(termo),
+                func.upper(func.coalesce(cast(models.Veiculo.destino, String), "")).like(termo),
                 func.upper(func.coalesce(cast(models.Veiculo.data_entrega, String), "")).like(termo),
                 func.upper(func.coalesce(cast(models.Veiculo.localizacao, String), "")).like(termo)
             )
