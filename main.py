@@ -5,7 +5,7 @@ import io
 import threading
 import webbrowser
 from fastapi import FastAPI, Request, Depends, Body, UploadFile, File, Form
-from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
@@ -102,7 +102,7 @@ ETAPAS_PRODUCAO = [
 
 ETAPAS_STATUS_ATUAL = ["VIDROS", "A/C", "DESMONT", "REVEST", "BCO", "LIBERA."]
 
-ETAPAS_FILTRO = [e for e in ETAPAS_PRODUCAO if e != "A/C"] + ["GE", "CLIM", "LIBERAÇÃO"]
+ETAPAS_FILTRO = [e for e in ETAPAS_PRODUCAO if e != "A/C"] + ["GE", "CLIM", "ENTREGAS"]
 
 LOCALIZACOES = [
     "Pátio",
@@ -210,7 +210,7 @@ def normalize_filter(value: str) -> str:
     )
 
 def is_liberacao_filter(value: str) -> bool:
-    return normalize_filter(value) == "LIBERACAO"
+    return normalize_filter(value) in ["LIBERACAO", "ENTREGAS"]
 
 def normalize_etapa(value: str) -> str:
     if not value:
@@ -252,15 +252,167 @@ ETAPA_REGRAS = {
     "LIBERA.": lambda s: s.get("BCO") in ["SIM", "N/A"] and etapa_pendente(s, "LIBERA.")
 }
 
+KANBAN_COLUNAS = [
+    {"id": "prep", "titulo": "Preparação", "etapa": "PREP", "grupo": "Paralelas"},
+    {"id": "serra", "titulo": "Serralheria", "etapa": "SERRA.", "grupo": "Paralelas"},
+    {"id": "expe", "titulo": "Expedição", "etapa": "EXPE.", "grupo": "Paralelas"},
+    {"id": "ac", "titulo": "Ar condicionado", "etapa": "A/C", "grupo": "GE e CLIM"},
+    {"id": "vidros", "titulo": "VIDROS", "etapa": "VIDROS", "grupo": "Produção"},
+    {"id": "desmont", "titulo": "DESMONT", "etapa": "DESMONT", "grupo": "Produção"},
+    {"id": "revest", "titulo": "REVEST", "etapa": "REVEST", "grupo": "Produção"},
+    {"id": "eletrica", "titulo": "ELÉTRICA", "etapa": "ELÉTRICA", "grupo": "Produção"},
+    {"id": "bco", "titulo": "BCO", "etapa": "BCO", "grupo": "Produção"},
+    {"id": "acesso", "titulo": "ACESSO.", "etapa": "ACESSÓ.", "grupo": "Produção"},
+    {"id": "plota", "titulo": "PLOTA.", "etapa": "PLOTA.", "grupo": "Produção"},
+    {"id": "libera", "titulo": "LIBERA", "etapa": "LIBERA.", "grupo": "Produção"},
+]
+
+def veiculo_tem_ar_condicionado(veiculo) -> bool:
+    return normalize_filter(veiculo.ar_condicionado) in ["GE", "CLIM"]
+
+def veiculo_tem_banco(veiculo) -> bool:
+    banco_flag = normalize_filter(veiculo.banco_presente)
+    return banco_flag not in ["N", "NAO", "NAO TEM", "SEM", "0"]
+
+def status_etapa(status_map, etapa):
+    return status_map.get(normalize_etapa(etapa), "N/A")
+
+def etapa_concluida_ou_na(veiculo, status_map, etapa):
+    etapa_norm = normalize_etapa(etapa)
+    if etapa_norm == "A/C" and not veiculo_tem_ar_condicionado(veiculo):
+        return True
+    if etapa_norm == "BCO" and not veiculo_tem_banco(veiculo):
+        return True
+    return status_etapa(status_map, etapa_norm) in STATUS_CONCLUIDO
+
+def etapa_pendente_kanban(status_map, etapa):
+    return status_etapa(status_map, etapa) in STATUS_PENDENTE
+
+def deve_exibir_no_kanban(veiculo, status_map, coluna):
+    etapa = coluna["etapa"]
+    coluna_id = coluna["id"]
+
+    if coluna_id == "ac":
+        return veiculo_tem_ar_condicionado(veiculo) and etapa_pendente_kanban(status_map, etapa)
+    if coluna_id in ["prep", "serra", "expe", "vidros"]:
+        return etapa_pendente_kanban(status_map, etapa)
+    if coluna_id == "desmont":
+        return etapa_concluida_ou_na(veiculo, status_map, "VIDROS") and etapa_concluida_ou_na(veiculo, status_map, "A/C") and etapa_pendente_kanban(status_map, etapa)
+    if coluna_id in ["revest", "eletrica"]:
+        return etapa_concluida_ou_na(veiculo, status_map, "DESMONT") and etapa_pendente_kanban(status_map, etapa)
+    if coluna_id == "bco":
+        return (
+            veiculo_tem_banco(veiculo)
+            and etapa_concluida_ou_na(veiculo, status_map, "REVEST")
+            and etapa_concluida_ou_na(veiculo, status_map, "ELÉTRICA")
+            and etapa_pendente_kanban(status_map, etapa)
+        )
+    if coluna_id == "acesso":
+        return etapa_concluida_ou_na(veiculo, status_map, "BCO") and etapa_pendente_kanban(status_map, etapa)
+    if coluna_id == "plota":
+        return etapa_concluida_ou_na(veiculo, status_map, "ACESSÓ.") and etapa_pendente_kanban(status_map, etapa)
+    if coluna_id == "libera":
+        return etapa_concluida_ou_na(veiculo, status_map, "PLOTA.") and etapa_pendente_kanban(status_map, etapa)
+    return False
+
+def montar_card_kanban(veiculo, status_map, etapa):
+    return {
+        "chassi": veiculo.chassi,
+        "modelo": veiculo.modelo or "-",
+        "cliente": veiculo.cliente or "-",
+        "data_entrega": veiculo.data_entrega_fmt or "-",
+        "localizacao": veiculo.localizacao or "-",
+        "ar_condicionado": veiculo.ar_condicionado or "-",
+        "cj_bco": veiculo.cj_bco or "-",
+        "progresso": veiculo.progresso,
+        "status": status_etapa(status_map, etapa),
+    }
+
+def montar_kanban(veiculos, status_maps):
+    colunas = []
+    for coluna in KANBAN_COLUNAS:
+        cards = []
+        for veiculo in veiculos:
+            chassi_key = str(veiculo.chassi).strip()
+            status_map = status_maps.get(chassi_key, {})
+            if deve_exibir_no_kanban(veiculo, status_map, coluna):
+                cards.append(montar_card_kanban(veiculo, status_map, coluna["etapa"]))
+        colunas.append({
+            **coluna,
+            "cards": cards,
+            "total": len(cards),
+        })
+    return colunas
+
+def carregar_veiculos_dashboard(db: Session, modelo: str = None):
+    query = db.query(models.Veiculo)
+
+    if modelo and modelo.strip():
+        termo = f"%{modelo.strip().upper()}%"
+        query = query.filter(
+            or_(
+                func.upper(func.coalesce(cast(models.Veiculo.modelo, String), "")).like(termo),
+                func.upper(func.coalesce(cast(models.Veiculo.chassi, String), "")).like(termo),
+                func.upper(func.coalesce(cast(models.Veiculo.ar_condicionado, String), "")).like(termo),
+                func.upper(func.coalesce(cast(models.Veiculo.cj_bco, String), "")).like(termo),
+                func.upper(func.coalesce(cast(models.Veiculo.data_entrega, String), "")).like(termo),
+                func.upper(func.coalesce(cast(models.Veiculo.localizacao, String), "")).like(termo)
+            )
+        )
+
+    veiculos_db = query.order_by(models.Veiculo.ordem.asc()).all()
+
+    chassis = [str(v.chassi).strip() for v in veiculos_db]
+    apontamentos = []
+    if chassis:
+        apontamentos = db.query(models.Apontamento).filter(
+            func.trim(cast(models.Apontamento.chassi, String)).in_(chassis)
+        ).all()
+
+    apont_por_chassi = {}
+    for a in apontamentos:
+        ch_key = str(a.chassi).strip()
+        if ch_key not in apont_por_chassi:
+            apont_por_chassi[ch_key] = []
+        apont_por_chassi[ch_key].append(a)
+
+    status_maps = {}
+    for v in veiculos_db:
+        v.data_entrega_fmt = format_data_entrega(v.data_entrega)
+        chassi_key = str(v.chassi).strip()
+        aponts = apont_por_chassi.get(chassi_key, [])
+
+        status_map = {
+            normalize_etapa(a.etapa): normalize_status(a.status)
+            for a in aponts
+        }
+        status_maps[chassi_key] = status_map
+
+        concluidos = sum(
+            1 for e in ETAPAS_PRODUCAO
+            if status_map.get(normalize_etapa(e)) in STATUS_CONCLUIDO
+        )
+        v.progresso = int((concluidos / len(ETAPAS_PRODUCAO)) * 100) if ETAPAS_PRODUCAO else 0
+
+        v.etapa_atual = "FINALIZADO"
+        for e in ETAPAS_STATUS_ATUAL:
+            if status_map.get(normalize_etapa(e)) not in STATUS_CONCLUIDO:
+                v.etapa_atual = e
+                break
+
+    return veiculos_db, status_maps
+
 @app.get("/")
 async def home(request: Request, db: Session = Depends(database.get_db), modelo: str = None, etapa: str = None, visao: str = "resumida"):
     if not require_login(request):
         return RedirectResponse(url="/login", status_code=303)
     query = db.query(models.Veiculo)
     modo_liberacao = is_liberacao_filter(etapa)
-    visao_atual = "completa" if safe_str(visao).lower() == "completa" else "resumida"
+    visao_param = safe_str(visao).lower()
+    visao_atual = visao_param if visao_param in ["resumida", "completa", "gerencial"] else "resumida"
     if modo_liberacao:
         visao_atual = "resumida"
+    modo_gerencial = visao_atual == "gerencial"
     modo_resumido = modo_liberacao or visao_atual == "resumida"
 
     # Filtragem por texto (Modelo, Chassi, Ar Condicionado, CJ. BCO, Localização)
@@ -295,6 +447,7 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
             apont_por_chassi[ch_key] = []
         apont_por_chassi[ch_key].append(a)
 
+    status_maps = {}
     for v in veiculos_db:
         v.data_entrega_fmt = format_data_entrega(v.data_entrega)
         chassi_key = str(v.chassi).strip()
@@ -305,6 +458,7 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
             normalize_etapa(a.etapa): str(a.status).strip().upper()
             for a in aponts
         }
+        status_maps[chassi_key] = status_map
 
         # Cálculo de progresso
         concluidos = sum(
@@ -321,7 +475,7 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
                 break
 
         # FILTRAGEM POR ETAPA (Lógica de Negócio)
-        if etapa and etapa.strip() and not modo_liberacao:
+        if etapa and etapa.strip() and not modo_liberacao and not modo_gerencial:
             filtro = etapa.strip().upper()
             if filtro in ["GE", "CLIM"]:
                 status_map_s = {normalize_etapa(k): v.strip().upper() for k, v in status_map.items()}
@@ -352,9 +506,23 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
             "etapa_selecionada": etapa or "",
             "modo_liberacao": modo_liberacao,
             "modo_resumido": modo_resumido,
-            "visao_atual": visao_atual
+            "modo_gerencial": modo_gerencial,
+            "visao_atual": visao_atual,
+            "kanban_colunas": montar_kanban(veiculos_exibicao, status_maps) if modo_gerencial else []
         }
     )
+
+@app.get("/kanban_dados")
+async def kanban_dados(request: Request, db: Session = Depends(database.get_db), modelo: str = None):
+    if not require_login(request):
+        return JSONResponse({"status": "erro", "detail": "Login necessário"}, status_code=401)
+
+    veiculos, status_maps = carregar_veiculos_dashboard(db, modelo)
+    return {
+        "status": "ok",
+        "atualizado_em": datetime.datetime.now(LOCAL_TZ).strftime("%H:%M:%S"),
+        "colunas": montar_kanban(veiculos, status_maps),
+    }
 
 @app.get("/veiculo/{chassi}")
 async def detalhes(request: Request, chassi: str, db: Session = Depends(database.get_db)):
