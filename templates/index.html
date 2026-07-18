@@ -65,14 +65,22 @@
                     </div>
                     <span class="shrink-0 text-[10px] bg-blue-50 text-blue-700 px-2 py-1 rounded font-bold">{{ "Liberação" if modo_liberacao else v.etapa_atual }}</span>
                 </div>
-                <div class="mt-3 grid grid-cols-2 gap-3 text-xs">
+                <div class="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
                     <div class="min-w-0">
                         <p class="text-[10px] text-slate-400 font-bold uppercase">Chassi</p>
                         <p class="font-mono font-semibold text-slate-700 truncate">{{ v.chassi }}</p>
                     </div>
-                    <div>
+                    <div class="min-w-0">
                         <p class="text-[10px] text-slate-400 font-bold uppercase">Data de entrega</p>
-                        <p class="font-bold text-slate-900">{{ v.data_entrega_fmt or "-" }}</p>
+                        <p class="font-bold text-slate-900 truncate">{{ v.data_entrega_fmt or "-" }}</p>
+                    </div>
+                    <div class="min-w-0">
+                        <p class="text-[10px] text-slate-400 font-bold uppercase">Cliente</p>
+                        <p class="font-semibold text-slate-700 truncate" title="{{ v.cliente or '-' }}">{{ v.cliente or "-" }}</p>
+                    </div>
+                    <div class="min-w-0">
+                        <p class="text-[10px] text-slate-400 font-bold uppercase">CJ. BCO</p>
+                        <p class="font-semibold text-slate-700 truncate" title="{{ v.cj_bco or '-' }}">{{ v.cj_bco or "-" }}</p>
                     </div>
                 </div>
                 {% if not modo_liberacao %}
