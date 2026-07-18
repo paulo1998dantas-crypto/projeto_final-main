@@ -4,6 +4,9 @@ import pandas as pd
 import io
 import threading
 import webbrowser
+import secrets
+import hashlib
+import hmac
 from fastapi import FastAPI, Request, Depends, Body, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
@@ -84,6 +87,14 @@ ensure_columns()
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+
+@app.middleware("http")
+async def no_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 ETAPAS_PRODUCAO = [
     "VIDROS",
@@ -190,12 +201,79 @@ def to_input_dt(value):
         value = value.astimezone(LOCAL_TZ)
     return value.strftime("%Y-%m-%dT%H:%M")
 
-def get_user_name(request: Request):
-    return (request.cookies.get("pcp_nome") or "").strip()
+SESSION_COOKIE = "pcp_sessao"
 
-def require_login(request: Request):
-    nome = get_user_name(request)
-    return nome
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
+    return f"{salt}${digest.hex()}"
+
+def verify_password(password: str, password_hash: str) -> bool:
+    try:
+        salt, digest_hex = password_hash.split("$", 1)
+    except ValueError:
+        return False
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
+    return hmac.compare_digest(digest.hex(), digest_hex)
+
+def ensure_default_admin():
+    db = database.SessionLocal()
+    try:
+        usuario = db.query(models.Usuario).filter(func.upper(models.Usuario.nome) == "PAULO").first()
+        if not usuario:
+            db.add(models.Usuario(nome="Paulo", senha_hash=hash_password("2410"), is_admin=1))
+            db.commit()
+        else:
+            usuario.senha_hash = hash_password("2410")
+            usuario.is_admin = 1
+            db.commit()
+    finally:
+        db.close()
+
+def get_current_user(request: Request, db: Session):
+    token = (request.cookies.get(SESSION_COOKIE) or "").strip()
+    if not token:
+        return None
+    sessao = db.query(models.SessaoUsuario).filter(models.SessaoUsuario.token == token).first()
+    if not sessao:
+        return None
+    expira_em = sessao.expira_em
+    if expira_em and expira_em.tzinfo is None:
+        expira_em = expira_em.replace(tzinfo=LOCAL_TZ)
+    if expira_em and expira_em < datetime.datetime.now(LOCAL_TZ):
+        db.delete(sessao)
+        db.commit()
+        return None
+    return db.query(models.Usuario).filter(models.Usuario.id == sessao.usuario_id).first()
+
+def get_user_name(request: Request, db: Session):
+    usuario = get_current_user(request, db)
+    return usuario.nome if usuario else ""
+
+def require_login(request: Request, db: Session):
+    return get_current_user(request, db)
+
+def create_session(db: Session, usuario):
+    token = secrets.token_urlsafe(32)
+    expira_em = datetime.datetime.now(LOCAL_TZ) + datetime.timedelta(days=30)
+    db.add(models.SessaoUsuario(token=token, usuario_id=usuario.id, expira_em=expira_em))
+    db.commit()
+    return token
+
+def set_session_cookie(response, token: str):
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        max_age=60 * 60 * 24 * 30,
+        httponly=True,
+        secure=bool(os.environ.get("RENDER")),
+        samesite="lax",
+    )
+    response.delete_cookie("pcp_nome")
+
+def clear_session_cookie(response):
+    response.delete_cookie(SESSION_COOKIE)
+    response.delete_cookie("pcp_nome")
 
 def safe_str(value):
     if value is None or (hasattr(pd, "isna") and pd.isna(value)):
@@ -402,9 +480,12 @@ def carregar_veiculos_dashboard(db: Session, modelo: str = None):
 
     return veiculos_db, status_maps
 
+ensure_default_admin()
+
 @app.get("/")
 async def home(request: Request, db: Session = Depends(database.get_db), modelo: str = None, etapa: str = None, visao: str = "resumida"):
-    if not require_login(request):
+    current_user = require_login(request, db)
+    if not current_user:
         return RedirectResponse(url="/login", status_code=303)
     query = db.query(models.Veiculo)
     modo_liberacao = is_liberacao_filter(etapa)
@@ -508,13 +589,14 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
             "modo_resumido": modo_resumido,
             "modo_gerencial": modo_gerencial,
             "visao_atual": visao_atual,
-            "kanban_colunas": montar_kanban(veiculos_exibicao, status_maps) if modo_gerencial else []
+            "kanban_colunas": montar_kanban(veiculos_exibicao, status_maps) if modo_gerencial else [],
+            "current_user": current_user
         }
     )
 
 @app.get("/kanban_dados")
 async def kanban_dados(request: Request, db: Session = Depends(database.get_db), modelo: str = None):
-    if not require_login(request):
+    if not require_login(request, db):
         return JSONResponse({"status": "erro", "detail": "Login necessário"}, status_code=401)
 
     veiculos, status_maps = carregar_veiculos_dashboard(db, modelo)
@@ -526,10 +608,10 @@ async def kanban_dados(request: Request, db: Session = Depends(database.get_db),
 
 @app.get("/veiculo/{chassi}")
 async def detalhes(request: Request, chassi: str, db: Session = Depends(database.get_db)):
-    if not require_login(request):
+    if not require_login(request, db):
         return RedirectResponse(url="/login", status_code=303)
     c_limpo = chassi.strip()
-    user_name = get_user_name(request)
+    user_name = get_user_name(request, db)
 
     veiculo = db.query(models.Veiculo).filter(
         func.trim(cast(models.Veiculo.chassi, String)) == c_limpo
@@ -566,9 +648,7 @@ async def detalhes(request: Request, chassi: str, db: Session = Depends(database
 
 @app.post("/upload")
 async def upload_base(request: Request, file: UploadFile = File(...), db: Session = Depends(database.get_db)):
-    # Protege upload com login simples
-    # (mantém compatível sem usuários cadastrados)
-    if not require_login(request):
+    if not require_login(request, db):
         return {"status": "erro", "detail": "Login necessário"}
     try:
         content = await file.read()
@@ -647,7 +727,7 @@ async def upload_base(request: Request, file: UploadFile = File(...), db: Sessio
 
 @app.post("/upload_apontamentos")
 async def upload_apontamentos(request: Request, file: UploadFile = File(...), db: Session = Depends(database.get_db)):
-    if not require_login(request):
+    if not require_login(request, db):
         return {"status": "erro", "detail": "Login necessário"}
     try:
         content = await file.read()
@@ -735,6 +815,8 @@ async def upload_apontamentos(request: Request, file: UploadFile = File(...), db
 
 @app.post("/apontar")
 async def salvar(request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
+    if not require_login(request, db):
+        return JSONResponse({"status": "erro", "detail": "Login necessário"}, status_code=401)
     ch = str(data["chassi"]).strip()
     et = normalize_etapa(data["etapa"])
     st = normalize_status(data.get("status", ""))
@@ -783,7 +865,9 @@ async def salvar(request: Request, data: dict = Body(...), db: Session = Depends
     return {"status": "ok"}
 
 @app.post("/veiculo_localizacao")
-async def atualizar_localizacao(data: dict = Body(...), db: Session = Depends(database.get_db)):
+async def atualizar_localizacao(request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
+    if not require_login(request, db):
+        return JSONResponse({"status": "erro", "detail": "Login necessário"}, status_code=401)
     ch = str(data.get("chassi", "")).strip()
     localizacao = str(data.get("localizacao", "")).strip()
     if not ch:
@@ -796,7 +880,9 @@ async def atualizar_localizacao(data: dict = Body(...), db: Session = Depends(da
     return {"status": "ok"}
 
 @app.post("/veiculo_banco")
-async def atualizar_banco(data: dict = Body(...), db: Session = Depends(database.get_db)):
+async def atualizar_banco(request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
+    if not require_login(request, db):
+        return JSONResponse({"status": "erro", "detail": "Login necessário"}, status_code=401)
     ch = str(data.get("chassi", "")).strip()
     banco_presente = str(data.get("banco_presente", "")).strip()
     banco_comentario = str(data.get("banco_comentario", "")).strip()
@@ -813,7 +899,9 @@ async def atualizar_banco(data: dict = Body(...), db: Session = Depends(database
     return {"status": "ok"}
 
 @app.get("/exportar_historico")
-async def exportar(db: Session = Depends(database.get_db)):
+async def exportar(request: Request, db: Session = Depends(database.get_db)):
+    if not require_login(request, db):
+        return RedirectResponse(url="/login", status_code=303)
     logs = db.query(models.Historico).all()
     if not logs:
         return {"message": "Sem dados"}
@@ -853,7 +941,9 @@ async def exportar(db: Session = Depends(database.get_db)):
     )
 
 @app.get("/exportar_tempos")
-async def exportar_tempos(db: Session = Depends(database.get_db)):
+async def exportar_tempos(request: Request, db: Session = Depends(database.get_db)):
+    if not require_login(request, db):
+        return RedirectResponse(url="/login", status_code=303)
     aponts = db.query(models.Apontamento).all()
     veiculos = db.query(models.Veiculo).all()
     loc_map = {str(v.chassi).strip(): v.localizacao for v in veiculos}
@@ -885,29 +975,106 @@ async def exportar_tempos(db: Session = Depends(database.get_db)):
     )
 
 @app.get("/limpar_historico")
-async def limpar_logs(db: Session = Depends(database.get_db)):
+async def limpar_logs(request: Request, db: Session = Depends(database.get_db)):
+    if not require_login(request, db):
+        return RedirectResponse(url="/login", status_code=303)
     db.query(models.Historico).delete()
     db.commit()
     return RedirectResponse(url="/", status_code=303)
 
 @app.get("/importar")
-async def pg_importar(request: Request):
-    if not require_login(request):
+async def pg_importar(request: Request, db: Session = Depends(database.get_db)):
+    if not require_login(request, db):
         return RedirectResponse(url="/login", status_code=303)
     return templates.TemplateResponse(request, "importar.html", {"request": request})
 
 @app.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request):
-    return templates.TemplateResponse(request, "login.html", {"request": request})
+async def login_page(request: Request, db: Session = Depends(database.get_db)):
+    if require_login(request, db):
+        return RedirectResponse(url="/", status_code=303)
+    return templates.TemplateResponse(request, "login.html", {"request": request, "erro": ""})
 
 @app.post("/login")
-async def login_post(request: Request, nome: str = Form(...)):
+async def login_post(request: Request, nome: str = Form(...), senha: str = Form(...), db: Session = Depends(database.get_db)):
     nome_limpo = str(nome).strip()
-    if not nome_limpo:
-        return RedirectResponse(url="/login", status_code=303)
+    usuario = db.query(models.Usuario).filter(func.upper(models.Usuario.nome) == nome_limpo.upper()).first()
+    if not usuario or not verify_password(str(senha), usuario.senha_hash or ""):
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {"request": request, "erro": "Usuário ou senha inválidos."},
+            status_code=401,
+        )
+    token = create_session(db, usuario)
     resp = RedirectResponse(url="/", status_code=303)
-    resp.set_cookie("pcp_nome", nome_limpo, max_age=60 * 60 * 24 * 30)
+    set_session_cookie(resp, token)
     return resp
+
+@app.get("/logout")
+async def logout(request: Request, db: Session = Depends(database.get_db)):
+    token = (request.cookies.get(SESSION_COOKIE) or "").strip()
+    if token:
+        db.query(models.SessaoUsuario).filter(models.SessaoUsuario.token == token).delete()
+        db.commit()
+    resp = RedirectResponse(url="/login", status_code=303)
+    clear_session_cookie(resp)
+    return resp
+
+@app.get("/usuarios")
+async def usuarios_page(request: Request, db: Session = Depends(database.get_db)):
+    current_user = require_login(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not current_user.is_admin:
+        return RedirectResponse(url="/", status_code=303)
+    usuarios = db.query(models.Usuario).order_by(models.Usuario.nome.asc()).all()
+    return templates.TemplateResponse(
+        request,
+        "usuarios.html",
+        {"request": request, "usuarios": usuarios, "erro": "", "sucesso": "", "current_user": current_user},
+    )
+
+@app.post("/usuarios")
+async def usuarios_create(
+    request: Request,
+    nome: str = Form(...),
+    senha: str = Form(...),
+    is_admin: str = Form("0"),
+    db: Session = Depends(database.get_db),
+):
+    current_user = require_login(request, db)
+    if not current_user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not current_user.is_admin:
+        return RedirectResponse(url="/", status_code=303)
+
+    nome_limpo = str(nome).strip()
+    senha_limpa = str(senha).strip()
+    usuarios = db.query(models.Usuario).order_by(models.Usuario.nome.asc()).all()
+    if not nome_limpo or not senha_limpa:
+        return templates.TemplateResponse(
+            request,
+            "usuarios.html",
+            {"request": request, "usuarios": usuarios, "erro": "Informe nome e senha.", "sucesso": "", "current_user": current_user},
+            status_code=400,
+        )
+    existente = db.query(models.Usuario).filter(func.upper(models.Usuario.nome) == nome_limpo.upper()).first()
+    if existente:
+        return templates.TemplateResponse(
+            request,
+            "usuarios.html",
+            {"request": request, "usuarios": usuarios, "erro": "Usuário já existe.", "sucesso": "", "current_user": current_user},
+            status_code=400,
+        )
+
+    db.add(models.Usuario(nome=nome_limpo, senha_hash=hash_password(senha_limpa), is_admin=1 if is_admin == "1" else 0))
+    db.commit()
+    usuarios = db.query(models.Usuario).order_by(models.Usuario.nome.asc()).all()
+    return templates.TemplateResponse(
+        request,
+        "usuarios.html",
+        {"request": request, "usuarios": usuarios, "erro": "", "sucesso": "Usuário criado.", "current_user": current_user},
+    )
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8010))

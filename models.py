@@ -42,3 +42,16 @@ class Historico(Base):
     termino = Column(DateTime(timezone=True))
     localizacao = Column(String)
     data_apontamento = Column(DateTime(timezone=True), default=lambda: datetime.datetime.now(LOCAL_TZ))
+
+class Usuario(Base):
+    __tablename__ = "usuarios"
+    id = Column(Integer, primary_key=True, index=True)
+    nome = Column(String, unique=True, index=True)
+    senha_hash = Column(String)
+    is_admin = Column(Integer, default=0)
+
+class SessaoUsuario(Base):
+    __tablename__ = "sessoes_usuario"
+    token = Column(String, primary_key=True, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"))
+    expira_em = Column(DateTime(timezone=True))
