@@ -17,6 +17,7 @@ import uvicorn
 from zoneinfo import ZoneInfo
 import datetime
 import unicodedata
+import re
 
 # Configuração de diretórios e templates
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -48,6 +49,11 @@ def ensure_columns():
             conn.execute(text("ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS ordem INTEGER"))
         if "linha" not in veiculo_cols:
             conn.execute(text("ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS linha VARCHAR"))
+        if "semana_producao" not in veiculo_cols:
+            if dialect == "postgresql":
+                conn.execute(text("ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS semana_producao VARCHAR"))
+            else:
+                conn.execute(text("ALTER TABLE veiculos ADD COLUMN semana_producao VARCHAR"))
         if "cj_bco" not in veiculo_cols:
             conn.execute(text("ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS cj_bco VARCHAR"))
         if "cliente" not in veiculo_cols:
@@ -62,6 +68,8 @@ def ensure_columns():
             conn.execute(text("ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS banco_presente VARCHAR"))
         if "banco_comentario" not in veiculo_cols:
             conn.execute(text("ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS banco_comentario VARCHAR"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_veiculos_semana_producao ON veiculos (semana_producao)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_veiculos_data_entrega ON veiculos (data_entrega)"))
 
         apont_cols = column_names("apontamentos")
         if "responsavel" not in apont_cols:
@@ -302,6 +310,65 @@ def normalize_linha(value) -> str:
         return "EXECUTIVA"
     return ""
 
+def normalize_semana_producao(value) -> str:
+    semana = safe_str(value).upper()
+    if not semana:
+        return ""
+
+    semana_sem_acento = normalize_filter(semana)
+    numero_simples = re.fullmatch(r"0*(\d{1,2})(?:[.,]0+)?", semana_sem_acento)
+    if numero_simples:
+        numero = int(numero_simples.group(1))
+        return str(numero) if 1 <= numero <= 53 else semana
+
+    prefixada = re.fullmatch(r"(?:SEMANA|SEM\.?|S|W)\s*[-:]?\s*0*(\d{1,2})", semana_sem_acento)
+    if prefixada:
+        numero = int(prefixada.group(1))
+        return str(numero) if 1 <= numero <= 53 else semana
+
+    ano_primeiro = re.fullmatch(r"(\d{4})\s*[-/]?\s*(?:SEMANA|SEM\.?|S|W)?\s*0*(\d{1,2})", semana_sem_acento)
+    if ano_primeiro:
+        numero = int(ano_primeiro.group(2))
+        return f"{ano_primeiro.group(1)}-S{numero:02d}" if 1 <= numero <= 53 else semana
+
+    semana_primeiro = re.fullmatch(r"(?:SEMANA|SEM\.?|S|W)?\s*0*(\d{1,2})\s*[-/]\s*(\d{4})", semana_sem_acento)
+    if semana_primeiro:
+        numero = int(semana_primeiro.group(1))
+        return f"{semana_primeiro.group(2)}-S{numero:02d}" if 1 <= numero <= 53 else semana
+
+    return semana
+
+def parse_data_filtro(value):
+    try:
+        return datetime.date.fromisoformat(safe_str(value))
+    except ValueError:
+        return None
+
+def intervalo_entrega_normalizado(data_inicio=None, data_fim=None):
+    inicio = parse_data_filtro(data_inicio)
+    fim = parse_data_filtro(data_fim)
+    if inicio and fim and inicio > fim:
+        inicio, fim = fim, inicio
+    return inicio, fim
+
+def semana_ordenacao(value):
+    semana = safe_str(value)
+    numeros = [int(numero) for numero in re.findall(r"\d+", semana)]
+    if len(numeros) >= 2 and numeros[0] >= 2000:
+        return (numeros[0], numeros[1], semana)
+    if len(numeros) >= 2 and numeros[1] >= 2000:
+        return (numeros[1], numeros[0], semana)
+    if numeros:
+        return (0, numeros[0], semana)
+    return (9999, 99, semana)
+
+def listar_semanas_producao(db: Session):
+    valores = db.query(models.Veiculo.semana_producao).filter(
+        func.trim(func.coalesce(models.Veiculo.semana_producao, "")) != ""
+    ).distinct().all()
+    semanas = {normalize_semana_producao(valor[0]) for valor in valores if normalize_semana_producao(valor[0])}
+    return sorted(semanas, key=semana_ordenacao)
+
 def is_liberacao_filter(value: str) -> bool:
     return normalize_filter(value) in ["LIBERACAO", "ENTREGAS"]
 
@@ -417,6 +484,7 @@ def montar_card_kanban(veiculo, status_map, etapa):
         "chassi": veiculo.chassi,
         "modelo": veiculo.modelo or "-",
         "linha": veiculo.linha or "NÃO INFORMADA",
+        "semana_producao": veiculo.semana_producao or "-",
         "cliente": veiculo.cliente or "-",
         "destino": veiculo.destino or "-",
         "data_entrega": veiculo.data_entrega_fmt or "-",
@@ -461,7 +529,14 @@ def contar_chassis_ativos_kanban(colunas):
         if normalize_chassi(card.get("chassi"))
     })
 
-def aplicar_filtros_veiculos(query, modelo: str = None, linha: str = None):
+def aplicar_filtros_veiculos(
+    query,
+    modelo: str = None,
+    linha: str = None,
+    semana: str = None,
+    entrega_inicio: str = None,
+    entrega_fim: str = None,
+):
     if modelo and modelo.strip():
         termo = f"%{modelo.strip().upper()}%"
         query = query.filter(
@@ -474,7 +549,8 @@ def aplicar_filtros_veiculos(query, modelo: str = None, linha: str = None):
                 func.upper(func.coalesce(cast(models.Veiculo.destino, String), "")).like(termo),
                 func.upper(func.coalesce(cast(models.Veiculo.data_entrega, String), "")).like(termo),
                 func.upper(func.coalesce(cast(models.Veiculo.localizacao, String), "")).like(termo),
-                func.upper(func.coalesce(cast(models.Veiculo.linha, String), "")).like(termo)
+                func.upper(func.coalesce(cast(models.Veiculo.linha, String), "")).like(termo),
+                func.upper(func.coalesce(cast(models.Veiculo.semana_producao, String), "")).like(termo)
             )
         )
 
@@ -482,10 +558,42 @@ def aplicar_filtros_veiculos(query, modelo: str = None, linha: str = None):
     if linha_normalizada:
         query = query.filter(func.upper(func.trim(models.Veiculo.linha)) == linha_normalizada)
 
+    semana_normalizada = normalize_semana_producao(semana)
+    if semana_normalizada:
+        query = query.filter(
+            func.upper(func.trim(models.Veiculo.semana_producao)) == semana_normalizada.upper()
+        )
+
+    inicio, fim = intervalo_entrega_normalizado(entrega_inicio, entrega_fim)
+    if inicio:
+        inicio_dt = datetime.datetime.combine(inicio, datetime.time.min, tzinfo=LOCAL_TZ)
+        query = query.filter(models.Veiculo.data_entrega >= inicio_dt)
+    if fim:
+        fim_exclusivo = datetime.datetime.combine(
+            fim + datetime.timedelta(days=1),
+            datetime.time.min,
+            tzinfo=LOCAL_TZ,
+        )
+        query = query.filter(models.Veiculo.data_entrega < fim_exclusivo)
+
     return query
 
-def carregar_veiculos_dashboard(db: Session, modelo: str = None, linha: str = None):
-    query = aplicar_filtros_veiculos(db.query(models.Veiculo), modelo, linha)
+def carregar_veiculos_dashboard(
+    db: Session,
+    modelo: str = None,
+    linha: str = None,
+    semana: str = None,
+    entrega_inicio: str = None,
+    entrega_fim: str = None,
+):
+    query = aplicar_filtros_veiculos(
+        db.query(models.Veiculo),
+        modelo,
+        linha,
+        semana,
+        entrega_inicio,
+        entrega_fim,
+    )
 
     veiculos_db = query.order_by(models.Veiculo.ordem.asc(), models.Veiculo.chassi.asc()).all()
 
@@ -532,11 +640,29 @@ def carregar_veiculos_dashboard(db: Session, modelo: str = None, linha: str = No
 ensure_default_admin()
 
 @app.get("/")
-async def home(request: Request, db: Session = Depends(database.get_db), modelo: str = None, etapa: str = None, visao: str = "geral", linha: str = None):
+async def home(
+    request: Request,
+    db: Session = Depends(database.get_db),
+    modelo: str = None,
+    etapa: str = None,
+    visao: str = "geral",
+    linha: str = None,
+    semana: str = None,
+    entrega_inicio: str = None,
+    entrega_fim: str = None,
+):
     current_user = require_login(request, db)
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
-    query = aplicar_filtros_veiculos(db.query(models.Veiculo), modelo, linha)
+    query = aplicar_filtros_veiculos(
+        db.query(models.Veiculo),
+        modelo,
+        linha,
+        semana,
+        entrega_inicio,
+        entrega_fim,
+    )
+    data_inicio_atual, data_fim_atual = intervalo_entrega_normalizado(entrega_inicio, entrega_fim)
     visao_param = safe_str(visao).lower()
     visao_atual = visao_param if visao_param in ["resumida", "completa", "gerencial", "geral"] else "resumida"
     modo_geral = visao_atual == "geral"
@@ -624,6 +750,11 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
             "modo_geral": modo_geral,
             "visao_atual": visao_atual,
             "linha_atual": normalize_linha(linha),
+            "semana_atual": normalize_semana_producao(semana),
+            "semanas_disponiveis": listar_semanas_producao(db),
+            "entrega_inicio_atual": data_inicio_atual.isoformat() if data_inicio_atual else "",
+            "entrega_fim_atual": data_fim_atual.isoformat() if data_fim_atual else "",
+            "filtros_gerais_ativos": bool(normalize_linha(linha) or normalize_semana_producao(semana) or data_inicio_atual or data_fim_atual),
             "total_veiculos": contar_chassis_ativos_kanban(kanban_colunas) if modo_gerencial else len({normalize_chassi(v.chassi) for v in veiculos_exibicao}),
             "kanban_colunas": kanban_colunas,
             "current_user": current_user
@@ -631,11 +762,26 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
     )
 
 @app.get("/kanban_dados")
-async def kanban_dados(request: Request, db: Session = Depends(database.get_db), modelo: str = None, linha: str = None):
+async def kanban_dados(
+    request: Request,
+    db: Session = Depends(database.get_db),
+    modelo: str = None,
+    linha: str = None,
+    semana: str = None,
+    entrega_inicio: str = None,
+    entrega_fim: str = None,
+):
     if not require_login(request, db):
         return JSONResponse({"status": "erro", "detail": "Login necessário"}, status_code=401)
 
-    veiculos, status_maps = carregar_veiculos_dashboard(db, modelo, linha)
+    veiculos, status_maps = carregar_veiculos_dashboard(
+        db,
+        modelo,
+        linha,
+        semana,
+        entrega_inicio,
+        entrega_fim,
+    )
     colunas = montar_kanban(veiculos, status_maps)
     return {
         "status": "ok",
@@ -737,6 +883,16 @@ async def upload_base(request: Request, file: UploadFile = File(...), db: Sessio
             if not linha:
                 raise ValueError(f"LINHA inválida na linha {numero_linha} ({ch_raw}). Use BÁSICA ou EXECUTIVA.")
 
+            semana_producao = normalize_semana_producao(get_col(
+                row,
+                "SEMANA DE PRODUÇÃO",
+                "SEMANA DE PRODUCAO",
+                "SEMANA PRODUÇÃO",
+                "SEMANA PRODUCAO",
+                "SEMANA",
+                "SEM. PRODUÇÃO",
+                "SEM. PRODUCAO",
+            ))
             ar_cond = get_col(row, "AR CONDICIONADO", "AR_CONDICIONADO", "AR-CONDICIONADO", "ARCONDICIONADO")
             cj_bco = get_col(row, "CJ. BCO", "CJ BCO", "CJ_BCO", "CJ-BCO")
             cliente = get_col(row, "CLIENTE")
@@ -763,6 +919,7 @@ async def upload_base(request: Request, file: UploadFile = File(...), db: Sessio
                     "chassi": ch_raw,
                     "modelo": modelo,
                     "linha": linha,
+                    "semana_producao": semana_producao,
                     "ordem": len(registros) + 1,
                     "ar_condicionado": ar_cond,
                     "cj_bco": cj_bco,

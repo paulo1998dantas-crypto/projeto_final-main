@@ -23,8 +23,8 @@
 </head>
 <body data-visao="{{ visao_atual }}" class="{% if modo_geral %}h-screen overflow-hidden bg-slate-950 text-white{% else %}bg-slate-50 min-h-screen{% endif %}">
     {% if modo_geral %}
-    <header class="h-14 border-b border-slate-800 bg-slate-900 px-3 text-white shadow-lg">
-        <div class="mx-auto flex h-full items-center justify-between gap-3">
+    <header class="h-16 overflow-x-auto border-b border-slate-800 bg-slate-900 px-3 text-white shadow-lg">
+        <div class="mx-auto flex h-full min-w-[1400px] items-center justify-between gap-3">
             <div class="flex min-w-0 items-center gap-3">
                 <div class="rounded-md bg-blue-600 px-2 py-1.5 text-sm font-black">JI</div>
                 <div class="min-w-0">
@@ -32,17 +32,44 @@
                     <p class="text-[10px] font-semibold text-slate-400">Todas as etapas em uma única tela</p>
                 </div>
             </div>
-            <div class="flex shrink-0 items-center gap-3 text-xs">
-                <div class="hidden items-center gap-1.5 text-slate-300 sm:flex">
+            <div class="flex shrink-0 items-center gap-2 text-xs">
+                <div class="hidden items-center gap-1.5 text-slate-300 xl:flex">
                     <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
                     <span id="kanban-status">Online</span>
-                    <span id="kanban-updated" class="text-slate-500"></span>
+                    <span id="kanban-updated" class="hidden text-slate-500 2xl:inline"></span>
                 </div>
-                <select id="linha-filtro" aria-label="Filtrar por linha" onchange="filtrarLinha(this.value)" class="rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 font-bold text-white outline-none focus:border-blue-500">
-                    <option value="" {% if not linha_atual %}selected{% endif %}>Todas as linhas</option>
-                    <option value="BÁSICA" {% if linha_atual == 'BÁSICA' %}selected{% endif %}>Linha Básica</option>
-                    <option value="EXECUTIVA" {% if linha_atual == 'EXECUTIVA' %}selected{% endif %}>Linha Executiva</option>
-                </select>
+                <form method="get" action="/" class="flex items-end gap-1.5 rounded-lg border border-slate-700 bg-slate-950/40 p-1">
+                    <input type="hidden" name="visao" value="geral">
+                    <label class="flex flex-col gap-0.5 text-[8px] font-black uppercase tracking-wide text-slate-500">
+                        Semana
+                        <select name="semana" aria-label="Filtrar por semana de produção" class="w-32 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-bold normal-case tracking-normal text-white outline-none focus:border-blue-500">
+                            <option value="" {% if not semana_atual %}selected{% endif %}>Todas as semanas</option>
+                            {% for semana in semanas_disponiveis %}
+                            <option value="{{ semana }}" {% if semana_atual == semana %}selected{% endif %}>Semana {{ semana }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    <label class="flex flex-col gap-0.5 text-[8px] font-black uppercase tracking-wide text-slate-500">
+                        Entrega de
+                        <input type="date" name="entrega_inicio" value="{{ entrega_inicio_atual }}" aria-label="Data inicial de entrega" class="w-[118px] rounded border border-slate-700 bg-slate-800 px-1.5 py-1 text-[10px] font-bold normal-case tracking-normal text-white outline-none focus:border-blue-500">
+                    </label>
+                    <label class="flex flex-col gap-0.5 text-[8px] font-black uppercase tracking-wide text-slate-500">
+                        Entrega até
+                        <input type="date" name="entrega_fim" value="{{ entrega_fim_atual }}" aria-label="Data final de entrega" class="w-[118px] rounded border border-slate-700 bg-slate-800 px-1.5 py-1 text-[10px] font-bold normal-case tracking-normal text-white outline-none focus:border-blue-500">
+                    </label>
+                    <label class="flex flex-col gap-0.5 text-[8px] font-black uppercase tracking-wide text-slate-500">
+                        Linha
+                        <select name="linha" aria-label="Filtrar por linha" class="w-32 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-bold normal-case tracking-normal text-white outline-none focus:border-blue-500">
+                            <option value="" {% if not linha_atual %}selected{% endif %}>Todas as linhas</option>
+                            <option value="BÁSICA" {% if linha_atual == 'BÁSICA' %}selected{% endif %}>Linha Básica</option>
+                            <option value="EXECUTIVA" {% if linha_atual == 'EXECUTIVA' %}selected{% endif %}>Linha Executiva</option>
+                        </select>
+                    </label>
+                    <button type="submit" class="rounded bg-blue-600 px-2.5 py-1.5 text-[10px] font-black uppercase text-white hover:bg-blue-500">Filtrar</button>
+                    {% if filtros_gerais_ativos %}
+                    <a href="/?visao=geral" class="rounded px-1.5 py-1.5 text-[9px] font-bold text-slate-400 hover:text-white">Limpar</a>
+                    {% endif %}
+                </form>
                 <div class="rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5">
                     <span class="text-slate-400">Ativos</span>
                     <strong id="total-veiculos" class="ml-1 text-white">{{ total_veiculos }}</strong>
@@ -75,7 +102,7 @@
     </header>
     {% endif %}
 
-    <main class="{% if modo_geral %}h-[calc(100vh-3.5rem)] max-w-none p-2{% else %}max-w-7xl mx-auto p-3 md:p-6{% endif %}">
+    <main class="{% if modo_geral %}h-[calc(100vh-4rem)] max-w-none p-2{% else %}max-w-7xl mx-auto p-3 md:p-6{% endif %}">
         {% if not modo_geral %}
         <section class="bg-white p-4 md:p-6 rounded-xl md:rounded-2xl shadow-sm border border-slate-200 mb-4 md:mb-8">
             <form method="get" action="/" class="grid grid-cols-1 {% if modo_gerencial %}md:grid-cols-[1fr_auto_auto_auto]{% else %}md:grid-cols-[1fr_auto_auto_auto_auto]{% endif %} gap-3 md:gap-4">
@@ -137,14 +164,14 @@
                         </div>
                         <div class="visao-geral-list min-h-0 flex-1 space-y-1 overflow-y-auto p-1">
                             {% for card in coluna.cards %}
-                            <a href="/veiculo/{{ card.chassi }}" title="{{ card.modelo }} | {{ card.chassi }} | {{ card.linha }} | {{ card.cliente }} | {{ card.destino }}" class="block rounded-md border border-slate-800 bg-slate-950/70 p-1.5 hover:border-blue-500 hover:bg-slate-900 transition">
+                            <a href="/veiculo/{{ card.chassi }}" title="{{ card.modelo }} | {{ card.chassi }} | {{ card.linha }} | Semana {{ card.semana_producao }} | {{ card.cliente }} | {{ card.destino }}" class="block rounded-md border border-slate-800 bg-slate-950/70 p-1.5 hover:border-blue-500 hover:bg-slate-900 transition">
                                 <div class="flex min-w-0 items-center justify-between gap-1">
                                     <p class="truncate text-[clamp(9px,0.62vw,11px)] font-black uppercase leading-tight text-white">{{ card.modelo }}</p>
                                     <span class="shrink-0 rounded px-1 py-0.5 text-[8px] font-black {% if card.status == 'ENTREGA' %}bg-emerald-400/15 text-emerald-300{% elif card.status == 'PARCIAL' %}bg-amber-400/15 text-amber-300{% else %}bg-rose-400/15 text-rose-300{% endif %}">{% if card.status == "ENTREGA" %}E{% elif card.status == "PARCIAL" %}P{% else %}N{% endif %}</span>
                                 </div>
                                 <p class="mt-0.5 truncate font-mono text-[8px] font-semibold leading-tight text-slate-400">{{ card.chassi }}</p>
                                 <div class="mt-1 flex items-center justify-between gap-1 text-[8px] font-bold text-slate-400">
-                                    <span class="truncate">{{ card.data_entrega }}</span>
+                                    <span class="truncate">{{ card.data_entrega }}{% if card.semana_producao != '-' %} · Sem. {{ card.semana_producao }}{% endif %}</span>
                                     <span class="truncate text-right">{{ card.localizacao }}</span>
                                 </div>
                                 <div class="mt-1 h-0.5 overflow-hidden rounded bg-slate-800">
@@ -198,6 +225,9 @@
                                     <p class="truncate" title="{{ card.destino }}"><span class="font-bold text-slate-400">Destino:</span> {{ card.destino }}</p>
                                     <div class="flex flex-wrap gap-1 pt-0.5">
                                         <span class="rounded bg-slate-100 px-1.5 py-0.5 font-bold text-slate-500">{{ card.data_entrega }}</span>
+                                        {% if card.semana_producao != "-" %}
+                                        <span class="rounded bg-violet-50 px-1.5 py-0.5 font-bold text-violet-700">Sem. {{ card.semana_producao }}</span>
+                                        {% endif %}
                                         <span class="rounded bg-slate-100 px-1.5 py-0.5 font-bold text-slate-500">Loc. {{ card.localizacao }}</span>
                                         {% if card.ar_condicionado != "-" %}
                                         <span class="rounded bg-blue-50 px-1.5 py-0.5 font-bold text-blue-700">{{ card.ar_condicionado }}</span>
@@ -376,7 +406,8 @@ function renderKanbanCard(card) {
                 ? "bg-amber-400/15 text-amber-300"
                 : "bg-rose-400/15 text-rose-300";
         const statusLabel = card.status === "ENTREGA" ? "E" : card.status === "PARCIAL" ? "P" : "N";
-        const titulo = [card.modelo, card.chassi, card.linha, card.cliente, card.destino].map(escapeHtml).join(" | ");
+        const titulo = [card.modelo, card.chassi, card.linha, `Semana ${card.semana_producao || "-"}`, card.cliente, card.destino].map(escapeHtml).join(" | ");
+        const semana = card.semana_producao && card.semana_producao !== "-" ? ` · Sem. ${escapeHtml(card.semana_producao)}` : "";
         return `
             <a href="/veiculo/${encodeURIComponent(card.chassi)}" title="${titulo}" class="block rounded-md border border-slate-800 bg-slate-950/70 p-1.5 hover:border-blue-500 hover:bg-slate-900 transition">
                 <div class="flex min-w-0 items-center justify-between gap-1">
@@ -385,7 +416,7 @@ function renderKanbanCard(card) {
                 </div>
                 <p class="mt-0.5 truncate font-mono text-[8px] font-semibold leading-tight text-slate-400">${escapeHtml(card.chassi)}</p>
                 <div class="mt-1 flex items-center justify-between gap-1 text-[8px] font-bold text-slate-400">
-                    <span class="truncate">${escapeHtml(card.data_entrega)}</span>
+                    <span class="truncate">${escapeHtml(card.data_entrega)}${semana}</span>
                     <span class="truncate text-right">${escapeHtml(card.localizacao)}</span>
                 </div>
                 <div class="mt-1 h-0.5 overflow-hidden rounded bg-slate-800">
@@ -396,6 +427,9 @@ function renderKanbanCard(card) {
     }
     const arCondicionado = card.ar_condicionado && card.ar_condicionado !== "-"
         ? `<span class="rounded bg-blue-50 px-1.5 py-0.5 font-bold text-blue-700">${escapeHtml(card.ar_condicionado)}</span>`
+        : "";
+    const semanaProducao = card.semana_producao && card.semana_producao !== "-"
+        ? `<span class="rounded bg-violet-50 px-1.5 py-0.5 font-bold text-violet-700">Sem. ${escapeHtml(card.semana_producao)}</span>`
         : "";
     return `
         <a href="/veiculo/${encodeURIComponent(card.chassi)}" class="block rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm hover:border-blue-400 hover:shadow-md transition">
@@ -411,6 +445,7 @@ function renderKanbanCard(card) {
                 <p class="truncate" title="${escapeHtml(card.destino)}"><span class="font-bold text-slate-400">Destino:</span> ${escapeHtml(card.destino)}</p>
                 <div class="flex flex-wrap gap-1 pt-0.5">
                     <span class="rounded bg-slate-100 px-1.5 py-0.5 font-bold text-slate-500">${escapeHtml(card.data_entrega)}</span>
+                    ${semanaProducao}
                     <span class="rounded bg-slate-100 px-1.5 py-0.5 font-bold text-slate-500">Loc. ${escapeHtml(card.localizacao)}</span>
                     ${arCondicionado}
                 </div>
@@ -505,17 +540,6 @@ async function atualizarKanban() {
     } catch (error) {
         if (status) status.textContent = "Reconectando";
     }
-}
-
-function filtrarLinha(linha) {
-    const params = new URLSearchParams(window.location.search);
-    if (linha) {
-        params.set("linha", linha);
-    } else {
-        params.delete("linha");
-    }
-    params.set("visao", "geral");
-    window.location.assign(`/?${params.toString()}`);
 }
 
 function atualizarRelogio() {

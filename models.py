@@ -10,6 +10,7 @@ class Veiculo(Base):
     chassi = Column(String, primary_key=True, index=True)
     modelo = Column(String)
     linha = Column(String)
+    semana_producao = Column(String)
     ordem = Column(Integer)
     ar_condicionado = Column(String)
     cj_bco = Column(String)
