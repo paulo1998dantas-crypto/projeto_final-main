@@ -492,8 +492,9 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
         return RedirectResponse(url="/login", status_code=303)
     query = db.query(models.Veiculo)
     visao_param = safe_str(visao).lower()
-    visao_atual = visao_param if visao_param in ["resumida", "completa", "gerencial"] else "resumida"
-    modo_gerencial = visao_atual == "gerencial"
+    visao_atual = visao_param if visao_param in ["resumida", "completa", "gerencial", "geral"] else "resumida"
+    modo_geral = visao_atual == "geral"
+    modo_gerencial = visao_atual in ["gerencial", "geral"]
     modo_liberacao = is_liberacao_filter(etapa) and not modo_gerencial
     if modo_liberacao:
         visao_atual = "resumida"
@@ -593,7 +594,9 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
             "modo_liberacao": modo_liberacao,
             "modo_resumido": modo_resumido,
             "modo_gerencial": modo_gerencial,
+            "modo_geral": modo_geral,
             "visao_atual": visao_atual,
+            "total_veiculos": len(veiculos_exibicao),
             "kanban_colunas": montar_kanban(veiculos_exibicao, status_maps) if modo_gerencial else [],
             "current_user": current_user
         }
@@ -608,6 +611,7 @@ async def kanban_dados(request: Request, db: Session = Depends(database.get_db),
     return {
         "status": "ok",
         "atualizado_em": datetime.datetime.now(LOCAL_TZ).strftime("%H:%M:%S"),
+        "total_veiculos": len(veiculos),
         "colunas": montar_kanban(veiculos, status_maps),
     }
 

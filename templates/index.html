@@ -5,8 +5,49 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <script src="https://cdn.tailwindcss.com"></script>
     <title>Acompanhamento de Produção</title>
+    <style>
+        .visao-geral-board {
+            grid-template-columns: repeat(12, minmax(0, 1fr));
+        }
+        .visao-geral-list {
+            scrollbar-width: thin;
+            scrollbar-color: #334155 transparent;
+        }
+        .visao-geral-list::-webkit-scrollbar { width: 4px; }
+        .visao-geral-list::-webkit-scrollbar-thumb { background: #334155; border-radius: 999px; }
+        @media (max-width: 1400px) {
+            .visao-geral-board { min-width: 1320px; }
+        }
+    </style>
 </head>
-<body class="bg-slate-50 min-h-screen">
+<body data-visao="{{ visao_atual }}" class="{% if modo_geral %}h-screen overflow-hidden bg-slate-950 text-white{% else %}bg-slate-50 min-h-screen{% endif %}">
+    {% if modo_geral %}
+    <header class="h-14 border-b border-slate-800 bg-slate-900 px-3 text-white shadow-lg">
+        <div class="mx-auto flex h-full items-center justify-between gap-3">
+            <div class="flex min-w-0 items-center gap-3">
+                <div class="rounded-md bg-blue-600 px-2 py-1.5 text-sm font-black">JI</div>
+                <div class="min-w-0">
+                    <h1 class="truncate text-sm font-black uppercase tracking-wide">Visão GERAL</h1>
+                    <p class="text-[10px] font-semibold text-slate-400">Todas as etapas em uma única tela</p>
+                </div>
+            </div>
+            <div class="flex shrink-0 items-center gap-3 text-xs">
+                <div class="hidden items-center gap-1.5 text-slate-300 sm:flex">
+                    <span class="h-2 w-2 rounded-full bg-emerald-400"></span>
+                    <span id="kanban-status">Online</span>
+                    <span id="kanban-updated" class="text-slate-500"></span>
+                </div>
+                <div class="rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5">
+                    <span class="text-slate-400">Veículos</span>
+                    <strong id="total-veiculos" class="ml-1 text-white">{{ total_veiculos }}</strong>
+                </div>
+                <time id="relogio-tv" class="w-[68px] text-center font-mono text-sm font-black text-white"></time>
+                <button id="botao-tela-cheia" type="button" onclick="alternarTelaCheia()" class="rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 font-bold hover:bg-slate-700">⛶ Tela cheia</button>
+                <a href="/?visao=gerencial" class="rounded-md bg-blue-600 px-2.5 py-1.5 font-bold hover:bg-blue-500">Painel</a>
+            </div>
+        </div>
+    </header>
+    {% else %}
     <header class="bg-slate-900 p-3 md:p-4 text-white shadow-lg">
         <div class="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-3 md:gap-4">
             <div class="flex items-center gap-3">
@@ -26,8 +67,10 @@
             </div>
         </div>
     </header>
+    {% endif %}
 
-    <main class="max-w-7xl mx-auto p-3 md:p-6">
+    <main class="{% if modo_geral %}h-[calc(100vh-3.5rem)] max-w-none p-2{% else %}max-w-7xl mx-auto p-3 md:p-6{% endif %}">
+        {% if not modo_geral %}
         <section class="bg-white p-4 md:p-6 rounded-xl md:rounded-2xl shadow-sm border border-slate-200 mb-4 md:mb-8">
             <form method="get" action="/" class="grid grid-cols-1 {% if modo_gerencial %}md:grid-cols-[1fr_auto_auto_auto]{% else %}md:grid-cols-[1fr_auto_auto_auto_auto]{% endif %} gap-3 md:gap-4">
                 <div class="flex-1 relative">
@@ -49,6 +92,7 @@
                     <option value="resumida" {% if visao_atual == 'resumida' %}selected{% endif %}>Visão resumida</option>
                     <option value="completa" {% if visao_atual == 'completa' %}selected{% endif %}>Visão completa</option>
                     <option value="gerencial" {% if visao_atual == 'gerencial' %}selected{% endif %}>Visão gerencial</option>
+                    <option value="geral" {% if visao_atual == 'geral' %}selected{% endif %}>Visão GERAL</option>
                 </select>
 
                 <button type="submit" class="bg-slate-900 text-white px-6 md:px-8 py-3 rounded-lg md:rounded-xl font-bold hover:bg-slate-800 transition shadow-md">
@@ -60,8 +104,46 @@
                 </a>
             </form>
         </section>
+        {% endif %}
 
         {% if modo_gerencial %}
+        {% if modo_geral %}
+        <section class="h-full">
+            <div id="kanban-scroll" class="h-full overflow-x-auto">
+                <div id="kanban-board" class="visao-geral-board grid h-full gap-1.5">
+                    {% for coluna in kanban_colunas %}
+                    <section data-column-id="{{ coluna.id }}" class="flex min-w-0 flex-col overflow-hidden rounded-lg border border-slate-800 bg-slate-900/80">
+                        <div class="flex min-h-11 items-center justify-between gap-1 border-b border-slate-800 bg-slate-900 px-2 py-1.5 shadow-sm">
+                            <div class="min-w-0">
+                                <p class="truncate text-[clamp(9px,0.65vw,12px)] font-black uppercase tracking-tight text-slate-100" title="{{ coluna.titulo }}">{{ coluna.titulo }}</p>
+                                <p class="truncate text-[8px] font-bold uppercase tracking-wide text-slate-500">{{ coluna.grupo }}</p>
+                            </div>
+                            <span class="shrink-0 rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-black text-blue-300">{{ coluna.total }}</span>
+                        </div>
+                        <div class="visao-geral-list min-h-0 flex-1 space-y-1 overflow-y-auto p-1">
+                            {% for card in coluna.cards %}
+                            <a href="/veiculo/{{ card.chassi }}" title="{{ card.modelo }} | {{ card.chassi }} | {{ card.cliente }} | {{ card.destino }}" class="block rounded-md border border-slate-800 bg-slate-950/70 p-1.5 hover:border-blue-500 hover:bg-slate-900 transition">
+                                <div class="flex min-w-0 items-center justify-between gap-1">
+                                    <p class="truncate text-[clamp(9px,0.62vw,11px)] font-black uppercase leading-tight text-white">{{ card.modelo }}</p>
+                                    <span class="shrink-0 rounded px-1 py-0.5 text-[8px] font-black {% if card.status == 'PARCIAL' %}bg-amber-400/15 text-amber-300{% else %}bg-rose-400/15 text-rose-300{% endif %}">{{ "P" if card.status == "PARCIAL" else "N" }}</span>
+                                </div>
+                                <p class="mt-0.5 truncate font-mono text-[8px] font-semibold leading-tight text-slate-400">{{ card.chassi }}</p>
+                                <div class="mt-1 flex items-center justify-between gap-1 text-[8px] font-bold text-slate-400">
+                                    <span class="truncate">{{ card.data_entrega }}</span>
+                                    <span class="truncate text-right">{{ card.localizacao }}</span>
+                                </div>
+                                <div class="mt-1 h-0.5 overflow-hidden rounded bg-slate-800">
+                                    <div style="width:{{ card.progresso }}%" class="h-full bg-blue-500"></div>
+                                </div>
+                            </a>
+                            {% endfor %}
+                        </div>
+                    </section>
+                    {% endfor %}
+                </div>
+            </div>
+        </section>
+        {% else %}
         <section class="space-y-3">
             <div class="flex flex-col md:flex-row md:items-center justify-between gap-2">
                 <div>
@@ -121,6 +203,7 @@
                 </div>
             </div>
         </section>
+        {% endif %}
         {% else %}
         <div class="grid grid-cols-1 md:grid-cols-2 {% if modo_resumido %}lg:grid-cols-5{% else %}lg:grid-cols-4{% endif %} gap-3 md:gap-6">
             {% for v in veiculos %}
@@ -226,7 +309,7 @@
         </div>
         {% endif %}
 
-        {% if veiculos|length == 0 %}
+        {% if veiculos|length == 0 and not modo_geral %}
         <div class="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-slate-200 mt-6">
             <p class="text-slate-400 font-medium">Nenhum veículo encontrado para esta busca.</p>
         </div>
@@ -264,8 +347,33 @@ function kanbanStatusBadge(status) {
         : '<span class="shrink-0 rounded bg-rose-50 px-1.5 py-0.5 text-[10px] font-black text-rose-700">NOK</span>';
 }
 
+const visaoGeral = document.body.dataset.visao === "geral";
+
 function renderKanbanCard(card) {
     const progresso = Number(card.progresso || 0);
+    if (visaoGeral) {
+        const statusClass = card.status === "PARCIAL"
+            ? "bg-amber-400/15 text-amber-300"
+            : "bg-rose-400/15 text-rose-300";
+        const statusLabel = card.status === "PARCIAL" ? "P" : "N";
+        const titulo = [card.modelo, card.chassi, card.cliente, card.destino].map(escapeHtml).join(" | ");
+        return `
+            <a href="/veiculo/${encodeURIComponent(card.chassi)}" title="${titulo}" class="block rounded-md border border-slate-800 bg-slate-950/70 p-1.5 hover:border-blue-500 hover:bg-slate-900 transition">
+                <div class="flex min-w-0 items-center justify-between gap-1">
+                    <p class="truncate text-[clamp(9px,0.62vw,11px)] font-black uppercase leading-tight text-white">${escapeHtml(card.modelo)}</p>
+                    <span class="shrink-0 rounded px-1 py-0.5 text-[8px] font-black ${statusClass}">${statusLabel}</span>
+                </div>
+                <p class="mt-0.5 truncate font-mono text-[8px] font-semibold leading-tight text-slate-400">${escapeHtml(card.chassi)}</p>
+                <div class="mt-1 flex items-center justify-between gap-1 text-[8px] font-bold text-slate-400">
+                    <span class="truncate">${escapeHtml(card.data_entrega)}</span>
+                    <span class="truncate text-right">${escapeHtml(card.localizacao)}</span>
+                </div>
+                <div class="mt-1 h-0.5 overflow-hidden rounded bg-slate-800">
+                    <div style="width:${Math.max(0, Math.min(100, progresso))}%" class="h-full bg-blue-500"></div>
+                </div>
+            </a>
+        `;
+    }
     const arCondicionado = card.ar_condicionado && card.ar_condicionado !== "-"
         ? `<span class="rounded bg-blue-50 px-1.5 py-0.5 font-bold text-blue-700">${escapeHtml(card.ar_condicionado)}</span>`
         : "";
@@ -299,6 +407,20 @@ function renderKanbanCard(card) {
 
 function renderKanbanColumn(coluna) {
     const cards = (coluna.cards || []).map(renderKanbanCard).join("");
+    if (visaoGeral) {
+        return `
+            <section data-column-id="${escapeHtml(coluna.id)}" class="flex min-w-0 flex-col overflow-hidden rounded-lg border border-slate-800 bg-slate-900/80">
+                <div class="flex min-h-11 items-center justify-between gap-1 border-b border-slate-800 bg-slate-900 px-2 py-1.5 shadow-sm">
+                    <div class="min-w-0">
+                        <p class="truncate text-[clamp(9px,0.65vw,12px)] font-black uppercase tracking-tight text-slate-100" title="${escapeHtml(coluna.titulo)}">${escapeHtml(coluna.titulo)}</p>
+                        <p class="truncate text-[8px] font-bold uppercase tracking-wide text-slate-500">${escapeHtml(coluna.grupo)}</p>
+                    </div>
+                    <span class="shrink-0 rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-black text-blue-300">${Number(coluna.total || 0)}</span>
+                </div>
+                <div class="visao-geral-list min-h-0 flex-1 space-y-1 overflow-y-auto p-1">${cards}</div>
+            </section>
+        `;
+    }
     return `
         <section class="w-64 shrink-0 rounded-xl border border-slate-200 bg-slate-100/70">
             <div class="sticky top-0 z-10 flex items-center justify-between border-b border-slate-200 bg-slate-100/95 px-3 py-2.5 rounded-t-xl">
@@ -319,6 +441,7 @@ async function atualizarKanban() {
 
     const status = document.getElementById("kanban-status");
     const updated = document.getElementById("kanban-updated");
+    const totalVeiculos = document.getElementById("total-veiculos");
     const scroll = document.getElementById("kanban-scroll");
     const params = new URLSearchParams(window.location.search);
     params.delete("etapa");
@@ -329,18 +452,60 @@ async function atualizarKanban() {
         if (!res.ok) throw new Error("Falha ao atualizar");
         const data = await res.json();
         const scrollLeft = scroll ? scroll.scrollLeft : 0;
+        const columnScrollPositions = new Map(
+            [...board.querySelectorAll("[data-column-id]")].map((column) => [
+                column.dataset.columnId,
+                column.querySelector(".visao-geral-list")?.scrollTop || 0,
+            ])
+        );
         board.innerHTML = (data.colunas || []).map(renderKanbanColumn).join("");
         if (scroll) scroll.scrollLeft = scrollLeft;
+        for (const column of board.querySelectorAll("[data-column-id]")) {
+            const list = column.querySelector(".visao-geral-list");
+            if (list) list.scrollTop = columnScrollPositions.get(column.dataset.columnId) || 0;
+        }
         if (status) status.textContent = "Online";
         if (updated) updated.textContent = data.atualizado_em ? `Atualizado ${data.atualizado_em}` : "";
+        if (totalVeiculos) totalVeiculos.textContent = Number(data.total_veiculos || 0);
     } catch (error) {
         if (status) status.textContent = "Reconectando";
     }
 }
 
+function atualizarRelogio() {
+    const relogio = document.getElementById("relogio-tv");
+    if (relogio) {
+        relogio.textContent = new Intl.DateTimeFormat("pt-BR", {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false,
+        }).format(new Date());
+    }
+}
+
+async function alternarTelaCheia() {
+    if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen?.();
+    } else {
+        await document.exitFullscreen?.();
+    }
+}
+
+function atualizarBotaoTelaCheia() {
+    const botao = document.getElementById("botao-tela-cheia");
+    if (botao) botao.textContent = document.fullscreenElement ? "Sair da tela cheia" : "⛶ Tela cheia";
+}
+
 if (document.getElementById("kanban-board")) {
     atualizarKanban();
     setInterval(atualizarKanban, 15000);
+}
+
+if (document.getElementById("relogio-tv")) {
+    atualizarRelogio();
+    setInterval(atualizarRelogio, 1000);
+    document.addEventListener("fullscreenchange", atualizarBotaoTelaCheia);
 }
 </script>
 </html>
