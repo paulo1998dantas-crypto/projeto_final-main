@@ -46,6 +46,8 @@ def ensure_columns():
             conn.execute(text("ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS ar_condicionado VARCHAR"))
         if "ordem" not in veiculo_cols:
             conn.execute(text("ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS ordem INTEGER"))
+        if "linha" not in veiculo_cols:
+            conn.execute(text("ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS linha VARCHAR"))
         if "cj_bco" not in veiculo_cols:
             conn.execute(text("ALTER TABLE veiculos ADD COLUMN IF NOT EXISTS cj_bco VARCHAR"))
         if "cliente" not in veiculo_cols:
@@ -97,21 +99,20 @@ async def no_cache_headers(request: Request, call_next):
     return response
 
 ETAPAS_PRODUCAO = [
+    "PREP",
+    "EXPE.",
+    "SERRA.",
+    "PLOTA.",
     "VIDROS",
     "A/C",
-    "PREP",
-    "SERRA.",
-    "EXPE.",
     "DESMONT",
-    "ELÉTRICA",
     "REVEST",
+    "ELÉTRICA",
     "BCO",
     "ACESSÓ.",
-    "PLOTA.",
-    "LIBERA."
 ]
 
-ETAPAS_STATUS_ATUAL = ["VIDROS", "A/C", "DESMONT", "REVEST", "BCO", "LIBERA."]
+ETAPAS_STATUS_ATUAL = ["VIDROS", "A/C", "DESMONT", "REVEST", "ELÉTRICA", "BCO", "ACESSÓ."]
 
 ETAPAS_FILTRO = [e for e in ETAPAS_PRODUCAO if e != "A/C"] + ["GE", "CLIM", "ENTREGAS"]
 
@@ -140,11 +141,14 @@ def normalize_status(value) -> str:
     val = safe_str(value).upper()
     if val in ["S", "SIM", "OK"]:
         return "SIM"
-    if val in ["N", "NAO", "NÃO", "X"]:
+    if val in ["N", "NAO", "NÃO", "NOK", "X"]:
         return "NÃO"
-    if val in ["?", "PARCIAL"]:
+    if val in ["?", "P", "PARCIAL"]:
         return "PARCIAL"
     return "N/A"
+
+def status_upload_valido(value) -> bool:
+    return normalize_filter(value) in ["S", "SIM", "OK", "N", "NAO", "NOK", "X", "?", "P", "PARCIAL", "N/A", "NA"]
 
 def parse_local_dt(value):
     if value is None or (hasattr(pd, "isna") and pd.isna(value)) or value == "":
@@ -287,6 +291,17 @@ def normalize_filter(value: str) -> str:
         if not unicodedata.combining(ch)
     )
 
+def normalize_chassi(value) -> str:
+    return "".join(safe_str(value).upper().split())
+
+def normalize_linha(value) -> str:
+    linha = normalize_filter(value)
+    if linha in ["BASICA", "LINHA BASICA", "BASIC"]:
+        return "BÁSICA"
+    if linha in ["EXECUTIVA", "LINHA EXECUTIVA", "EXEC"]:
+        return "EXECUTIVA"
+    return ""
+
 def is_liberacao_filter(value: str) -> bool:
     return normalize_filter(value) in ["LIBERACAO", "ENTREGAS"]
 
@@ -317,32 +332,31 @@ def etapa_pendente(status_map, etapa):
 
 ETAPA_REGRAS = {
     "VIDROS": lambda s: etapa_pendente(s, "VIDROS"),
-    "A/C": lambda s: etapa_pendente(s, "A/C"),
+    "A/C": lambda s: s.get("VIDROS") in STATUS_CONCLUIDO and etapa_pendente(s, "A/C"),
     "PREP": lambda s: etapa_pendente(s, "PREP"),
     "SERRA.": lambda s: etapa_pendente(s, "SERRA."),
     "EXPE.": lambda s: etapa_pendente(s, "EXPE."),
-    "DESMONT": lambda s: s.get("VIDROS") in ["SIM", "N/A"] and s.get("A/C") in ["SIM", "N/A"] and etapa_pendente(s, "DESMONT"),
-    "ELÉTRICA": lambda s: s.get("DESMONT") in ["SIM", "N/A"] and etapa_pendente(s, "ELÉTRICA"),
-    "REVEST": lambda s: s.get("DESMONT") in ["SIM", "N/A"] and etapa_pendente(s, "REVEST"),
-    "BCO": lambda s: s.get("REVEST") in ["SIM", "N/A"] and etapa_pendente(s, "BCO"),
-    "ACESSÓ.": lambda s: etapa_pendente(s, "ACESSÓ."),
     "PLOTA.": lambda s: etapa_pendente(s, "PLOTA."),
-    "LIBERA.": lambda s: s.get("BCO") in ["SIM", "N/A"] and etapa_pendente(s, "LIBERA.")
+    "DESMONT": lambda s: s.get("VIDROS") in ["SIM", "N/A"] and s.get("A/C") in ["SIM", "N/A"] and etapa_pendente(s, "DESMONT"),
+    "REVEST": lambda s: s.get("DESMONT") in STATUS_CONCLUIDO and etapa_pendente(s, "REVEST"),
+    "ELÉTRICA": lambda s: s.get("REVEST") in STATUS_CONCLUIDO and etapa_pendente(s, "ELÉTRICA"),
+    "BCO": lambda s: s.get("ELÉTRICA") in STATUS_CONCLUIDO and etapa_pendente(s, "BCO"),
+    "ACESSÓ.": lambda s: s.get("BCO") in STATUS_CONCLUIDO and etapa_pendente(s, "ACESSÓ."),
 }
 
 KANBAN_COLUNAS = [
-    {"id": "prep", "titulo": "Preparação", "etapa": "PREP", "grupo": "Paralelas"},
-    {"id": "serra", "titulo": "Serralheria", "etapa": "SERRA.", "grupo": "Paralelas"},
-    {"id": "expe", "titulo": "Expedição", "etapa": "EXPE.", "grupo": "Paralelas"},
-    {"id": "vidros", "titulo": "VIDROS", "etapa": "VIDROS", "grupo": "Produção"},
-    {"id": "ac", "titulo": "Ar condicionado", "etapa": "A/C", "grupo": "GE e CLIM"},
-    {"id": "desmont", "titulo": "DESMONT", "etapa": "DESMONT", "grupo": "Produção"},
-    {"id": "revest", "titulo": "REVEST", "etapa": "REVEST", "grupo": "Produção"},
-    {"id": "eletrica", "titulo": "ELÉTRICA", "etapa": "ELÉTRICA", "grupo": "Produção"},
-    {"id": "bco", "titulo": "BCO", "etapa": "BCO", "grupo": "Produção"},
-    {"id": "acesso", "titulo": "ACESSO.", "etapa": "ACESSÓ.", "grupo": "Produção"},
-    {"id": "plota", "titulo": "PLOTA.", "etapa": "PLOTA.", "grupo": "Produção"},
-    {"id": "libera", "titulo": "LIBERA", "etapa": "LIBERA.", "grupo": "Produção"},
+    {"id": "prep", "titulo": "PREPARAÇÃO", "etapa": "PREP", "grupo": "Independente"},
+    {"id": "expe", "titulo": "EXPEDIÇÃO", "etapa": "EXPE.", "grupo": "Independente"},
+    {"id": "serra", "titulo": "SERRALHERIA", "etapa": "SERRA.", "grupo": "Independente"},
+    {"id": "plota", "titulo": "PLOTA", "etapa": "PLOTA.", "grupo": "Independente"},
+    {"id": "vidros", "titulo": "VIDROS", "etapa": "VIDROS", "grupo": "Produtiva"},
+    {"id": "ac", "titulo": "AR COND.", "etapa": "A/C", "grupo": "Produtiva"},
+    {"id": "desmont", "titulo": "DESMONTAGEM", "etapa": "DESMONT", "grupo": "Produtiva"},
+    {"id": "revest", "titulo": "REVESTIMENTO", "etapa": "REVEST", "grupo": "Produtiva"},
+    {"id": "eletrica", "titulo": "ELÉTRICA", "etapa": "ELÉTRICA", "grupo": "Produtiva"},
+    {"id": "bco", "titulo": "BANCO", "etapa": "BCO", "grupo": "Produtiva"},
+    {"id": "acesso", "titulo": "ACESSÓRIO", "etapa": "ACESSÓ.", "grupo": "Produtiva"},
+    {"id": "entregas", "titulo": "ENTREGAS", "etapa": None, "grupo": "Por data"},
 ]
 
 def veiculo_tem_ar_condicionado(veiculo) -> bool:
@@ -370,33 +384,39 @@ def deve_exibir_no_kanban(veiculo, status_map, coluna):
     etapa = coluna["etapa"]
     coluna_id = coluna["id"]
 
-    if coluna_id == "ac":
-        return veiculo_tem_ar_condicionado(veiculo) and etapa_pendente_kanban(status_map, etapa)
-    if coluna_id in ["prep", "serra", "expe", "vidros"]:
+    if coluna_id == "entregas":
+        return True
+    if coluna_id in ["prep", "expe", "serra", "plota"]:
         return etapa_pendente_kanban(status_map, etapa)
+    if coluna_id == "vidros":
+        return etapa_pendente_kanban(status_map, etapa)
+    if coluna_id == "ac":
+        return (
+            veiculo_tem_ar_condicionado(veiculo)
+            and etapa_concluida_ou_na(veiculo, status_map, "VIDROS")
+            and etapa_pendente_kanban(status_map, etapa)
+        )
     if coluna_id == "desmont":
         return etapa_concluida_ou_na(veiculo, status_map, "VIDROS") and etapa_concluida_ou_na(veiculo, status_map, "A/C") and etapa_pendente_kanban(status_map, etapa)
-    if coluna_id in ["revest", "eletrica"]:
+    if coluna_id == "revest":
         return etapa_concluida_ou_na(veiculo, status_map, "DESMONT") and etapa_pendente_kanban(status_map, etapa)
+    if coluna_id == "eletrica":
+        return etapa_concluida_ou_na(veiculo, status_map, "REVEST") and etapa_pendente_kanban(status_map, etapa)
     if coluna_id == "bco":
         return (
             veiculo_tem_banco(veiculo)
-            and etapa_concluida_ou_na(veiculo, status_map, "REVEST")
             and etapa_concluida_ou_na(veiculo, status_map, "ELÉTRICA")
             and etapa_pendente_kanban(status_map, etapa)
         )
     if coluna_id == "acesso":
         return etapa_concluida_ou_na(veiculo, status_map, "BCO") and etapa_pendente_kanban(status_map, etapa)
-    if coluna_id == "plota":
-        return etapa_concluida_ou_na(veiculo, status_map, "ACESSÓ.") and etapa_pendente_kanban(status_map, etapa)
-    if coluna_id == "libera":
-        return etapa_concluida_ou_na(veiculo, status_map, "PLOTA.") and etapa_pendente_kanban(status_map, etapa)
     return False
 
 def montar_card_kanban(veiculo, status_map, etapa):
     return {
         "chassi": veiculo.chassi,
         "modelo": veiculo.modelo or "-",
+        "linha": veiculo.linha or "NÃO INFORMADA",
         "cliente": veiculo.cliente or "-",
         "destino": veiculo.destino or "-",
         "data_entrega": veiculo.data_entrega_fmt or "-",
@@ -404,14 +424,23 @@ def montar_card_kanban(veiculo, status_map, etapa):
         "ar_condicionado": veiculo.ar_condicionado or "-",
         "cj_bco": veiculo.cj_bco or "-",
         "progresso": veiculo.progresso,
-        "status": status_etapa(status_map, etapa),
+        "status": "ENTREGA" if etapa is None else status_etapa(status_map, etapa),
     }
+
+def data_entrega_ordenacao(veiculo):
+    data = veiculo.data_entrega
+    if not data:
+        return (1, datetime.datetime.max, veiculo.ordem or 0)
+    if data.tzinfo is not None:
+        data = data.astimezone(LOCAL_TZ).replace(tzinfo=None)
+    return (0, data, veiculo.ordem or 0)
 
 def montar_kanban(veiculos, status_maps):
     colunas = []
     for coluna in KANBAN_COLUNAS:
         cards = []
-        for veiculo in veiculos:
+        veiculos_coluna = sorted(veiculos, key=data_entrega_ordenacao) if coluna["id"] == "entregas" else veiculos
+        for veiculo in veiculos_coluna:
             chassi_key = str(veiculo.chassi).strip()
             status_map = status_maps.get(chassi_key, {})
             if deve_exibir_no_kanban(veiculo, status_map, coluna):
@@ -423,9 +452,16 @@ def montar_kanban(veiculos, status_maps):
         })
     return colunas
 
-def carregar_veiculos_dashboard(db: Session, modelo: str = None):
-    query = db.query(models.Veiculo)
+def contar_chassis_ativos_kanban(colunas):
+    return len({
+        normalize_chassi(card.get("chassi"))
+        for coluna in colunas
+        if coluna.get("id") != "entregas"
+        for card in coluna.get("cards", [])
+        if normalize_chassi(card.get("chassi"))
+    })
 
+def aplicar_filtros_veiculos(query, modelo: str = None, linha: str = None):
     if modelo and modelo.strip():
         termo = f"%{modelo.strip().upper()}%"
         query = query.filter(
@@ -437,11 +473,21 @@ def carregar_veiculos_dashboard(db: Session, modelo: str = None):
                 func.upper(func.coalesce(cast(models.Veiculo.cliente, String), "")).like(termo),
                 func.upper(func.coalesce(cast(models.Veiculo.destino, String), "")).like(termo),
                 func.upper(func.coalesce(cast(models.Veiculo.data_entrega, String), "")).like(termo),
-                func.upper(func.coalesce(cast(models.Veiculo.localizacao, String), "")).like(termo)
+                func.upper(func.coalesce(cast(models.Veiculo.localizacao, String), "")).like(termo),
+                func.upper(func.coalesce(cast(models.Veiculo.linha, String), "")).like(termo)
             )
         )
 
-    veiculos_db = query.order_by(models.Veiculo.ordem.asc()).all()
+    linha_normalizada = normalize_linha(linha)
+    if linha_normalizada:
+        query = query.filter(func.upper(func.trim(models.Veiculo.linha)) == linha_normalizada)
+
+    return query
+
+def carregar_veiculos_dashboard(db: Session, modelo: str = None, linha: str = None):
+    query = aplicar_filtros_veiculos(db.query(models.Veiculo), modelo, linha)
+
+    veiculos_db = query.order_by(models.Veiculo.ordem.asc(), models.Veiculo.chassi.asc()).all()
 
     chassis = [str(v.chassi).strip() for v in veiculos_db]
     apontamentos = []
@@ -486,11 +532,11 @@ def carregar_veiculos_dashboard(db: Session, modelo: str = None):
 ensure_default_admin()
 
 @app.get("/")
-async def home(request: Request, db: Session = Depends(database.get_db), modelo: str = None, etapa: str = None, visao: str = "gerencial"):
+async def home(request: Request, db: Session = Depends(database.get_db), modelo: str = None, etapa: str = None, visao: str = "gerencial", linha: str = None):
     current_user = require_login(request, db)
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
-    query = db.query(models.Veiculo)
+    query = aplicar_filtros_veiculos(db.query(models.Veiculo), modelo, linha)
     visao_param = safe_str(visao).lower()
     visao_atual = visao_param if visao_param in ["resumida", "completa", "gerencial", "geral"] else "resumida"
     modo_geral = visao_atual == "geral"
@@ -500,24 +546,7 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
         visao_atual = "resumida"
     modo_resumido = modo_liberacao or visao_atual == "resumida"
 
-    # Filtragem por texto (Modelo, Chassi, Ar Condicionado, CJ. BCO, Localização)
-    # Adicionado func.coalesce para evitar que valores NULL quebrem a busca LIKE
-    if modelo and modelo.strip():
-        termo = f"%{modelo.strip().upper()}%"
-        query = query.filter(
-            or_(
-                func.upper(func.coalesce(cast(models.Veiculo.modelo, String), "")).like(termo),
-                func.upper(func.coalesce(cast(models.Veiculo.chassi, String), "")).like(termo),
-                func.upper(func.coalesce(cast(models.Veiculo.ar_condicionado, String), "")).like(termo),
-                func.upper(func.coalesce(cast(models.Veiculo.cj_bco, String), "")).like(termo),
-                func.upper(func.coalesce(cast(models.Veiculo.cliente, String), "")).like(termo),
-                func.upper(func.coalesce(cast(models.Veiculo.destino, String), "")).like(termo),
-                func.upper(func.coalesce(cast(models.Veiculo.data_entrega, String), "")).like(termo),
-                func.upper(func.coalesce(cast(models.Veiculo.localizacao, String), "")).like(termo)
-            )
-        )
-
-    veiculos_db = query.order_by(models.Veiculo.ordem.asc()).all()
+    veiculos_db = query.order_by(models.Veiculo.ordem.asc(), models.Veiculo.chassi.asc()).all()
     veiculos_exibicao = []
 
     chassis = [str(v.chassi).strip() for v in veiculos_db]
@@ -542,7 +571,7 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
 
         # Cria mapeamento de status atualizado para o veículo
         status_map = {
-            normalize_etapa(a.etapa): str(a.status).strip().upper()
+            normalize_etapa(a.etapa): normalize_status(a.status)
             for a in aponts
         }
         status_maps[chassi_key] = status_map
@@ -550,37 +579,35 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
         # Cálculo de progresso
         concluidos = sum(
             1 for e in ETAPAS_PRODUCAO
-            if status_map.get(e.upper()) in STATUS_CONCLUIDO
+            if status_map.get(normalize_etapa(e)) in STATUS_CONCLUIDO
         )
         v.progresso = int((concluidos / len(ETAPAS_PRODUCAO)) * 100) if ETAPAS_PRODUCAO else 0
 
         # Determinação da etapa atual
         v.etapa_atual = "FINALIZADO"
         for e in ETAPAS_STATUS_ATUAL:
-            if status_map.get(e.upper()) not in STATUS_CONCLUIDO:
+            if status_map.get(normalize_etapa(e)) not in STATUS_CONCLUIDO:
                 v.etapa_atual = e
                 break
 
         # FILTRAGEM POR ETAPA (Lógica de Negócio)
         if etapa and etapa.strip() and not modo_liberacao and not modo_gerencial:
-            filtro = etapa.strip().upper()
+            filtro = normalize_etapa(etapa)
             if filtro in ["GE", "CLIM"]:
-                status_map_s = {normalize_etapa(k): v.strip().upper() for k, v in status_map.items()}
-                if (v.ar_condicionado or "").strip().upper() == filtro and ETAPA_REGRAS["A/C"](status_map_s):
+                if normalize_filter(v.ar_condicionado) == filtro and ETAPA_REGRAS["A/C"](status_map):
                     veiculos_exibicao.append(v)
                 continue
             if filtro == "BCO":
                 banco_flag = (v.banco_presente or "").strip().upper()
                 if banco_flag in ["N", "NAO", "NÃO", "NAO TEM", "SEM", "0"]:
                     continue
-            # Normalização para garantir comparação correta
-            status_map_s = {normalize_etapa(k): v.strip().upper() for k, v in status_map.items()}
-            
             if filtro in ETAPA_REGRAS:
-                if ETAPA_REGRAS[filtro](status_map_s):
+                if ETAPA_REGRAS[filtro](status_map):
                     veiculos_exibicao.append(v)
         else:
             veiculos_exibicao.append(v)
+
+    kanban_colunas = montar_kanban(veiculos_exibicao, status_maps) if modo_gerencial else []
 
     return templates.TemplateResponse(
         request,
@@ -596,23 +623,25 @@ async def home(request: Request, db: Session = Depends(database.get_db), modelo:
             "modo_gerencial": modo_gerencial,
             "modo_geral": modo_geral,
             "visao_atual": visao_atual,
-            "total_veiculos": len(veiculos_exibicao),
-            "kanban_colunas": montar_kanban(veiculos_exibicao, status_maps) if modo_gerencial else [],
+            "linha_atual": normalize_linha(linha),
+            "total_veiculos": contar_chassis_ativos_kanban(kanban_colunas) if modo_gerencial else len({normalize_chassi(v.chassi) for v in veiculos_exibicao}),
+            "kanban_colunas": kanban_colunas,
             "current_user": current_user
         }
     )
 
 @app.get("/kanban_dados")
-async def kanban_dados(request: Request, db: Session = Depends(database.get_db), modelo: str = None):
+async def kanban_dados(request: Request, db: Session = Depends(database.get_db), modelo: str = None, linha: str = None):
     if not require_login(request, db):
         return JSONResponse({"status": "erro", "detail": "Login necessário"}, status_code=401)
 
-    veiculos, status_maps = carregar_veiculos_dashboard(db, modelo)
+    veiculos, status_maps = carregar_veiculos_dashboard(db, modelo, linha)
+    colunas = montar_kanban(veiculos, status_maps)
     return {
         "status": "ok",
         "atualizado_em": datetime.datetime.now(LOCAL_TZ).strftime("%H:%M:%S"),
-        "total_veiculos": len(veiculos),
-        "colunas": montar_kanban(veiculos, status_maps),
+        "total_veiculos": contar_chassis_ativos_kanban(colunas),
+        "colunas": colunas,
     }
 
 @app.get("/veiculo/{chassi}")
@@ -663,9 +692,9 @@ async def upload_base(request: Request, file: UploadFile = File(...), db: Sessio
         content = await file.read()
 
         df = (
-            pd.read_excel(io.BytesIO(content))
+            pd.read_excel(io.BytesIO(content), keep_default_na=False)
             if file.filename.endswith(".xlsx")
-            else pd.read_csv(io.BytesIO(content))
+            else pd.read_csv(io.BytesIO(content), keep_default_na=False)
         )
 
         df.columns = [str(c).upper().strip() for c in df.columns]
@@ -680,59 +709,99 @@ async def upload_base(request: Request, file: UploadFile = File(...), db: Sessio
             return ""
 
         etapas_col = {normalize_etapa(c): c for c in df.columns}
+        colunas_obrigatorias = ["CHASSI", "MMMV", "LINHA"]
+        faltantes = [coluna for coluna in colunas_obrigatorias if coluna not in df.columns]
+        if not any(coluna in df.columns for coluna in ["DATA DE ENTREGA", "DATA_ENTREGA", "DT ENTREGA", "ENTREGA"]):
+            faltantes.append("DATA DE ENTREGA")
+        etapas_faltantes = [etapa for etapa in ETAPAS_PRODUCAO if normalize_etapa(etapa) not in etapas_col]
+        if faltantes or etapas_faltantes:
+            detalhes = faltantes + etapas_faltantes
+            raise ValueError(f"Colunas obrigatórias ausentes: {', '.join(detalhes)}")
 
-        # Limpa dados anteriores para nova carga
-        db.query(models.Apontamento).delete()
-        db.query(models.Veiculo).delete()
-        db.commit()
+        registros = []
+        chassis_vistos = set()
 
-        for idx, row in df.iterrows():
-            ch_raw = str(row.get("CHASSI", "")).strip().split(".")[0]
+        for numero_linha, (_, row) in enumerate(df.iterrows(), start=2):
+            ch_raw = normalize_chassi(safe_str(row.get("CHASSI", "")).split(".")[0])
             if not ch_raw or ch_raw.lower() == "nan":
                 continue
+            if ch_raw in chassis_vistos:
+                raise ValueError(f"Chassi duplicado na linha {numero_linha}: {ch_raw}")
+            chassis_vistos.add(ch_raw)
 
-            modelo = str(row.get("MMMV", "")).strip().upper()
+            modelo = safe_str(row.get("MMMV", "")).upper()
+            if not modelo:
+                raise ValueError(f"MMMV não informado na linha {numero_linha} ({ch_raw})")
+
+            linha = normalize_linha(get_col(row, "LINHA", "TIPO DE LINHA", "LINHA DE PRODUÇÃO", "LINHA DE PRODUCAO"))
+            if not linha:
+                raise ValueError(f"LINHA inválida na linha {numero_linha} ({ch_raw}). Use BÁSICA ou EXECUTIVA.")
+
             ar_cond = get_col(row, "AR CONDICIONADO", "AR_CONDICIONADO", "AR-CONDICIONADO", "ARCONDICIONADO")
             cj_bco = get_col(row, "CJ. BCO", "CJ BCO", "CJ_BCO", "CJ-BCO")
             cliente = get_col(row, "CLIENTE")
             destino = get_col(row, "DESTINO")
             data_entrega = parse_data_entrega(get_col(row, "DATA DE ENTREGA", "DATA_ENTREGA", "DT ENTREGA", "ENTREGA"))
+            if not data_entrega:
+                raise ValueError(f"DATA DE ENTREGA inválida na linha {numero_linha} ({ch_raw})")
             localizacao = get_col(row, "LOCALIZACAO", "LOCALIZAÇÃO")
             banco_presente = get_col(row, "BANCO", "BANCO_PRESENTE", "POSSUI BANCO", "TEM BANCO")
             banco_comentario = get_col(row, "COMENTARIO BANCO", "COMENTARIO_BANCO", "BANCO OBS", "OBS BANCO")
 
-            db.add(models.Veiculo(
-                chassi=ch_raw,
-                modelo=modelo,
-                ordem=int(idx) + 1,
-                ar_condicionado=ar_cond,
-                cj_bco=cj_bco,
-                cliente=cliente,
-                destino=destino,
-                data_entrega=data_entrega,
-                localizacao=localizacao,
-                banco_presente=banco_presente,
-                banco_comentario=banco_comentario
-            ))
-
+            status_etapas = {}
             for etapa in ETAPAS_PRODUCAO:
                 col_name = etapas_col.get(normalize_etapa(etapa))
-                if col_name:
-                    status = normalize_status(row[col_name])
-                else:
-                    status = "N/A"
+                status_original = safe_str(row[col_name])
+                if not status_original:
+                    raise ValueError(f"Status de {etapa} não informado na linha {numero_linha} ({ch_raw})")
+                if not status_upload_valido(status_original):
+                    raise ValueError(f"Status inválido em {etapa}, linha {numero_linha} ({ch_raw}): {status_original}")
+                status_etapas[etapa] = normalize_status(status_original)
+
+            registros.append({
+                "veiculo": {
+                    "chassi": ch_raw,
+                    "modelo": modelo,
+                    "linha": linha,
+                    "ordem": len(registros) + 1,
+                    "ar_condicionado": ar_cond,
+                    "cj_bco": cj_bco,
+                    "cliente": cliente,
+                    "destino": destino,
+                    "data_entrega": data_entrega,
+                    "localizacao": localizacao,
+                    "banco_presente": banco_presente,
+                    "banco_comentario": banco_comentario,
+                },
+                "status_etapas": status_etapas,
+            })
+
+        if not registros:
+            raise ValueError("Nenhum veículo válido foi encontrado na planilha.")
+
+        # Valida toda a planilha antes de substituir a carga atual e mantém a troca atômica.
+        db.query(models.Apontamento).delete(synchronize_session=False)
+        db.query(models.Veiculo).delete(synchronize_session=False)
+
+        for registro in registros:
+            veiculo = models.Veiculo(**registro["veiculo"])
+            db.add(veiculo)
+            for etapa, status in registro["status_etapas"].items():
                 db.add(models.Apontamento(
-                    chassi=ch_raw,
+                    chassi=veiculo.chassi,
                     etapa=etapa,
                     status=status
                 ))
 
         db.commit()
-        return {"status": "sucesso"}
+        return {"status": "sucesso", "total_veiculos": len(registros)}
 
+    except ValueError as e:
+        db.rollback()
+        return JSONResponse({"status": "erro", "detail": str(e)}, status_code=400)
     except Exception as e:
         db.rollback()
-        return {"status": "erro", "detail": str(e)}
+        return JSONResponse({"status": "erro", "detail": str(e)}, status_code=500)
 
 @app.post("/upload_apontamentos")
 async def upload_apontamentos(request: Request, file: UploadFile = File(...), db: Session = Depends(database.get_db)):
@@ -742,9 +811,9 @@ async def upload_apontamentos(request: Request, file: UploadFile = File(...), db
         content = await file.read()
 
         df = (
-            pd.read_excel(io.BytesIO(content))
+            pd.read_excel(io.BytesIO(content), keep_default_na=False)
             if file.filename.endswith(".xlsx")
-            else pd.read_csv(io.BytesIO(content))
+            else pd.read_csv(io.BytesIO(content), keep_default_na=False)
         )
 
         df.columns = [str(c).upper().strip() for c in df.columns]

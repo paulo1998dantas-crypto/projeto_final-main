@@ -17,6 +17,7 @@
             <div>
                 <h1 class="text-xl font-black text-slate-800 uppercase">{{ veiculo.modelo }}</h1>
                 <p class="text-xs text-slate-400">CHASSI: {{ veiculo.chassi }}</p>
+                <p class="text-xs text-slate-500 font-semibold">LINHA: {{ veiculo.linha or "NÃO INFORMADA" }}</p>
                 <p class="text-xs text-slate-500 font-semibold">DATA DE ENTREGA: {{ veiculo.data_entrega_fmt or "-" }}</p>
             </div>
             <div>

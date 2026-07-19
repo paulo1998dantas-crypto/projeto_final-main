@@ -9,6 +9,7 @@ class Veiculo(Base):
     __tablename__ = "veiculos"
     chassi = Column(String, primary_key=True, index=True)
     modelo = Column(String)
+    linha = Column(String)
     ordem = Column(Integer)
     ar_condicionado = Column(String)
     cj_bco = Column(String)

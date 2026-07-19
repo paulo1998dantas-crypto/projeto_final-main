@@ -8,6 +8,7 @@
     <style>
         .visao-geral-board {
             grid-template-columns: repeat(12, minmax(0, 1fr));
+            grid-template-rows: 2rem minmax(0, 1fr);
         }
         .visao-geral-list {
             scrollbar-width: thin;
@@ -37,8 +38,13 @@
                     <span id="kanban-status">Online</span>
                     <span id="kanban-updated" class="text-slate-500"></span>
                 </div>
+                <select id="linha-filtro" aria-label="Filtrar por linha" onchange="filtrarLinha(this.value)" class="rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 font-bold text-white outline-none focus:border-blue-500">
+                    <option value="" {% if not linha_atual %}selected{% endif %}>Todas as linhas</option>
+                    <option value="BÁSICA" {% if linha_atual == 'BÁSICA' %}selected{% endif %}>Linha Básica</option>
+                    <option value="EXECUTIVA" {% if linha_atual == 'EXECUTIVA' %}selected{% endif %}>Linha Executiva</option>
+                </select>
                 <div class="rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5">
-                    <span class="text-slate-400">Veículos</span>
+                    <span class="text-slate-400">Ativos</span>
                     <strong id="total-veiculos" class="ml-1 text-white">{{ total_veiculos }}</strong>
                 </div>
                 <time id="relogio-tv" class="w-[68px] text-center font-mono text-sm font-black text-white"></time>
@@ -111,6 +117,15 @@
         <section class="h-full">
             <div id="kanban-scroll" class="h-full overflow-x-auto">
                 <div id="kanban-board" class="visao-geral-board grid h-full gap-1.5">
+                    <div class="col-span-4 flex items-center justify-center rounded-md border border-cyan-500/25 bg-cyan-500/10 px-2 text-center text-[10px] font-black uppercase tracking-wider text-cyan-200">
+                        Etapas independentes <span class="ml-1 font-semibold normal-case tracking-normal text-cyan-400">podem ocorrer em paralelo</span>
+                    </div>
+                    <div class="col-span-7 flex items-center justify-center rounded-md border border-blue-500/25 bg-blue-500/10 px-2 text-center text-[10px] font-black uppercase tracking-wider text-blue-200">
+                        Etapas produtivas <span class="ml-1 font-semibold normal-case tracking-normal text-blue-400">sequência lógica de produção</span>
+                    </div>
+                    <div class="col-span-1 flex flex-col items-center justify-center rounded-md border border-emerald-500/25 bg-emerald-500/10 px-1 text-center text-[9px] font-black uppercase leading-tight text-emerald-200">
+                        Entregas <span class="font-semibold normal-case text-emerald-400">por data</span>
+                    </div>
                     {% for coluna in kanban_colunas %}
                     <section data-column-id="{{ coluna.id }}" class="flex min-w-0 flex-col overflow-hidden rounded-lg border border-slate-800 bg-slate-900/80">
                         <div class="flex min-h-11 items-center justify-between gap-1 border-b border-slate-800 bg-slate-900 px-2 py-1.5 shadow-sm">
@@ -122,10 +137,10 @@
                         </div>
                         <div class="visao-geral-list min-h-0 flex-1 space-y-1 overflow-y-auto p-1">
                             {% for card in coluna.cards %}
-                            <a href="/veiculo/{{ card.chassi }}" title="{{ card.modelo }} | {{ card.chassi }} | {{ card.cliente }} | {{ card.destino }}" class="block rounded-md border border-slate-800 bg-slate-950/70 p-1.5 hover:border-blue-500 hover:bg-slate-900 transition">
+                            <a href="/veiculo/{{ card.chassi }}" title="{{ card.modelo }} | {{ card.chassi }} | {{ card.linha }} | {{ card.cliente }} | {{ card.destino }}" class="block rounded-md border border-slate-800 bg-slate-950/70 p-1.5 hover:border-blue-500 hover:bg-slate-900 transition">
                                 <div class="flex min-w-0 items-center justify-between gap-1">
                                     <p class="truncate text-[clamp(9px,0.62vw,11px)] font-black uppercase leading-tight text-white">{{ card.modelo }}</p>
-                                    <span class="shrink-0 rounded px-1 py-0.5 text-[8px] font-black {% if card.status == 'PARCIAL' %}bg-amber-400/15 text-amber-300{% else %}bg-rose-400/15 text-rose-300{% endif %}">{{ "P" if card.status == "PARCIAL" else "N" }}</span>
+                                    <span class="shrink-0 rounded px-1 py-0.5 text-[8px] font-black {% if card.status == 'ENTREGA' %}bg-emerald-400/15 text-emerald-300{% elif card.status == 'PARCIAL' %}bg-amber-400/15 text-amber-300{% else %}bg-rose-400/15 text-rose-300{% endif %}">{% if card.status == "ENTREGA" %}E{% elif card.status == "PARCIAL" %}P{% else %}N{% endif %}</span>
                                 </div>
                                 <p class="mt-0.5 truncate font-mono text-[8px] font-semibold leading-tight text-slate-400">{{ card.chassi }}</p>
                                 <div class="mt-1 flex items-center justify-between gap-1 text-[8px] font-bold text-slate-400">
@@ -176,7 +191,7 @@
                                         <p class="truncate text-[13px] font-black uppercase text-slate-800">{{ card.modelo }}</p>
                                         <p class="truncate font-mono text-[10px] font-semibold text-slate-500">{{ card.chassi }}</p>
                                     </div>
-                                    <span class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-black {% if card.status == 'PARCIAL' %}bg-amber-50 text-amber-700{% else %}bg-rose-50 text-rose-700{% endif %}">{{ "P" if card.status == "PARCIAL" else "NOK" }}</span>
+                                    <span class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-black {% if card.status == 'ENTREGA' %}bg-emerald-50 text-emerald-700{% elif card.status == 'PARCIAL' %}bg-amber-50 text-amber-700{% else %}bg-rose-50 text-rose-700{% endif %}">{% if card.status == "ENTREGA" %}ENTREGA{% elif card.status == "PARCIAL" %}P{% else %}NOK{% endif %}</span>
                                 </div>
                                 <div class="mt-2 space-y-1 text-[11px] text-slate-600">
                                     <p class="truncate" title="{{ card.cliente }}"><span class="font-bold text-slate-400">Cliente:</span> {{ card.cliente }}</p>
@@ -342,6 +357,9 @@ function escapeHtml(value) {
 }
 
 function kanbanStatusBadge(status) {
+    if (status === "ENTREGA") {
+        return '<span class="shrink-0 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-black text-emerald-700">ENTREGA</span>';
+    }
     return status === "PARCIAL"
         ? '<span class="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-black text-amber-700">P</span>'
         : '<span class="shrink-0 rounded bg-rose-50 px-1.5 py-0.5 text-[10px] font-black text-rose-700">NOK</span>';
@@ -352,11 +370,13 @@ const visaoGeral = document.body.dataset.visao === "geral";
 function renderKanbanCard(card) {
     const progresso = Number(card.progresso || 0);
     if (visaoGeral) {
-        const statusClass = card.status === "PARCIAL"
-            ? "bg-amber-400/15 text-amber-300"
-            : "bg-rose-400/15 text-rose-300";
-        const statusLabel = card.status === "PARCIAL" ? "P" : "N";
-        const titulo = [card.modelo, card.chassi, card.cliente, card.destino].map(escapeHtml).join(" | ");
+        const statusClass = card.status === "ENTREGA"
+            ? "bg-emerald-400/15 text-emerald-300"
+            : card.status === "PARCIAL"
+                ? "bg-amber-400/15 text-amber-300"
+                : "bg-rose-400/15 text-rose-300";
+        const statusLabel = card.status === "ENTREGA" ? "E" : card.status === "PARCIAL" ? "P" : "N";
+        const titulo = [card.modelo, card.chassi, card.linha, card.cliente, card.destino].map(escapeHtml).join(" | ");
         return `
             <a href="/veiculo/${encodeURIComponent(card.chassi)}" title="${titulo}" class="block rounded-md border border-slate-800 bg-slate-950/70 p-1.5 hover:border-blue-500 hover:bg-slate-900 transition">
                 <div class="flex min-w-0 items-center justify-between gap-1">
@@ -402,6 +422,21 @@ function renderKanbanCard(card) {
                 <span class="text-[10px] font-bold text-blue-600">${progresso}%</span>
             </div>
         </a>
+    `;
+}
+
+function renderKanbanGroupHeaders() {
+    if (!visaoGeral) return "";
+    return `
+        <div class="col-span-4 flex items-center justify-center rounded-md border border-cyan-500/25 bg-cyan-500/10 px-2 text-center text-[10px] font-black uppercase tracking-wider text-cyan-200">
+            Etapas independentes <span class="ml-1 font-semibold normal-case tracking-normal text-cyan-400">podem ocorrer em paralelo</span>
+        </div>
+        <div class="col-span-7 flex items-center justify-center rounded-md border border-blue-500/25 bg-blue-500/10 px-2 text-center text-[10px] font-black uppercase tracking-wider text-blue-200">
+            Etapas produtivas <span class="ml-1 font-semibold normal-case tracking-normal text-blue-400">sequência lógica de produção</span>
+        </div>
+        <div class="col-span-1 flex flex-col items-center justify-center rounded-md border border-emerald-500/25 bg-emerald-500/10 px-1 text-center text-[9px] font-black uppercase leading-tight text-emerald-200">
+            Entregas <span class="font-semibold normal-case text-emerald-400">por data</span>
+        </div>
     `;
 }
 
@@ -458,7 +493,7 @@ async function atualizarKanban() {
                 column.querySelector(".visao-geral-list")?.scrollTop || 0,
             ])
         );
-        board.innerHTML = (data.colunas || []).map(renderKanbanColumn).join("");
+        board.innerHTML = renderKanbanGroupHeaders() + (data.colunas || []).map(renderKanbanColumn).join("");
         if (scroll) scroll.scrollLeft = scrollLeft;
         for (const column of board.querySelectorAll("[data-column-id]")) {
             const list = column.querySelector(".visao-geral-list");
@@ -470,6 +505,17 @@ async function atualizarKanban() {
     } catch (error) {
         if (status) status.textContent = "Reconectando";
     }
+}
+
+function filtrarLinha(linha) {
+    const params = new URLSearchParams(window.location.search);
+    if (linha) {
+        params.set("linha", linha);
+    } else {
+        params.delete("linha");
+    }
+    params.set("visao", "geral");
+    window.location.assign(`/?${params.toString()}`);
 }
 
 function atualizarRelogio() {
