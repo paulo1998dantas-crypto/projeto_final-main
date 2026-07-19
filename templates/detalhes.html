@@ -12,14 +12,53 @@
         <img src="/static/logo.png" class="h-6">
     </header>
 
-    <main class="p-4 max-w-md mx-auto">
-        <div class="bg-white p-5 rounded-2xl shadow-sm mb-6 border-l-4 border-blue-600 space-y-2">
-            <div>
-                <h1 class="text-xl font-black text-slate-800 uppercase">{{ veiculo.modelo }}</h1>
-                <p class="text-xs text-slate-400">CHASSI: {{ veiculo.chassi }}</p>
-                <p class="text-xs text-slate-500 font-semibold">LINHA: {{ veiculo.linha or "NÃO INFORMADA" }}</p>
-                <p class="text-xs text-slate-500 font-semibold">DATA DE ENTREGA: {{ veiculo.data_entrega_fmt or "-" }}</p>
+    <main class="p-4 max-w-2xl mx-auto">
+        <div class="bg-white p-5 rounded-2xl shadow-sm mb-6 border-l-4 border-blue-600 space-y-4">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                    <p class="text-[10px] font-black uppercase tracking-widest text-blue-600">Ficha do veículo</p>
+                    <h1 class="text-2xl font-black text-slate-800 uppercase">{{ veiculo.modelo }}</h1>
+                    <p class="text-xs text-slate-400">CHASSI: {{ veiculo.chassi }}</p>
+                </div>
+                <span class="self-start rounded-full bg-blue-50 px-3 py-1 text-xs font-black uppercase text-blue-700">
+                    {{ veiculo.linha or "LINHA NÃO INFORMADA" }}
+                </span>
             </div>
+
+            <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <div class="rounded-xl bg-slate-50 p-3">
+                    <p class="text-[10px] font-black uppercase tracking-wider text-slate-400">Cliente</p>
+                    <p class="mt-1 text-sm font-bold text-slate-800">{{ veiculo.cliente or "-" }}</p>
+                </div>
+                <div class="rounded-xl bg-slate-50 p-3">
+                    <p class="text-[10px] font-black uppercase tracking-wider text-slate-400">Destino</p>
+                    <p class="mt-1 text-sm font-bold text-slate-800">{{ veiculo.destino or "-" }}</p>
+                </div>
+                <div class="rounded-xl bg-slate-50 p-3">
+                    <p class="text-[10px] font-black uppercase tracking-wider text-slate-400">CJ. BCO</p>
+                    <p class="mt-1 text-sm font-bold text-slate-800">{{ veiculo.cj_bco or "-" }}</p>
+                </div>
+                <div class="rounded-xl bg-slate-50 p-3">
+                    <p class="text-[10px] font-black uppercase tracking-wider text-slate-400">Banco</p>
+                    <p class="mt-1 text-sm font-bold text-slate-800">{{ veiculo.banco_presente or "-" }}</p>
+                </div>
+                <div class="rounded-xl bg-slate-50 p-3">
+                    <p class="text-[10px] font-black uppercase tracking-wider text-slate-400">Ar-condicionado</p>
+                    <p class="mt-1 text-sm font-bold text-slate-800">{{ veiculo.ar_condicionado or "-" }}</p>
+                </div>
+                <div class="rounded-xl bg-slate-50 p-3">
+                    <p class="text-[10px] font-black uppercase tracking-wider text-slate-400">Data de entrega</p>
+                    <p class="mt-1 text-sm font-bold text-slate-800">{{ veiculo.data_entrega_fmt or "-" }}</p>
+                </div>
+            </div>
+
+            {% if veiculo.banco_comentario %}
+            <div class="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                <p class="text-[10px] font-black uppercase tracking-wider text-amber-600">Observação do banco</p>
+                <p class="mt-1 text-sm font-semibold text-amber-950">{{ veiculo.banco_comentario }}</p>
+            </div>
+            {% endif %}
+
             <div>
                 <label class="text-[10px] text-slate-400 font-bold uppercase">Localização do chassi</label>
                 <select class="w-full border border-slate-200 rounded-lg p-2 text-xs" onchange="salvarLocalizacao(this)">

@@ -532,7 +532,7 @@ def carregar_veiculos_dashboard(db: Session, modelo: str = None, linha: str = No
 ensure_default_admin()
 
 @app.get("/")
-async def home(request: Request, db: Session = Depends(database.get_db), modelo: str = None, etapa: str = None, visao: str = "gerencial", linha: str = None):
+async def home(request: Request, db: Session = Depends(database.get_db), modelo: str = None, etapa: str = None, visao: str = "geral", linha: str = None):
     current_user = require_login(request, db)
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
@@ -1084,7 +1084,7 @@ async def login_post(request: Request, nome: str = Form(...), senha: str = Form(
             status_code=401,
         )
     token = create_session(db, usuario)
-    resp = RedirectResponse(url="/", status_code=303)
+    resp = RedirectResponse(url="/?visao=geral", status_code=303)
     set_session_cookie(resp, token)
     return resp
 
