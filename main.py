@@ -107,20 +107,21 @@ async def no_cache_headers(request: Request, call_next):
     return response
 
 ETAPAS_PRODUCAO = [
-    "PREP",
-    "EXPE.",
-    "SERRA.",
-    "PLOTA.",
     "VIDROS",
     "A/C",
+    "PREP",
+    "SERRA.",
+    "EXPE.",
     "DESMONT",
-    "REVEST",
     "ELÉTRICA",
+    "REVEST",
     "BCO",
     "ACESSÓ.",
+    "PLOTA.",
+    "LIBERA.",
 ]
 
-ETAPAS_STATUS_ATUAL = ["VIDROS", "A/C", "DESMONT", "REVEST", "ELÉTRICA", "BCO", "ACESSÓ."]
+ETAPAS_STATUS_ATUAL = ETAPAS_PRODUCAO
 
 ETAPAS_FILTRO = [e for e in ETAPAS_PRODUCAO if e != "A/C"] + ["GE", "CLIM", "ENTREGAS"]
 
@@ -403,12 +404,13 @@ ETAPA_REGRAS = {
     "PREP": lambda s: etapa_pendente(s, "PREP"),
     "SERRA.": lambda s: etapa_pendente(s, "SERRA."),
     "EXPE.": lambda s: etapa_pendente(s, "EXPE."),
-    "PLOTA.": lambda s: etapa_pendente(s, "PLOTA."),
     "DESMONT": lambda s: s.get("VIDROS") in ["SIM", "N/A"] and s.get("A/C") in ["SIM", "N/A"] and etapa_pendente(s, "DESMONT"),
     "REVEST": lambda s: s.get("DESMONT") in STATUS_CONCLUIDO and etapa_pendente(s, "REVEST"),
     "ELÉTRICA": lambda s: s.get("REVEST") in STATUS_CONCLUIDO and etapa_pendente(s, "ELÉTRICA"),
     "BCO": lambda s: s.get("ELÉTRICA") in STATUS_CONCLUIDO and etapa_pendente(s, "BCO"),
     "ACESSÓ.": lambda s: s.get("BCO") in STATUS_CONCLUIDO and etapa_pendente(s, "ACESSÓ."),
+    "PLOTA.": lambda s: etapa_pendente(s, "PLOTA."),
+    "LIBERA.": lambda s: etapa_pendente(s, "LIBERA."),
 }
 
 KANBAN_COLUNAS = [
