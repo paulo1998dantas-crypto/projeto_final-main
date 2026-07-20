@@ -425,9 +425,9 @@ ETAPA_REGRAS = {
     "REVEST": lambda s: s.get("DESMONT") in STATUS_CONCLUIDO and etapa_pendente(s, "REVEST"),
     "ELÉTRICA": lambda s: s.get("REVEST") in STATUS_CONCLUIDO and etapa_pendente(s, "ELÉTRICA"),
     "BCO": lambda s: s.get("ELÉTRICA") in STATUS_CONCLUIDO and etapa_pendente(s, "BCO"),
-    "ACESSÓ.": lambda s: s.get("BCO") in STATUS_CONCLUIDO and etapa_pendente(s, "ACESSÓ."),
+    "ACESSÓ.": lambda s: s.get("BCO") == "SIM" and etapa_pendente(s, "ACESSÓ."),
     "PLOTA.": lambda s: etapa_pendente(s, "PLOTA."),
-    "LIBERA.": lambda s: etapa_pendente(s, "LIBERA."),
+    "LIBERA.": lambda s: s.get("BCO") == "SIM" and etapa_pendente(s, "LIBERA."),
 }
 
 KANBAN_COLUNAS = [
@@ -736,6 +736,11 @@ async def home(
                 break
 
         # FILTRAGEM POR ETAPA (Lógica de Negócio)
+        if modo_liberacao:
+            if ETAPA_REGRAS["LIBERA."](status_map):
+                veiculos_exibicao.append(v)
+            continue
+
         if etapa and etapa.strip() and not modo_liberacao and not modo_gerencial:
             filtro = normalize_etapa(etapa)
             if filtro in ["GE", "CLIM"]:
