@@ -7,7 +7,7 @@ import webbrowser
 import secrets
 import hashlib
 import hmac
-from fastapi import FastAPI, Request, Depends, Body, UploadFile, File, Form
+from fastapi import FastAPI, Request, Depends, Body, UploadFile, File, Form, Query
 from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
@@ -339,6 +339,23 @@ def normalize_semana_producao(value) -> str:
 
     return semana
 
+def normalize_semanas_producao(value) -> list[str]:
+    if value is None:
+        valores = []
+    elif isinstance(value, (list, tuple, set)):
+        valores = value
+    else:
+        valores = [value]
+
+    semanas = []
+    vistas = set()
+    for item in valores:
+        semana = normalize_semana_producao(item)
+        if semana and semana not in vistas:
+            semanas.append(semana)
+            vistas.add(semana)
+    return semanas
+
 def parse_data_filtro(value):
     try:
         return datetime.date.fromisoformat(safe_str(value))
@@ -535,7 +552,7 @@ def aplicar_filtros_veiculos(
     query,
     modelo: str = None,
     linha: str = None,
-    semana: str = None,
+    semana=None,
     entrega_inicio: str = None,
     entrega_fim: str = None,
 ):
@@ -560,10 +577,10 @@ def aplicar_filtros_veiculos(
     if linha_normalizada:
         query = query.filter(func.upper(func.trim(models.Veiculo.linha)) == linha_normalizada)
 
-    semana_normalizada = normalize_semana_producao(semana)
-    if semana_normalizada:
+    semanas_normalizadas = normalize_semanas_producao(semana)
+    if semanas_normalizadas:
         query = query.filter(
-            func.upper(func.trim(models.Veiculo.semana_producao)) == semana_normalizada.upper()
+            func.upper(func.trim(models.Veiculo.semana_producao)).in_([s.upper() for s in semanas_normalizadas])
         )
 
     inicio, fim = intervalo_entrega_normalizado(entrega_inicio, entrega_fim)
@@ -584,7 +601,7 @@ def carregar_veiculos_dashboard(
     db: Session,
     modelo: str = None,
     linha: str = None,
-    semana: str = None,
+    semana=None,
     entrega_inicio: str = None,
     entrega_fim: str = None,
 ):
@@ -649,7 +666,7 @@ async def home(
     etapa: str = None,
     visao: str = "geral",
     linha: str = None,
-    semana: str = None,
+    semana: list[str] | None = Query(None),
     entrega_inicio: str = None,
     entrega_fim: str = None,
 ):
@@ -752,11 +769,11 @@ async def home(
             "modo_geral": modo_geral,
             "visao_atual": visao_atual,
             "linha_atual": normalize_linha(linha),
-            "semana_atual": normalize_semana_producao(semana),
+            "semanas_atuais": normalize_semanas_producao(semana),
             "semanas_disponiveis": listar_semanas_producao(db),
             "entrega_inicio_atual": data_inicio_atual.isoformat() if data_inicio_atual else "",
             "entrega_fim_atual": data_fim_atual.isoformat() if data_fim_atual else "",
-            "filtros_gerais_ativos": bool(normalize_linha(linha) or normalize_semana_producao(semana) or data_inicio_atual or data_fim_atual),
+            "filtros_gerais_ativos": bool(safe_str(modelo) or normalize_linha(linha) or normalize_semanas_producao(semana) or data_inicio_atual or data_fim_atual),
             "total_veiculos": contar_chassis_ativos_kanban(kanban_colunas) if modo_gerencial else len({normalize_chassi(v.chassi) for v in veiculos_exibicao}),
             "kanban_colunas": kanban_colunas,
             "current_user": current_user
@@ -769,7 +786,7 @@ async def kanban_dados(
     db: Session = Depends(database.get_db),
     modelo: str = None,
     linha: str = None,
-    semana: str = None,
+    semana: list[str] | None = Query(None),
     entrega_inicio: str = None,
     entrega_fim: str = None,
 ):

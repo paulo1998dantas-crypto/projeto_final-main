@@ -41,11 +41,16 @@
                 <form method="get" action="/" class="flex items-end gap-1.5 rounded-lg border border-slate-700 bg-slate-950/40 p-1">
                     <input type="hidden" name="visao" value="geral">
                     <label class="flex flex-col gap-0.5 text-[8px] font-black uppercase tracking-wide text-slate-500">
+                        Filtro
+                        <input type="text" name="modelo" value="{{ termo_busca }}" placeholder="Cliente, destino, chassi"
+                               aria-label="Filtrar por chassi, modelo, cliente ou destino"
+                               class="w-48 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-bold normal-case tracking-normal text-white outline-none placeholder:text-slate-500 focus:border-blue-500">
+                    </label>
+                    <label class="flex flex-col gap-0.5 text-[8px] font-black uppercase tracking-wide text-slate-500">
                         Semana
-                        <select name="semana" aria-label="Filtrar por semana de produção" class="w-32 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-bold normal-case tracking-normal text-white outline-none focus:border-blue-500">
-                            <option value="" {% if not semana_atual %}selected{% endif %}>Todas as semanas</option>
+                        <select name="semana" multiple size="3" aria-label="Filtrar por semanas de produção" class="h-12 w-36 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-bold normal-case tracking-normal text-white outline-none focus:border-blue-500">
                             {% for semana in semanas_disponiveis %}
-                            <option value="{{ semana }}" {% if semana_atual == semana %}selected{% endif %}>Semana {{ semana }}</option>
+                            <option value="{{ semana }}" {% if semana in semanas_atuais %}selected{% endif %}>Semana {{ semana }}</option>
                             {% endfor %}
                         </select>
                     </label>
