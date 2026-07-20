@@ -736,11 +736,6 @@ async def home(
                 break
 
         # FILTRAGEM POR ETAPA (Lógica de Negócio)
-        if modo_liberacao:
-            if ETAPA_REGRAS["LIBERA."](status_map):
-                veiculos_exibicao.append(v)
-            continue
-
         if etapa and etapa.strip() and not modo_liberacao and not modo_gerencial:
             filtro = normalize_etapa(etapa)
             if filtro in ["GE", "CLIM"]:
