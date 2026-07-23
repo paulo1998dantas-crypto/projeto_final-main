@@ -185,7 +185,16 @@ def parse_data_entrega(value):
     if isinstance(value, datetime.datetime):
         dt = value
     else:
-        parsed = pd.to_datetime(value, dayfirst=True, errors="coerce")
+        texto = safe_str(value)
+        if re.fullmatch(r"\d+(?:[.,]\d+)?", texto):
+            serial = float(texto.replace(",", "."))
+            if 20000 <= serial <= 80000:
+                dt = datetime.datetime(1899, 12, 30) + datetime.timedelta(days=serial)
+                return dt.replace(tzinfo=LOCAL_TZ)
+        if re.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:\D|$)", texto):
+            parsed = pd.to_datetime(texto, yearfirst=True, dayfirst=False, errors="coerce")
+        else:
+            parsed = pd.to_datetime(value, dayfirst=True, errors="coerce")
         if pd.isna(parsed):
             return None
         dt = parsed.to_pydatetime()
@@ -935,6 +944,15 @@ async def upload_base(request: Request, file: UploadFile = File(...), db: Sessio
                     return str(val).strip()
             return ""
 
+        def get_col_raw(row, *names):
+            for n in names:
+                if n in df.columns:
+                    val = row.get(n, "")
+                    if pd.isna(val):
+                        return ""
+                    return val.strip() if isinstance(val, str) else val
+            return ""
+
         etapas_col = {normalize_etapa(c): c for c in df.columns}
         colunas_obrigatorias = ["CHASSI", "MMMV", "LINHA"]
         faltantes = [coluna for coluna in colunas_obrigatorias if coluna not in df.columns]
@@ -978,7 +996,7 @@ async def upload_base(request: Request, file: UploadFile = File(...), db: Sessio
             cj_bco = get_col(row, "CJ. BCO", "CJ BCO", "CJ_BCO", "CJ-BCO")
             cliente = get_col(row, "CLIENTE")
             destino = get_col(row, "DESTINO")
-            data_entrega = parse_data_entrega(get_col(row, "DATA DE ENTREGA", "DATA_ENTREGA", "DT ENTREGA", "ENTREGA"))
+            data_entrega = parse_data_entrega(get_col_raw(row, "DATA DE ENTREGA", "DATA_ENTREGA", "DT ENTREGA", "ENTREGA"))
             if not data_entrega:
                 raise ValueError(f"DATA DE ENTREGA inválida na linha {numero_linha} ({ch_raw})")
             localizacao = get_col(row, "LOCALIZACAO", "LOCALIZAÇÃO")
