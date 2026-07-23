@@ -303,6 +303,63 @@ def normalize_filter(value: str) -> str:
 def normalize_chassi(value) -> str:
     return "".join(safe_str(value).upper().split())
 
+MARCAS_MMV = {
+    "MARCA",
+    "MERCEDES",
+    "MERCEDESBENZ",
+    "BENZ",
+    "MB",
+    "MBB",
+    "VOLKSWAGEN",
+    "VW",
+    "PEUGEOT",
+    "CITROEN",
+    "FIAT",
+    "IVECO",
+    "RENAULT",
+    "FORD",
+    "CHEVROLET",
+    "GM",
+    "TOYOTA",
+    "HYUNDAI",
+}
+
+MODELOS_MMV_PRIORITARIOS = {
+    "SPRINTER",
+    "EXPERT",
+    "DUCATO",
+    "BOXER",
+    "JUMPER",
+    "MASTER",
+    "DAILY",
+    "TRANSIT",
+    "CRAFTER",
+    "PARTNER",
+    "KANGOO",
+    "SCUDO",
+    "JUMPY",
+}
+
+def normalizar_token_mmv(value) -> str:
+    return re.sub(r"[^A-Z0-9]", "", normalize_filter(value))
+
+def resumir_mmv(value) -> str:
+    texto = re.sub(r"\s+", " ", safe_str(value)).strip(" -/")
+    if not texto:
+        return "-"
+
+    tokens = [token.strip(" ,;:()[]{}") for token in texto.split()]
+    tokens = [token for token in tokens if token]
+    while tokens and normalizar_token_mmv(tokens[0]) in MARCAS_MMV:
+        tokens.pop(0)
+    if not tokens:
+        return texto
+
+    normalizados = [normalizar_token_mmv(t) for t in tokens]
+    inicio = next((i for i, token in enumerate(normalizados) if token in MODELOS_MMV_PRIORITARIOS), 0)
+    resumo = tokens[inicio:inicio + 2]
+    return " ".join(resumo).title()
+
 def normalize_linha(value) -> str:
     linha = normalize_filter(value)
     if linha in ["BASICA", "LINHA BASICA", "BASIC"]:
@@ -502,6 +559,7 @@ def montar_card_kanban(veiculo, status_map, etapa):
     return {
         "chassi": veiculo.chassi,
         "modelo": veiculo.modelo or "-",
+        "modelo_resumido": resumir_mmv(veiculo.modelo),
         "linha": veiculo.linha or "NÃO INFORMADA",
         "semana_producao": veiculo.semana_producao or "-",
         "cliente": veiculo.cliente or "-",
@@ -522,9 +580,11 @@ def data_entrega_ordenacao(veiculo):
         data = data.astimezone(LOCAL_TZ).replace(tzinfo=None)
     return (0, data, veiculo.ordem or 0)
 
-def montar_kanban(veiculos, status_maps):
+def montar_kanban(veiculos, status_maps, incluir_plotagem=True):
     colunas = []
     for coluna in KANBAN_COLUNAS:
+        if not incluir_plotagem and coluna["id"] == "plota":
+            continue
         cards = []
         veiculos_coluna = sorted(veiculos, key=data_entrega_ordenacao) if coluna["id"] == "entregas" else veiculos
         for veiculo in veiculos_coluna:
@@ -752,7 +812,7 @@ async def home(
         else:
             veiculos_exibicao.append(v)
 
-    kanban_colunas = montar_kanban(veiculos_exibicao, status_maps) if modo_gerencial else []
+    kanban_colunas = montar_kanban(veiculos_exibicao, status_maps, incluir_plotagem=not modo_geral) if modo_gerencial else []
 
     return templates.TemplateResponse(
         request,
@@ -785,6 +845,7 @@ async def kanban_dados(
     request: Request,
     db: Session = Depends(database.get_db),
     modelo: str = None,
+    visao: str = None,
     linha: str = None,
     semana: list[str] | None = Query(None),
     entrega_inicio: str = None,
@@ -801,7 +862,8 @@ async def kanban_dados(
         entrega_inicio,
         entrega_fim,
     )
-    colunas = montar_kanban(veiculos, status_maps)
+    modo_geral = safe_str(visao).lower() == "geral"
+    colunas = montar_kanban(veiculos, status_maps, incluir_plotagem=not modo_geral)
     return {
         "status": "ok",
         "atualizado_em": datetime.datetime.now(LOCAL_TZ).strftime("%H:%M:%S"),

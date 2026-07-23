@@ -7,7 +7,7 @@
     <title>Acompanhamento de Produção</title>
     <style>
         .visao-geral-board {
-            grid-template-columns: repeat(12, minmax(0, 1fr));
+            grid-template-columns: repeat(11, minmax(0, 1fr));
             grid-template-rows: 2rem minmax(0, 1fr);
         }
         .visao-geral-list {
@@ -17,7 +17,7 @@
         .visao-geral-list::-webkit-scrollbar { width: 4px; }
         .visao-geral-list::-webkit-scrollbar-thumb { background: #334155; border-radius: 999px; }
         @media (max-width: 1400px) {
-            .visao-geral-board { min-width: 1320px; }
+            .visao-geral-board { min-width: 1210px; }
         }
     </style>
 </head>
@@ -149,7 +149,7 @@
         <section class="h-full">
             <div id="kanban-scroll" class="h-full overflow-x-auto">
                 <div id="kanban-board" class="visao-geral-board grid h-full gap-1.5">
-                    <div class="col-span-4 flex items-center justify-center rounded-md border border-cyan-500/25 bg-cyan-500/10 px-2 text-center text-[10px] font-black uppercase tracking-wider text-cyan-200">
+                    <div class="col-span-3 flex items-center justify-center rounded-md border border-cyan-500/25 bg-cyan-500/10 px-2 text-center text-[10px] font-black uppercase tracking-wider text-cyan-200">
                         Etapas independentes <span class="ml-1 font-semibold normal-case tracking-normal text-cyan-400">podem ocorrer em paralelo</span>
                     </div>
                     <div class="col-span-7 flex items-center justify-center rounded-md border border-blue-500/25 bg-blue-500/10 px-2 text-center text-[10px] font-black uppercase tracking-wider text-blue-200">
@@ -169,17 +169,17 @@
                         </div>
                         <div class="visao-geral-list min-h-0 flex-1 space-y-1 overflow-y-auto p-1">
                             {% for card in coluna.cards %}
-                            <a href="/veiculo/{{ card.chassi }}" title="{{ card.modelo }} | {{ card.chassi }} | {{ card.linha }} | Semana {{ card.semana_producao }} | {{ card.cliente }} | {{ card.destino }}" class="block rounded-md border border-slate-800 bg-slate-950/70 p-1.5 hover:border-blue-500 hover:bg-slate-900 transition">
+                            <a href="/veiculo/{{ card.chassi }}" title="{{ card.modelo }} | {{ card.chassi }} | {{ card.linha }} | Semana {{ card.semana_producao }} | {{ card.cliente }} | {{ card.destino }}" class="block rounded-md border border-slate-800 bg-slate-950/70 p-2 hover:border-blue-500 hover:bg-slate-900 transition">
                                 <div class="flex min-w-0 items-center justify-between gap-1">
-                                    <p class="truncate text-[clamp(9px,0.62vw,11px)] font-black uppercase leading-tight text-white">{{ card.modelo }}</p>
-                                    <span class="shrink-0 rounded px-1 py-0.5 text-[8px] font-black {% if card.status == 'ENTREGA' %}bg-emerald-400/15 text-emerald-300{% elif card.status == 'PARCIAL' %}bg-amber-400/15 text-amber-300{% else %}bg-rose-400/15 text-rose-300{% endif %}">{% if card.status == "ENTREGA" %}E{% elif card.status == "PARCIAL" %}P{% else %}N{% endif %}</span>
+                                    <p class="truncate font-mono text-[clamp(11px,0.78vw,14px)] font-black uppercase leading-tight text-white">{{ card.chassi }}</p>
+                                    <span class="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-black {% if card.status == 'ENTREGA' %}bg-emerald-400/15 text-emerald-300{% elif card.status == 'PARCIAL' %}bg-amber-400/15 text-amber-300{% else %}bg-rose-400/15 text-rose-300{% endif %}">{% if card.status == "ENTREGA" %}E{% elif card.status == "PARCIAL" %}P{% else %}N{% endif %}</span>
                                 </div>
-                                <p class="mt-0.5 truncate font-mono text-[8px] font-semibold leading-tight text-slate-400">{{ card.chassi }}</p>
-                                <div class="mt-1 flex items-center justify-between gap-1 text-[8px] font-bold text-slate-400">
+                                <p class="mt-1 truncate text-[clamp(10px,0.7vw,12px)] font-black uppercase leading-tight text-slate-300">{{ card.modelo_resumido }}</p>
+                                <div class="mt-1.5 flex items-center justify-between gap-1 text-[9px] font-bold text-slate-400">
                                     <span class="truncate">{{ card.data_entrega }}{% if card.semana_producao != '-' %} · Sem. {{ card.semana_producao }}{% endif %}</span>
                                     <span class="truncate text-right">{{ card.localizacao }}</span>
                                 </div>
-                                <div class="mt-1 h-0.5 overflow-hidden rounded bg-slate-800">
+                                <div class="mt-1.5 h-1 overflow-hidden rounded bg-slate-800">
                                     <div style="width:{{ card.progresso }}%" class="h-full bg-blue-500"></div>
                                 </div>
                             </a>
@@ -414,17 +414,17 @@ function renderKanbanCard(card) {
         const titulo = [card.modelo, card.chassi, card.linha, `Semana ${card.semana_producao || "-"}`, card.cliente, card.destino].map(escapeHtml).join(" | ");
         const semana = card.semana_producao && card.semana_producao !== "-" ? ` · Sem. ${escapeHtml(card.semana_producao)}` : "";
         return `
-            <a href="/veiculo/${encodeURIComponent(card.chassi)}" title="${titulo}" class="block rounded-md border border-slate-800 bg-slate-950/70 p-1.5 hover:border-blue-500 hover:bg-slate-900 transition">
+            <a href="/veiculo/${encodeURIComponent(card.chassi)}" title="${titulo}" class="block rounded-md border border-slate-800 bg-slate-950/70 p-2 hover:border-blue-500 hover:bg-slate-900 transition">
                 <div class="flex min-w-0 items-center justify-between gap-1">
-                    <p class="truncate text-[clamp(9px,0.62vw,11px)] font-black uppercase leading-tight text-white">${escapeHtml(card.modelo)}</p>
-                    <span class="shrink-0 rounded px-1 py-0.5 text-[8px] font-black ${statusClass}">${statusLabel}</span>
+                    <p class="truncate font-mono text-[clamp(11px,0.78vw,14px)] font-black uppercase leading-tight text-white">${escapeHtml(card.chassi)}</p>
+                    <span class="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-black ${statusClass}">${statusLabel}</span>
                 </div>
-                <p class="mt-0.5 truncate font-mono text-[8px] font-semibold leading-tight text-slate-400">${escapeHtml(card.chassi)}</p>
-                <div class="mt-1 flex items-center justify-between gap-1 text-[8px] font-bold text-slate-400">
+                <p class="mt-1 truncate text-[clamp(10px,0.7vw,12px)] font-black uppercase leading-tight text-slate-300">${escapeHtml(card.modelo_resumido || card.modelo)}</p>
+                <div class="mt-1.5 flex items-center justify-between gap-1 text-[9px] font-bold text-slate-400">
                     <span class="truncate">${escapeHtml(card.data_entrega)}${semana}</span>
                     <span class="truncate text-right">${escapeHtml(card.localizacao)}</span>
                 </div>
-                <div class="mt-1 h-0.5 overflow-hidden rounded bg-slate-800">
+                <div class="mt-1.5 h-1 overflow-hidden rounded bg-slate-800">
                     <div style="width:${Math.max(0, Math.min(100, progresso))}%" class="h-full bg-blue-500"></div>
                 </div>
             </a>
@@ -468,7 +468,7 @@ function renderKanbanCard(card) {
 function renderKanbanGroupHeaders() {
     if (!visaoGeral) return "";
     return `
-        <div class="col-span-4 flex items-center justify-center rounded-md border border-cyan-500/25 bg-cyan-500/10 px-2 text-center text-[10px] font-black uppercase tracking-wider text-cyan-200">
+        <div class="col-span-3 flex items-center justify-center rounded-md border border-cyan-500/25 bg-cyan-500/10 px-2 text-center text-[10px] font-black uppercase tracking-wider text-cyan-200">
             Etapas independentes <span class="ml-1 font-semibold normal-case tracking-normal text-cyan-400">podem ocorrer em paralelo</span>
         </div>
         <div class="col-span-7 flex items-center justify-center rounded-md border border-blue-500/25 bg-blue-500/10 px-2 text-center text-[10px] font-black uppercase tracking-wider text-blue-200">
@@ -520,7 +520,6 @@ async function atualizarKanban() {
     const scroll = document.getElementById("kanban-scroll");
     const params = new URLSearchParams(window.location.search);
     params.delete("etapa");
-    params.delete("visao");
 
     try {
         const res = await fetch(`/kanban_dados?${params.toString()}`);
