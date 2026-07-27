@@ -481,6 +481,9 @@ def normalize_etapa(value: str) -> str:
 def etapa_pendente(status_map, etapa):
     return status_map.get(etapa) in STATUS_PENDENTE
 
+def revestimento_libera_banco(status_map):
+    return status_map.get("REVEST") in ["SIM", "PARCIAL"]
+
 ETAPA_REGRAS = {
     "VIDROS": lambda s: etapa_pendente(s, "VIDROS"),
     "A/C": lambda s: s.get("VIDROS") in STATUS_CONCLUIDO and etapa_pendente(s, "A/C"),
@@ -490,7 +493,7 @@ ETAPA_REGRAS = {
     "DESMONT": lambda s: s.get("VIDROS") in ["SIM", "N/A"] and s.get("A/C") in ["SIM", "N/A"] and etapa_pendente(s, "DESMONT"),
     "REVEST": lambda s: s.get("DESMONT") in STATUS_CONCLUIDO and etapa_pendente(s, "REVEST"),
     "ELÉTRICA": lambda s: s.get("REVEST") in STATUS_CONCLUIDO and etapa_pendente(s, "ELÉTRICA"),
-    "BCO": lambda s: s.get("ELÉTRICA") in STATUS_CONCLUIDO and etapa_pendente(s, "BCO"),
+    "BCO": lambda s: revestimento_libera_banco(s) and etapa_pendente(s, "BCO"),
     "ACESSÓ.": lambda s: s.get("BCO") == "SIM" and etapa_pendente(s, "ACESSÓ."),
     "PLOTA.": lambda s: etapa_pendente(s, "PLOTA."),
     "LIBERA.": lambda s: s.get("BCO") == "SIM" and etapa_pendente(s, "LIBERA."),
@@ -557,7 +560,7 @@ def deve_exibir_no_kanban(veiculo, status_map, coluna):
     if coluna_id == "bco":
         return (
             veiculo_tem_banco(veiculo)
-            and etapa_concluida_ou_na(veiculo, status_map, "ELÉTRICA")
+            and revestimento_libera_banco(status_map)
             and etapa_pendente_kanban(status_map, etapa)
         )
     if coluna_id == "acesso":
