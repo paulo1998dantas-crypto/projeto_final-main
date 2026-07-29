@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MES | Gestão integrada de O.S.</title>
+<style>
+:root{--navy:#0f172a;--blue:#2563eb;--cyan:#0891b2;--green:#059669;--red:#dc2626;--line:#dbe3ec;--muted:#64748b;--bg:#f1f5f9}
+*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:var(--bg);color:#172033;font:13px Arial,sans-serif}main{max-width:1580px;margin:auto;padding:16px 20px 30px}
+.head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:12px}.head h1{margin:0;font-size:23px}.head p{margin:4px 0;color:var(--muted)}
+.actions{display:flex;gap:7px;flex-wrap:wrap}.btn{display:inline-flex;align-items:center;justify-content:center;min-height:35px;padding:7px 12px;border:1px solid #aebbc7;border-radius:5px;background:#fff;color:#172033;font-weight:800;text-decoration:none;cursor:pointer}.btn.primary{background:var(--blue);border-color:#1d4ed8;color:#fff}.btn.success{background:var(--green);border-color:#047857;color:#fff}.btn.danger{background:var(--red);border-color:#b91c1c;color:#fff}.btn:disabled{opacity:.5;cursor:not-allowed}
+.metrics{display:grid;grid-template-columns:repeat(6,minmax(120px,1fr));gap:8px;margin-bottom:10px}.metric{padding:10px 12px;border:1px solid var(--line);border-radius:7px;background:#fff}.metric span{display:block;color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase}.metric strong{display:block;margin-top:4px;font-size:21px}
+.panel{border:1px solid var(--line);border-radius:8px;background:#fff;overflow:hidden}.toolbar{display:flex;align-items:end;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);background:#f8fafc;flex-wrap:wrap}
+label{display:flex;flex-direction:column;gap:3px;color:#526174;font-size:11px;font-weight:750}input,select,textarea{width:100%;min-height:34px;padding:6px 8px;border:1px solid #cbd5e1;border-radius:5px;background:#fff;font:inherit}.search{min-width:340px;flex:1}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(285px,1fr));gap:9px;padding:11px;max-height:650px;overflow:auto}.card{border:1px solid var(--line);border-left:4px solid var(--cyan);border-radius:7px;background:#fff;padding:11px;cursor:pointer}.card:hover{border-color:#93c5fd;box-shadow:0 3px 12px #0f172a12}.card.entry{border-left-color:#f59e0b;cursor:default}.card h3{margin:0 0 4px;font-size:15px}.card .line{display:flex;justify-content:space-between;gap:8px;margin-top:5px}.muted{color:var(--muted)}.badge{display:inline-flex;padding:3px 7px;border-radius:999px;background:#dbeafe;color:#1d4ed8;font-size:10px;font-weight:850}.badge.ATIVA,.badge.EM_PRODUÇÃO{background:#dcfce7;color:#166534}.badge.FINALIZADA,.badge.ENTREGUE,.badge.RETIRADA{background:#ede9fe;color:#6d28d9}.progress{height:7px;border-radius:999px;background:#e2e8f0;overflow:hidden;margin-top:8px}.progress span{display:block;height:100%;background:var(--green)}
+.message{margin:0 0 10px;padding:9px 11px;border-radius:5px;background:#eaf7f3;color:#075d57}.message.error{background:#fff0f0;color:#b42318}.empty{padding:35px;text-align:center;color:var(--muted)}
+dialog{width:min(1480px,98vw);max-height:96vh;border:0;border-radius:9px;padding:0;box-shadow:0 24px 80px #0f172a66}dialog::backdrop{background:#0f172aaa}.modal-head{display:flex;justify-content:space-between;align-items:center;padding:12px 15px;background:var(--navy);color:#fff}.modal-head h2{margin:0;font-size:18px}.modal-head small{color:#cbd5e1}.modal-body{padding:12px 14px;overflow:auto;max-height:calc(96vh - 61px)}
+.entry-dialog{width:min(1050px,96vw)}.entry-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px}.span2{grid-column:span 2}.entry-foot{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 14px;border-top:1px solid var(--line);background:#f8fafc}
+.summary{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:7px;margin-bottom:10px}.datum{border:1px solid var(--line);border-radius:6px;background:#f8fafc;padding:7px 9px}.datum span{display:block;color:var(--muted);font-size:9px;font-weight:800;text-transform:uppercase}.datum strong{display:block;margin-top:3px;font-size:12px;word-break:break-word}
+.section{border:1px solid var(--line);border-radius:7px;margin-top:9px;overflow:hidden}.section-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 11px;background:#eef3f8}.section-head h3{margin:0;font-size:14px}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;font-size:11px}th{background:#f8fafc;color:#475569;text-transform:uppercase;font-size:9px}th,td{padding:7px 8px;border-bottom:1px solid #e8edf3;text-align:left;vertical-align:middle}.stage-table input,.stage-table select{min-width:125px;min-height:31px;font-size:11px}.stage-table .notes{min-width:180px}.stage-code{font-weight:850;color:#123d6a}.configuration-note{padding:8px 10px;border-radius:5px;background:#e0f2fe;color:#075985;font-weight:750}
+.lifecycle{display:grid;grid-template-columns:1fr 1fr;gap:9px;padding:11px}.form-row{display:grid;grid-template-columns:180px 1fr auto;gap:8px;align-items:end}.history{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:10px}.history-col{border:1px solid var(--line);border-radius:6px;overflow:hidden}.history-col h4{margin:0;padding:8px 9px;background:#f8fafc}.event{padding:7px 9px;border-top:1px solid #edf1f5;font-size:11px}.event:first-of-type{border-top:0}.event strong{display:block}.event small{color:var(--muted)}
+@media(max-width:1000px){.metrics{grid-template-columns:repeat(2,1fr)}.head{flex-direction:column}.summary,.entry-grid{grid-template-columns:repeat(2,1fr)}.lifecycle,.history{grid-template-columns:1fr}.form-row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<header class="head">
+  <div><h1>MES — Gestão integrada de O.S.</h1><p>Entrada de veículos, etapas produtivas, programação, finalização, entrega e histórico na mesma base.</p></div>
+  <div class="actions"><a class="btn" href="/?visao=gerencial">Painel produtivo</a><a class="btn" href="/?visao=geral">Visão geral</a><a class="btn success" href="/exportar_controle_producao">Exportar controle diário</a><button class="btn success" type="button" onclick="openEntry()">+ Entrada de veículo</button><button class="btn primary" type="button" onclick="loadOrders()">Atualizar</button></div>
+</header>
+<div id="message" class="message" hidden></div>
+<section class="metrics">
+  <div class="metric"><span>Entradas sem O.S.</span><strong id="m-entries">—</strong></div>
+  <div class="metric"><span>Ag. parametrização</span><strong id="m-configuration">—</strong></div>
+  <div class="metric"><span>O.S. ativas</span><strong id="m-active">—</strong></div>
+  <div class="metric"><span>Em produção</span><strong id="m-production">—</strong></div>
+  <div class="metric"><span>Finalizadas</span><strong id="m-finished">—</strong></div>
+  <div class="metric"><span>Entregues / retiradas</span><strong id="m-delivered">—</strong></div>
+</section>
+<section class="panel">
+  <div class="toolbar">
+    <label class="search">Buscar<input id="search" type="search" placeholder="ITEM, O.S., chassi, cliente, linha ou transformação" oninput="render()"></label>
+    <label>Visão<select id="view" onchange="render()"><option value="ACTIVE">Quadro ativo</option><option value="ENTRIES">Entradas aguardando O.S.</option><option value="HISTORY">Finalizadas e entregues</option><option value="ALL">Todas as O.S.</option></select></label>
+    <button class="btn" type="button" onclick="document.getElementById('search').value='';render()">Limpar</button>
+  </div>
+  <div id="cards" class="cards"></div><div id="empty" class="empty" hidden>Nenhum registro encontrado nesta visão.</div>
+</section>
+</main>
+
+<dialog id="entry-dialog" class="entry-dialog">
+<form id="entry-form">
+  <header class="modal-head"><div><h2>Registrar entrada de veículo</h2><small>O ITEM será gerado automaticamente; o chassi ficará disponível em Suprimentos.</small></div><button class="btn" type="button" onclick="entryDialog.close()">Fechar</button></header>
+  <div class="modal-body entry-grid">
+    <label class="span2">Chassi completo<input name="chassi" required maxlength="40"></label>
+    <label>Data e hora de chegada<input name="data_chegada" type="datetime-local" required></label>
+    <label>Tipo preliminar<select name="tipo_preliminar"><option>TRANSFORMAÇÃO</option><option>PÓS-VENDA</option><option>RETORNO</option><option>OUTRO</option></select></label>
+    <label class="span2">Cliente<input name="cliente_nome"></label><label>Marca<select name="marca"></select></label><label>Modelo<select name="modelo"></select></label>
+    <label class="span2">Versão<select name="versao"></select></label>
+    <label>Avarias?<select name="avarias"><option value="NÃO">NÃO</option><option value="SIM">SIM</option></select></label>
+    <label class="span2">Observações de chegada<textarea name="observacoes" rows="3" placeholder="Se houver avarias, descreva aqui."></textarea></label>
+  </div>
+  <footer class="entry-foot"><span class="muted">MMV não é necessário nesta etapa.</span><button class="btn success" type="submit">Registrar entrada e gerar ITEM</button></footer>
+</form>
+</dialog>
+
+<dialog id="detail-dialog">
+<header class="modal-head"><div><h2 id="detail-title">O.S.</h2><small id="detail-subtitle"></small></div><button class="btn" type="button" onclick="detailDialog.close()">Fechar</button></header>
+<div class="modal-body">
+  <section id="summary" class="summary"></section>
+  <section class="section">
+    <header class="section-head">
+      <div><h3>Etapas produtivas</h3><span id="stage-help" class="muted">Os pré-requisitos são validados pelo backend.</span></div>
+      <div id="configuration-actions" class="actions" hidden>
+        <button class="btn" type="button" onclick="saveStageConfiguration(false)">Salvar parametrização</button>
+        <button class="btn success" type="button" onclick="saveStageConfiguration(true)">Concluir parametrização e ativar card</button>
+      </div>
+    </header>
+    <div class="table-wrap"><table class="stage-table"><thead><tr><th>Etapa</th><th>Status</th><th>Responsável</th><th>Localização</th><th>Início</th><th>Término</th><th>Observações</th><th></th></tr></thead><tbody id="stage-rows"></tbody></table></div>
+  </section>
+  <section class="section">
+    <header class="section-head"><h3>Programação e encerramento</h3><span class="muted">A data inicial vem da abertura da O.S.; alterações aqui são reprogramações.</span></header>
+    <div class="lifecycle">
+      <div><h4>Reprogramar entrega</h4><div class="form-row"><label>Nova data<input id="schedule-date" type="date"></label><label>Motivo<input id="schedule-reason" placeholder="Motivo obrigatório"></label><button class="btn primary" type="button" onclick="schedule()">Registrar</button></div></div>
+      <div><h4>Finalização, entrega ou retirada</h4><div class="form-row"><label>Status<select id="closing-status"><option value="FINALIZADA">Produção finalizada</option><option value="ENTREGUE">Entregue</option><option value="RETIRADA">Retirada</option></select></label><label>Data/hora<input id="closing-date" type="datetime-local"></label><label>Observação<input id="closing-note" placeholder="Condição final, entrega, responsável..."></label><button class="btn success" type="button" onclick="closeWork()">Registrar</button></div></div>
+    </div>
+  </section>
+  <section class="section">
+    <header class="section-head"><h3>Histórico completo</h3><span class="muted">Status, programação e apontamentos produtivos.</span></header>
+    <div class="history"><div class="history-col"><h4>Status da O.S.</h4><div id="status-history"></div></div><div class="history-col"><h4>Programações</h4><div id="schedule-history"></div></div><div class="history-col"><h4>Apontamentos</h4><div id="stage-history"></div></div></div>
+  </section>
+</div>
+</dialog>
+
+<script>
+const state={orders:[],detail:null,catalogs:{},queryHandled:false};
+const detailDialog=document.getElementById('detail-dialog'),entryDialog=document.getElementById('entry-dialog');
+const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const norm=v=>String(v??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
+const isoDate=v=>v?String(v).slice(0,10):'';
+const date=v=>{if(!v)return '—';const d=new Date(`${isoDate(v)}T12:00:00`);return Number.isNaN(d.getTime())?'—':d.toLocaleDateString('pt-BR')};
+const datetime=v=>{if(!v)return '—';const d=new Date(v);return Number.isNaN(d.getTime())?'—':d.toLocaleString('pt-BR')};
+const inputDatetime=v=>{if(!v)return '';const d=new Date(v);if(Number.isNaN(d.getTime()))return '';return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,16)};
+function message(text,error=false){const box=document.getElementById('message');box.hidden=!text;box.className='message'+(error?' error':'');box.textContent=text||''}
+async function api(url,options={}){const response=await fetch(url,{headers:{'Content-Type':'application/json'},...options});let body={};try{body=await response.json()}catch{}if(!response.ok||body.ok===false)throw new Error(body.error||'Falha na operação.');return body}
+function displayStatus(row){return row&&['RASCUNHO','AGUARDANDO_O_S'].includes(row.status)&&row.stage_configuration_status==='PENDENTE'?'AG. PARAMETRIZAÇÃO':(row?.status||row?.entry_status||'AGUARDANDO O.S.').replaceAll('_',' ')}
+function metrics(){const rows=state.orders;document.getElementById('m-entries').textContent=rows.filter(x=>!x.work_order_id).length;document.getElementById('m-configuration').textContent=rows.filter(x=>x.work_order_id&&['RASCUNHO','AGUARDANDO_O_S'].includes(x.status)&&x.stage_configuration_status==='PENDENTE').length;document.getElementById('m-active').textContent=rows.filter(x=>x.status==='ATIVA').length;document.getElementById('m-production').textContent=rows.filter(x=>x.status==='EM_PRODUÇÃO').length;document.getElementById('m-finished').textContent=rows.filter(x=>x.status==='FINALIZADA').length;document.getElementById('m-delivered').textContent=rows.filter(x=>['ENTREGUE','RETIRADA'].includes(x.status)).length}
+function render(){
+  const query=norm(document.getElementById('search').value),view=document.getElementById('view').value,isOperational=x=>['ATIVA','EM_PRODUÇÃO'].includes(x.status)||(['RASCUNHO','AGUARDANDO_O_S'].includes(x.status)&&x.stage_configuration_status==='PENDENTE'),isHistory=x=>['FINALIZADA','ENTREGUE','RETIRADA','CANCELADA','ARQUIVADA'].includes(x.status);
+  const rows=state.orders.filter(x=>(view==='ENTRIES'?!x.work_order_id:x.work_order_id&&(view==='ALL'||(view==='ACTIVE'&&isOperational(x))||(view==='HISTORY'&&isHistory(x))))&&(!query||norm([x.item_number,x.numero_os,x.chassi,x.cliente_nome,x.entry_client,x.linha,x.transformacao].join(' ')).includes(query)));
+  document.getElementById('empty').hidden=rows.length>0;
+  document.getElementById('cards').innerHTML=rows.map(x=>{
+    if(!x.work_order_id)return `<article class="card entry"><div class="line"><h3>ITEM ${esc(x.item_number)}</h3><span class="badge">AGUARDANDO O.S.</span></div><strong>${esc(x.chassi)}</strong><div class="muted">${esc(x.entry_client||'Cliente não informado')}</div><div class="line"><span>${esc([x.marca,x.modelo,x.versao].filter(Boolean).join(' ')||'Veículo não detalhado')}</span><span>${date(x.data_chegada)}</span></div><p class="muted">Disponível para alocação e abertura da O.S. em Suprimentos.</p></article>`;
+    const total=Number(x.etapas_aplicaveis||0),done=Number(x.etapas_concluidas||0),pendingConfiguration=Number(x.etapas_nao_parametrizadas||0),isPendingConfiguration=['RASCUNHO','AGUARDANDO_O_S'].includes(x.status)&&x.stage_configuration_status==='PENDENTE',configured=Math.max(0,Number(x.etapas_total||0)-pendingConfiguration),pct=isPendingConfiguration?Math.round(configured*100/12):(total?Math.round(done*100/total):0),statusLabel=displayStatus(x);
+    const vehicle=[x.marca,x.modelo,x.versao].filter(Boolean).join(' ')||'Veículo não detalhado';
+    return `<article class="card" onclick="openDetail('${x.work_order_id}')"><div class="line"><h3>ITEM ${esc(x.item_number)} · O.S. ${esc(x.numero_os)}</h3><span class="badge ${esc(x.status)}">${esc(statusLabel)}</span></div><strong>${esc(String(x.chassi||'').slice(-8))}</strong><div>${esc(vehicle)}</div><div class="muted">${esc(x.cliente_nome||x.entry_client||'Cliente não informado')}</div><div class="line"><span>${esc(x.linha||'—')} · ${esc(x.transformacao||'—')}</span><span>${date(x.data_comercial_prevista)}</span></div><div class="progress"><span style="width:${pct}%"></span></div><div class="line muted"><span>${isPendingConfiguration?`${configured}/12 etapas parametrizadas`:`${done}/${total} etapas concluídas`}</span></div></article>`;
+  }).join('');
+}
+function fillEntrySelect(name,values){const el=document.getElementById('entry-form').elements[name];el.innerHTML='<option value="">Selecione...</option>'+(values||[]).map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('')}
+function openEntry(){const form=document.getElementById('entry-form');form.reset();fillEntrySelect('marca',state.catalogs.marcas);fillEntrySelect('modelo',state.catalogs.modelos);fillEntrySelect('versao',state.catalogs.versoes);form.elements.data_chegada.value=new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16);entryDialog.showModal()}
+document.getElementById('entry-form').onsubmit=async event=>{event.preventDefault();try{const payload=Object.fromEntries(new FormData(event.target).entries());payload.origem='MES';if(payload.data_chegada)payload.data_chegada=new Date(payload.data_chegada).toISOString();const created=await api('/api/erp/vehicle-entries',{method:'POST',body:JSON.stringify(payload)});entryDialog.close();await loadOrders();document.getElementById('view').value='ENTRIES';render();message(`ITEM ${created.item_number} registrado. O chassi já está disponível em Suprimentos.`)}catch(error){message(error.message,true)}};
+async function loadOrders(){try{message('Carregando dados integrados...');const [data,catalogs]=await Promise.all([api('/api/erp/work-orders'),api('/api/erp/catalogs')]);state.orders=data.orders||[];state.catalogs=catalogs;metrics();render();message('');if(!state.queryHandled){state.queryHandled=true;const params=new URLSearchParams(location.search);if(params.get('new_entry')==='1')openEntry();else if(params.get('work_order_id'))await openDetail(params.get('work_order_id'))}}catch(error){message(error.message,true)}}
+function datum(label,value,span=false){return `<div class="datum ${span?'span2':''}"><span>${label}</span><strong>${esc(value||'—')}</strong></div>`}
+function eventHtml(title,meta,note=''){return `<div class="event"><strong>${esc(title)}</strong><small>${esc(meta)}</small>${note?`<div>${esc(note)}</div>`:''}</div>`}
+async function openDetail(id){try{const data=await api(`/api/erp/work-orders/${id}`);state.detail=data;const w=data.work_order,statusLabel=displayStatus(w);document.getElementById('detail-title').textContent=`ITEM ${w.item_number} · O.S. ${w.numero_os}`;document.getElementById('detail-subtitle').textContent=`${w.chassi} · ${w.cliente_nome||'Cliente não informado'} · ${statusLabel}`;document.getElementById('summary').innerHTML=[
+datum('Situação',statusLabel),datum('Entrada',datetime(w.data_chegada)),datum('Aprovação',date(w.data_aprovacao)),datum('Proposta',w.proposta_numero),datum('Vendedor',w.vendedor),datum('Mercado',w.mercado),
+datum('Cliente',w.cliente_nome,true),datum('Município / UF',[w.municipio,w.uf].filter(Boolean).join(' / ')),datum('Veículo',[w.marca,w.modelo,w.versao].filter(Boolean).join(' '),true),datum('Chassi completo',w.chassi,true),
+datum('Linha',w.linha),datum('Transformação',[w.transformacao_codigo,w.transformacao].filter(Boolean).join(' — '),true),datum('Bancos',[w.codigo_banco,w.conjunto_bancos].filter(Boolean).join(' · '),true),datum('Acessibilidade',w.acessibilidade),datum('Lotação',w.lotacao),
+datum('Fornecedor do ar',w.ar_condicionado),datum('Tipo de ar',w.tipo_sistema_ar,true),datum('Ar quente?',w.ar_quente),datum('Acessório',w.acessorio),datum('Plotagem',w.plotagem),datum('Data de entrega vigente',date(w.data_comercial_prevista)),datum('Início do ciclo',datetime(w.inicio_ciclo_produtivo)),datum('Fim do ciclo',datetime(w.fim_ciclo_produtivo||w.termino_producao)),datum('Entrega / retirada',datetime(w.data_entrega)),datum('Avarias de entrada',w.avarias,true),datum('Informações de entrada',w.entry_notes,true)
+].join('');renderStages();renderHistory();document.getElementById('closing-date').value=new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16);document.getElementById('schedule-date').value=isoDate(w.data_comercial_prevista);detailDialog.showModal()}catch(error){message(error.message,true)}}
+const stageInputs=[['?','? — Parametrizar'],['P','P — Parcial'],['N','N — Pendente'],['S','S — Concluída'],['N/A','N/A — Não aplicável']];
+function renderStages(){const work=state.detail.work_order,closed=['FINALIZADA','ENTREGUE','RETIRADA','CANCELADA','ARQUIVADA'].includes(work.status),hardLocked=['CANCELADA','ARQUIVADA'].includes(work.status),configuring=['RASCUNHO','AGUARDANDO_O_S'].includes(work.status);document.getElementById('configuration-actions').hidden=!configuring;document.getElementById('stage-help').textContent=configuring?'Defina todas as etapas. Enquanto houver “?”, a O.S. permanece AG. PARAMETRIZAÇÃO.':closed?'Histórico técnico: as datas de início e fim podem ser corrigidas sem reabrir a O.S.':'';document.getElementById('stage-rows').innerHTML=(state.detail.stages||[]).map(s=>`<tr data-stage="${esc(s.stage_code)}"><td><span class="stage-code">${esc(s.stage_code)}</span><br><span class="badge ${esc(s.status)}">${esc(s.input_code||'?')} · ${esc(s.status.replaceAll('_',' '))}</span></td><td><select class="stage-status" ${closed?'disabled':''}>${stageInputs.map(([value,label])=>`<option value="${value}" ${value===(s.input_code||'?')?'selected':''}>${label}</option>`).join('')}</select></td><td><input class="stage-owner" value="${esc(s.responsavel||'')}" ${closed||configuring?'disabled':''}></td><td><input class="stage-location" value="${esc(s.localizacao||'')}" ${closed||configuring?'disabled':''}></td><td><input class="stage-start" type="datetime-local" value="${esc(inputDatetime(s.inicio))}" ${hardLocked?'disabled':''}></td><td><input class="stage-finish" type="datetime-local" value="${esc(inputDatetime(s.termino))}" ${hardLocked?'disabled':''}></td><td><input class="stage-note notes" value="${esc(s.observacoes||'')}" ${closed||configuring?'disabled':''}></td><td>${configuring?'—':`<button class="btn primary" ${hardLocked?'disabled':''} type="button" onclick="saveStage(this)">Salvar</button>`}</td></tr>`).join('')}
+async function saveStageConfiguration(activate){const work=state.detail.work_order,stages={};document.querySelectorAll('#stage-rows tr').forEach(row=>stages[row.dataset.stage]=row.querySelector('.stage-status').value);try{await api(`/api/erp/work-orders/${work.id}/stage-configuration`,{method:'PUT',body:JSON.stringify({stages,complete:activate,activate})});await loadOrders();await openDetail(work.id);message(activate?`O.S. ${work.numero_os} parametrizada e ativada no quadro produtivo.`:'Parametrização salva. A O.S. continuará em espera enquanto houver “?”.')}catch(error){message(error.message,true)}}
+async function saveStage(button){const row=button.closest('tr'),work=state.detail.work_order,start=row.querySelector('.stage-start').value,finish=row.querySelector('.stage-finish').value,payload={input_code:row.querySelector('.stage-status').value,responsavel:row.querySelector('.stage-owner').value,localizacao:row.querySelector('.stage-location').value,inicio:start?new Date(start).toISOString():null,termino:finish?new Date(finish).toISOString():null,observacoes:row.querySelector('.stage-note').value,idempotency_key:crypto.randomUUID()};try{await api(`/api/erp/work-orders/${work.id}/stages/${encodeURIComponent(row.dataset.stage)}`,{method:'POST',body:JSON.stringify(payload)});await openDetail(work.id);await loadOrders();message(`Etapa ${row.dataset.stage} atualizada na O.S. e na Visão Geral.`)}catch(error){message(error.message,true)}}
+async function schedule(){const w=state.detail.work_order,payload={nova_data:document.getElementById('schedule-date').value,motivo:document.getElementById('schedule-reason').value};try{await api(`/api/erp/work-orders/${w.id}/schedules`,{method:'POST',body:JSON.stringify(payload)});await openDetail(w.id);await loadOrders();message('Reprogramação registrada com histórico.')}catch(error){message(error.message,true)}}
+async function closeWork(){const w=state.detail.work_order,status=document.getElementById('closing-status').value,localEvent=document.getElementById('closing-date').value,data_evento=localEvent?new Date(localEvent).toISOString():null,observacoes=document.getElementById('closing-note').value;const label={FINALIZADA:'finalizar a produção',ENTREGUE:'registrar a entrega',RETIRADA:'registrar a retirada'}[status];if(!confirm(`Confirma ${label} da O.S. ${w.numero_os}?`))return;try{await api(`/api/erp/work-orders/${w.id}/finalize`,{method:'POST',body:JSON.stringify({status,data_evento,observacoes})});detailDialog.close();await loadOrders();document.getElementById('view').value='HISTORY';render();message(`O.S. ${w.numero_os}: ${status.replaceAll('_',' ')}. Histórico preservado.`)}catch(error){message(error.message,true)}}
+function renderHistory(){const d=state.detail;document.getElementById('status-history').innerHTML=(d.status_history||[]).map(x=>eventHtml(`${x.status_anterior||'INÍCIO'} → ${x.novo_status}`,`${datetime(x.created_at)} · ${x.usuario}`,x.observacao||x.motivo)).join('')||'<div class="event muted">Sem alterações.</div>';document.getElementById('schedule-history').innerHTML=(d.schedules||[]).map(x=>eventHtml(`${x.data_anterior?date(x.data_anterior):'DATA INICIAL'} → ${date(x.nova_data)}`,`${datetime(x.created_at)} · ${x.usuario} · ${x.vigente?'DATA VIGENTE':'DATA ALTERADA'}`,x.motivo)).join('')||'<div class="event muted">Sem programação.</div>';document.getElementById('stage-history').innerHTML=(d.stage_events||[]).map(x=>eventHtml(`${x.stage_code}: ${x.status_anterior||'—'} → ${x.novo_status}`,`${datetime(x.created_at)} · ${x.operador}`,x.observacao)).join('')||'<div class="event muted">Sem apontamentos.</div>'}
+loadOrders();
+</script>
+</body>
+</html>

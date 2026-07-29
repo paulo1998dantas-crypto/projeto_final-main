@@ -18,12 +18,16 @@ from zoneinfo import ZoneInfo
 import datetime
 import unicodedata
 import re
+from types import SimpleNamespace
 
 # Configuração de diretórios e templates
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 import database, models
+import erp_service
+import erp_catalogs
+import erp_report
 
 LOCAL_TZ = ZoneInfo("America/Sao_Paulo")
 
@@ -97,6 +101,54 @@ ensure_columns()
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+
+
+def erp_feature_enabled():
+    return os.environ.get("ERP_FEATURE_FLAG", "false").strip().lower() in {"1", "true", "yes", "sim", "on"}
+
+def erp_backend_actor(request: Request):
+    supplied = request.headers.get("X-ERP-Backend-Token", "").strip()
+    expected = os.environ.get("ERP_BACKEND_TOKEN", "").strip()
+    client_host = request.client.host if request.client else ""
+    local_fallback = (
+        not expected
+        and not os.environ.get("RENDER")
+        and client_host in {"127.0.0.1", "::1", "localhost"}
+        and bool(supplied)
+    )
+    if not local_fallback and (not expected or not supplied or not hmac.compare_digest(expected, supplied)):
+        return None
+    return request.headers.get("X-ERP-Actor", "").strip() or "integração-suprimentos"
+
+
+def erp_disabled_response():
+    return JSONResponse({"ok": False, "error": "Integração ERP desativada pela feature flag."}, status_code=404)
+
+
+@app.get("/healthz", include_in_schema=False)
+async def healthz():
+    """Render health check without exposing credentials or operational rows."""
+    try:
+        with database.engine.connect() as conn:
+            conn.execute(text("select 1"))
+        inspector = inspect(database.engine)
+        return {
+            "ok": True,
+            "database": True,
+            "erp_feature": erp_feature_enabled(),
+            "erp_schema": inspector.has_table("erp_work_orders"),
+            "legacy_schema": inspector.has_table("veiculos"),
+        }
+    except Exception:
+        return JSONResponse(
+            {
+                "ok": False,
+                "database": False,
+                "erp_feature": erp_feature_enabled(),
+            },
+            status_code=503,
+        )
+
 
 @app.middleware("http")
 async def no_cache_headers(request: Request, call_next):
@@ -312,6 +364,11 @@ def normalize_filter(value: str) -> str:
 def normalize_chassi(value) -> str:
     return "".join(safe_str(value).upper().split())
 
+def chassi_exibicao(value) -> str:
+    """Chassi abreviado para os quadros; a consulta continua usando o valor completo."""
+    normalized = normalize_chassi(value)
+    return normalized[-8:] if len(normalized) > 8 else normalized
+
 MARCAS_MMV = {
     "MARCA",
     "MERCEDES",
@@ -371,6 +428,8 @@ def resumir_mmv(value) -> str:
 
 def normalize_linha(value) -> str:
     linha = normalize_filter(value)
+    if linha in ["LB", "LAB", "LE", "LAE"]:
+        return linha
     if linha in ["BASICA", "LINHA BASICA", "BASIC"]:
         return "BÁSICA"
     if linha in ["EXECUTIVA", "LINHA EXECUTIVA", "EXEC"]:
@@ -451,6 +510,16 @@ def listar_semanas_producao(db: Session):
         func.trim(func.coalesce(models.Veiculo.semana_producao, "")) != ""
     ).distinct().all()
     semanas = {normalize_semana_producao(valor[0]) for valor in valores if normalize_semana_producao(valor[0])}
+    if erp_feature_enabled() and inspect(database.engine).has_table("erp_work_orders"):
+        with database.engine.connect() as conn:
+            datas_erp = conn.execute(text("""
+                select data_comercial_prevista from erp_work_orders
+                where data_comercial_prevista is not null
+            """)).scalars().all()
+        semanas.update(
+            str((value.date() if isinstance(value, datetime.datetime) else value).isocalendar().week)
+            for value in datas_erp
+        )
     return sorted(semanas, key=semana_ordenacao)
 
 def is_liberacao_filter(value: str) -> bool:
@@ -461,18 +530,23 @@ def normalize_etapa(value: str) -> str:
         return ""
     v = str(value).strip().upper()
     v = v.replace("  ", " ")
+    sem_acento = normalize_filter(v)
 
-    if v in ["AC", "A/C"]:
+    if sem_acento in ["AC", "A/C"]:
         return "A/C"
-    if v in ["LIBERA", "LIBERA."]:
+    if sem_acento in ["LIBERA", "LIBERA.", "LIBERACAO"]:
         return "LIBERA."
-    if v in ["ACESSO", "ACESSO.", "ACESSÓ", "ACESSÓ."]:
+    if sem_acento in ["ACESSO", "ACESSO.", "ACESSORIO"]:
         return "ACESSÓ."
-    if v in ["SERRA", "SERRA."]:
+    if sem_acento in ["SERRA", "SERRA."]:
         return "SERRA."
-    if v in ["DESMON", "DESMONT"]:
+    if sem_acento in ["EXPE", "EXPE.", "EXPEDICAO"]:
+        return "EXPE."
+    if sem_acento in ["PLOTA", "PLOTA.", "PLOTAGEM"]:
+        return "PLOTA."
+    if sem_acento in ["DESMON", "DESMONT"]:
         return "DESMONT"
-    if v in ["ELETRICA", "ELÉTRICA", "ELÉTRIC", "ELÉTRIC."]:
+    if sem_acento in ["ELETRICA", "ELETRIC", "ELETRIC."]:
         return "ELÉTRICA"
     return v
 
@@ -503,7 +577,6 @@ KANBAN_COLUNAS = [
     {"id": "prep", "titulo": "PREPARAÇÃO", "etapa": "PREP", "grupo": "Independente"},
     {"id": "expe", "titulo": "EXPEDIÇÃO", "etapa": "EXPE.", "grupo": "Independente"},
     {"id": "serra", "titulo": "SERRALHERIA", "etapa": "SERRA.", "grupo": "Independente"},
-    {"id": "plota", "titulo": "PLOTA", "etapa": "PLOTA.", "grupo": "Independente"},
     {"id": "vidros", "titulo": "VIDROS", "etapa": "VIDROS", "grupo": "Produtiva"},
     {"id": "ac", "titulo": "AR COND.", "etapa": "A/C", "grupo": "Produtiva"},
     {"id": "desmont", "titulo": "DESMONTAGEM", "etapa": "DESMONT", "grupo": "Produtiva"},
@@ -535,13 +608,26 @@ def etapa_concluida_ou_na(veiculo, status_map, etapa):
 def etapa_pendente_kanban(status_map, etapa):
     return status_etapa(status_map, etapa) in STATUS_PENDENTE
 
+def veiculo_atende_filtro_etapa(veiculo, status_map, etapa):
+    filtro = normalize_etapa(etapa)
+    if filtro in ["GE", "CLIM"]:
+        return (
+            normalize_filter(veiculo.ar_condicionado) == filtro
+            and ETAPA_REGRAS["A/C"](status_map)
+        )
+    if filtro == "BCO":
+        banco_flag = normalize_filter(getattr(veiculo, "banco_presente", ""))
+        if banco_flag in ["N", "NAO", "NAO TEM", "SEM", "0"]:
+            return False
+    return filtro in ETAPA_REGRAS and ETAPA_REGRAS[filtro](status_map)
+
 def deve_exibir_no_kanban(veiculo, status_map, coluna):
     etapa = coluna["etapa"]
     coluna_id = coluna["id"]
 
     if coluna_id == "entregas":
         return True
-    if coluna_id in ["prep", "expe", "serra", "plota"]:
+    if coluna_id in ["prep", "expe", "serra"]:
         return etapa_pendente_kanban(status_map, etapa)
     if coluna_id == "vidros":
         return etapa_pendente_kanban(status_map, etapa)
@@ -556,7 +642,7 @@ def deve_exibir_no_kanban(veiculo, status_map, coluna):
     if coluna_id == "revest":
         return etapa_concluida_ou_na(veiculo, status_map, "DESMONT") and etapa_pendente_kanban(status_map, etapa)
     if coluna_id == "eletrica":
-        return etapa_concluida_ou_na(veiculo, status_map, "REVEST") and etapa_pendente_kanban(status_map, etapa)
+        return etapa_concluida_ou_na(veiculo, status_map, "DESMONT") and etapa_pendente_kanban(status_map, etapa)
     if coluna_id == "bco":
         return (
             veiculo_tem_banco(veiculo)
@@ -564,12 +650,19 @@ def deve_exibir_no_kanban(veiculo, status_map, coluna):
             and etapa_pendente_kanban(status_map, etapa)
         )
     if coluna_id == "acesso":
-        return etapa_concluida_ou_na(veiculo, status_map, "BCO") and etapa_pendente_kanban(status_map, etapa)
+        return etapa_pendente_kanban(status_map, etapa)
     return False
 
 def montar_card_kanban(veiculo, status_map, etapa):
     return {
+        "dashboard_key": getattr(veiculo, "dashboard_key", str(veiculo.chassi).strip()),
+        "source": getattr(veiculo, "source", "LEGADO"),
+        "work_order_id": getattr(veiculo, "work_order_id", None),
+        "numero_os": getattr(veiculo, "numero_os", None),
+        "item_number": getattr(veiculo, "item_number", None),
+        "detail_url": getattr(veiculo, "detail_url", f"/veiculo/{veiculo.chassi}"),
         "chassi": veiculo.chassi,
+        "chassi_exibicao": getattr(veiculo, "chassi_exibicao", chassi_exibicao(veiculo.chassi)),
         "modelo": veiculo.modelo or "-",
         "modelo_resumido": resumir_mmv(veiculo.modelo),
         "linha": veiculo.linha or "NÃO INFORMADA",
@@ -595,13 +688,11 @@ def data_entrega_ordenacao(veiculo):
 def montar_kanban(veiculos, status_maps, incluir_plotagem=True):
     colunas = []
     for coluna in KANBAN_COLUNAS:
-        if not incluir_plotagem and coluna["id"] == "plota":
-            continue
         cards = []
         veiculos_coluna = sorted(veiculos, key=data_entrega_ordenacao) if coluna["id"] == "entregas" else veiculos
         for veiculo in veiculos_coluna:
-            chassi_key = str(veiculo.chassi).strip()
-            status_map = status_maps.get(chassi_key, {})
+            dashboard_key = getattr(veiculo, "dashboard_key", str(veiculo.chassi).strip())
+            status_map = status_maps.get(dashboard_key, {})
             if deve_exibir_no_kanban(veiculo, status_map, coluna):
                 cards.append(montar_card_kanban(veiculo, status_map, coluna["etapa"]))
         colunas.append({
@@ -613,11 +704,11 @@ def montar_kanban(veiculos, status_maps, incluir_plotagem=True):
 
 def contar_chassis_ativos_kanban(colunas):
     return len({
-        normalize_chassi(card.get("chassi"))
+        card.get("dashboard_key") or normalize_chassi(card.get("chassi"))
         for coluna in colunas
         if coluna.get("id") != "entregas"
         for card in coluna.get("cards", [])
-        if normalize_chassi(card.get("chassi"))
+        if card.get("dashboard_key") or normalize_chassi(card.get("chassi"))
     })
 
 def aplicar_filtros_veiculos(
@@ -669,6 +760,125 @@ def aplicar_filtros_veiculos(
 
     return query
 
+def _erp_stage_dashboard_status(value):
+    status = normalize_filter(value)
+    if status == "CONCLUIDA":
+        return "SIM"
+    if status == "NAO_APLICAVEL":
+        return "N/A"
+    if status == "EM_ANDAMENTO":
+        return "PARCIAL"
+    return "NÃO"
+
+def carregar_erp_dashboard(
+    modelo: str = None,
+    linha: str = None,
+    semana=None,
+    entrega_inicio: str = None,
+    entrega_fim: str = None,
+):
+    """Adapta O.S. ERP ao Kanban legado sem copiar ou duplicar dados."""
+    if not erp_feature_enabled() or not inspect(database.engine).has_table("erp_work_orders"):
+        return [], {}
+
+    with database.engine.connect() as conn:
+        rows = conn.execute(text("""
+            select w.id as work_order_id,w.numero_os,w.status,w.linha,
+                   w.cliente_nome,w.municipio,w.uf,w.transformacao,
+                   w.ar_condicionado,w.conjunto_bancos,w.data_comercial_prevista,
+                   e.item_number,v.chassi,v.marca,v.modelo,v.versao
+            from erp_work_orders w
+            join erp_vehicle_entries e on e.id=w.vehicle_entry_id
+            join erp_vehicles v on v.id=e.vehicle_id
+        """)).mappings().all()
+        stage_rows = conn.execute(text("""
+            select s.work_order_id,s.stage_code,s.status,s.aplicavel,s.localizacao,s.ordem
+            from erp_work_order_stages s
+        """)).mappings().all()
+
+    stages_by_work = {}
+    for stage in stage_rows:
+        stages_by_work.setdefault(str(stage["work_order_id"]), []).append(stage)
+
+    termo = normalize_filter(modelo)
+    linha_filtro = normalize_linha(linha)
+    semanas_filtro = set(normalize_semanas_producao(semana))
+    inicio, fim = intervalo_entrega_normalizado(entrega_inicio, entrega_fim)
+    vehicles, status_maps = [], {}
+
+    for row in rows:
+        if normalize_filter(row["status"]) not in {"ATIVA", "EM_PRODUCAO"}:
+            continue
+        planned = row["data_comercial_prevista"]
+        planned_date = planned.date() if isinstance(planned, datetime.datetime) else planned
+        week = str(planned_date.isocalendar().week) if planned_date else ""
+        searchable = normalize_filter(" ".join(str(row.get(name) or "") for name in (
+            "item_number", "numero_os", "chassi", "marca", "modelo", "versao",
+            "cliente_nome", "municipio", "uf", "linha", "transformacao",
+        )))
+        if termo and termo not in searchable:
+            continue
+        if linha_filtro and normalize_linha(row["linha"]) != linha_filtro:
+            continue
+        if semanas_filtro and normalize_semana_producao(week) not in semanas_filtro:
+            continue
+        if inicio and (not planned_date or planned_date < inicio):
+            continue
+        if fim and (not planned_date or planned_date > fim):
+            continue
+
+        work_id = str(row["work_order_id"])
+        dashboard_key = f"ERP:{work_id}"
+        work_stages = sorted(stages_by_work.get(work_id, []), key=lambda item: item["ordem"] or 0)
+        status_map = {
+            normalize_etapa(stage["stage_code"]): _erp_stage_dashboard_status(stage["status"])
+            for stage in work_stages
+        }
+        applicable = [stage for stage in work_stages if stage["aplicavel"]]
+        concluded = [stage for stage in applicable if normalize_filter(stage["status"]) == "CONCLUIDA"]
+        current_stage = next(
+            (stage["stage_code"] for stage in work_stages
+             if stage["aplicavel"] and normalize_filter(stage["status"]) not in {"CONCLUIDA", "NAO_APLICAVEL"}),
+            "FINALIZADO",
+        )
+        location = next(
+            (str(stage["localizacao"]).strip() for stage in reversed(work_stages)
+             if str(stage["localizacao"] or "").strip()),
+            "",
+        )
+        delivery_dt = (
+            datetime.datetime.combine(planned_date, datetime.time.min, tzinfo=LOCAL_TZ)
+            if planned_date else None
+        )
+        vehicle = SimpleNamespace(
+            dashboard_key=dashboard_key,
+            source="ERP",
+            work_order_id=work_id,
+            numero_os=row["numero_os"],
+            item_number=row["item_number"],
+            detail_url=f"/veiculo/{str(row['chassi'] or '').strip()}?work_order_id={work_id}",
+            chassi=str(row["chassi"] or ""),
+            chassi_exibicao=chassi_exibicao(row["chassi"]),
+            modelo=" ".join(str(row.get(name) or "").strip() for name in ("marca", "modelo", "versao")).strip(),
+            linha=str(row["linha"] or ""),
+            semana_producao=week,
+            ordem=row["item_number"],
+            ar_condicionado=str(row["ar_condicionado"] or ""),
+            cj_bco=str(row["conjunto_bancos"] or ""),
+            cliente=str(row["cliente_nome"] or ""),
+            destino=" / ".join(value for value in (str(row["municipio"] or "").strip(), str(row["uf"] or "").strip()) if value),
+            data_entrega=delivery_dt,
+            data_entrega_fmt=format_data_entrega(delivery_dt),
+            localizacao=location,
+            banco_presente="SIM" if str(row["conjunto_bancos"] or "").strip() else "NÃO",
+            progresso=int(len(concluded) * 100 / len(applicable)) if applicable else 0,
+            etapa_atual=current_stage,
+        )
+        vehicles.append(vehicle)
+        status_maps[dashboard_key] = status_map
+
+    return sorted(vehicles, key=lambda item: (item.ordem or 0, item.chassi)), status_maps
+
 def carregar_veiculos_dashboard(
     db: Session,
     modelo: str = None,
@@ -705,6 +915,7 @@ def carregar_veiculos_dashboard(
     status_maps = {}
     for v in veiculos_db:
         v.data_entrega_fmt = format_data_entrega(v.data_entrega)
+        v.chassi_exibicao = chassi_exibicao(v.chassi)
         chassi_key = str(v.chassi).strip()
         aponts = apont_por_chassi.get(chassi_key, [])
 
@@ -726,6 +937,16 @@ def carregar_veiculos_dashboard(
                 v.etapa_atual = e
                 break
 
+    erp_vehicles, erp_status_maps = carregar_erp_dashboard(
+        modelo, linha, semana, entrega_inicio, entrega_fim
+    )
+    erp_chassis = {normalize_chassi(item.chassi) for item in erp_vehicles}
+    veiculos_db = [
+        item for item in veiculos_db
+        if normalize_chassi(item.chassi) not in erp_chassis
+    ]
+    veiculos_db.extend(erp_vehicles)
+    status_maps.update(erp_status_maps)
     return veiculos_db, status_maps
 
 ensure_default_admin()
@@ -783,6 +1004,7 @@ async def home(
     status_maps = {}
     for v in veiculos_db:
         v.data_entrega_fmt = format_data_entrega(v.data_entrega)
+        v.chassi_exibicao = chassi_exibicao(v.chassi)
         chassi_key = str(v.chassi).strip()
         aponts = apont_por_chassi.get(chassi_key, [])
 
@@ -809,20 +1031,36 @@ async def home(
 
         # FILTRAGEM POR ETAPA (Lógica de Negócio)
         if etapa and etapa.strip() and not modo_liberacao and not modo_gerencial:
-            filtro = normalize_etapa(etapa)
-            if filtro in ["GE", "CLIM"]:
-                if normalize_filter(v.ar_condicionado) == filtro and ETAPA_REGRAS["A/C"](status_map):
-                    veiculos_exibicao.append(v)
-                continue
-            if filtro == "BCO":
-                banco_flag = (v.banco_presente or "").strip().upper()
-                if banco_flag in ["N", "NAO", "NÃO", "NAO TEM", "SEM", "0"]:
-                    continue
-            if filtro in ETAPA_REGRAS:
-                if ETAPA_REGRAS[filtro](status_map):
-                    veiculos_exibicao.append(v)
+            if veiculo_atende_filtro_etapa(v, status_map, etapa):
+                veiculos_exibicao.append(v)
         else:
             veiculos_exibicao.append(v)
+
+    # Todas as visões compartilham a mesma fonte operacional. Antes deste
+    # bloco apenas Geral/Gerencial recebiam as O.S. abertas em Suprimentos.
+    erp_vehicles, erp_status_maps = carregar_erp_dashboard(
+        modelo, linha, semana, entrega_inicio, entrega_fim
+    )
+    if etapa and etapa.strip() and not modo_liberacao and not modo_gerencial:
+        erp_vehicles = [
+            item for item in erp_vehicles
+            if veiculo_atende_filtro_etapa(
+                item,
+                erp_status_maps.get(item.dashboard_key, {}),
+                etapa,
+            )
+        ]
+        erp_status_maps = {
+            item.dashboard_key: erp_status_maps.get(item.dashboard_key, {})
+            for item in erp_vehicles
+        }
+    erp_chassis = {normalize_chassi(item.chassi) for item in erp_vehicles}
+    veiculos_exibicao = [
+        item for item in veiculos_exibicao
+        if normalize_chassi(item.chassi) not in erp_chassis
+    ]
+    veiculos_exibicao.extend(erp_vehicles)
+    status_maps.update(erp_status_maps)
 
     kanban_colunas = montar_kanban(veiculos_exibicao, status_maps, incluir_plotagem=not modo_geral) if modo_gerencial else []
 
@@ -884,15 +1122,130 @@ async def kanban_dados(
     }
 
 @app.get("/veiculo/{chassi}")
-async def detalhes(request: Request, chassi: str, db: Session = Depends(database.get_db)):
+async def detalhes(
+    request: Request,
+    chassi: str,
+    work_order_id: str = None,
+    db: Session = Depends(database.get_db),
+):
     if not require_login(request, db):
         return RedirectResponse(url="/login", status_code=303)
     c_limpo = chassi.strip()
     user_name = get_user_name(request, db)
 
+    if work_order_id and erp_feature_enabled():
+        try:
+            with database.engine.begin() as conn:
+                detail = erp_service.work_order_detail(conn, work_order_id)
+        except ValueError as exc:
+            return HTMLResponse(str(exc), status_code=404)
+        work = detail["work_order"]
+        if normalize_chassi(work.get("chassi")) != normalize_chassi(c_limpo):
+            return HTMLResponse(
+                "O.S. não corresponde ao chassi informado.",
+                status_code=404,
+            )
+        display_stage_status = {
+            "S": "SIM",
+            "P": "PARCIAL",
+            "N": "NÃO",
+            "N/A": "N/A",
+            "?": "",
+        }
+        apont_map = {}
+        for stage in detail["stages"]:
+            stage["inicio_str"] = to_input_dt(stage.get("inicio"))
+            stage["termino_str"] = to_input_dt(stage.get("termino"))
+            stage["status"] = display_stage_status.get(
+                stage.get("input_code"),
+                "",
+            )
+            apont_map[stage["stage_code"]] = SimpleNamespace(**stage)
+        current_stage = next(
+            (
+                stage for stage in detail["stages"]
+                if stage.get("aplicavel")
+                and stage.get("input_code") not in {"S", "N/A"}
+            ),
+            detail["stages"][-1] if detail["stages"] else None,
+        )
+        planned = work.get("data_comercial_prevista")
+        planned_display = (
+            datetime.datetime.combine(planned, datetime.time.min, tzinfo=LOCAL_TZ)
+            if isinstance(planned, datetime.date)
+            and not isinstance(planned, datetime.datetime)
+            else planned
+        )
+        vehicle_name = " ".join(
+            str(work.get(name) or "").strip()
+            for name in ("marca", "modelo", "versao")
+        ).strip()
+        veiculo = SimpleNamespace(
+            modelo=vehicle_name or "-",
+            chassi=work.get("chassi"),
+            linha=work.get("linha"),
+            cliente=work.get("cliente_nome"),
+            destino=" / ".join(
+                value for value in (
+                    str(work.get("municipio") or "").strip(),
+                    str(work.get("uf") or "").strip(),
+                ) if value
+            ),
+            cj_bco=work.get("conjunto_bancos"),
+            banco_presente=(
+                "SIM" if str(work.get("conjunto_bancos") or "").strip()
+                else "NÃO"
+            ),
+            banco_comentario="",
+            ar_condicionado=work.get("ar_condicionado"),
+            semana_producao=str(planned.isocalendar().week) if planned else "",
+            data_entrega_fmt=format_data_entrega(planned_display),
+            localizacao=(current_stage or {}).get("localizacao") or "",
+            item_number=work.get("item_number"),
+            numero_os=work.get("numero_os"),
+            status=work.get("status"),
+        )
+        return templates.TemplateResponse(
+            request,
+            "detalhes.html",
+            {
+                "request": request,
+                "veiculo": veiculo,
+                "etapas": [stage["stage_code"] for stage in detail["stages"]],
+                "apont_map": apont_map,
+                "localizacoes": LOCALIZACOES,
+                "user_name": user_name,
+                "erp_mode": True,
+                "work_order_id": work_order_id,
+                "current_stage": (current_stage or {}).get("stage_code") or "",
+            },
+        )
+
     veiculo = db.query(models.Veiculo).filter(
         func.trim(cast(models.Veiculo.chassi, String)) == c_limpo
     ).first()
+
+    if (
+        not veiculo
+        and erp_feature_enabled()
+        and inspect(database.engine).has_table("erp_work_orders")
+    ):
+        with database.engine.connect() as conn:
+            current_work = conn.execute(text("""
+                select w.id
+                from erp_work_orders w
+                join erp_vehicle_entries e on e.id=w.vehicle_entry_id
+                join erp_vehicles v on v.id=e.vehicle_id
+                where trim(v.chassi)=:chassi
+                  and w.status in ('ATIVA','EM_PRODUÇÃO')
+                order by e.item_number desc
+                limit 1
+            """), {"chassi": c_limpo}).scalar()
+        if current_work:
+            return RedirectResponse(
+                url=f"/veiculo/{c_limpo}?work_order_id={current_work}",
+                status_code=303,
+            )
 
     feitos = db.query(models.Apontamento).filter(
         func.trim(cast(models.Apontamento.chassi, String)) == c_limpo
@@ -919,7 +1272,10 @@ async def detalhes(request: Request, chassi: str, db: Session = Depends(database
             "etapas": ETAPAS_PRODUCAO,
             "apont_map": apont_map,
             "localizacoes": LOCALIZACOES,
-            "user_name": user_name
+            "user_name": user_name,
+            "erp_mode": False,
+            "work_order_id": "",
+            "current_stage": "",
         }
     )
 
@@ -1412,6 +1768,317 @@ async def usuarios_create(
         "usuarios.html",
         {"request": request, "usuarios": usuarios, "erro": "", "sucesso": "Usuário criado.", "current_user": current_user},
     )
+
+
+# New ERP domain API. Legacy upload endpoints remain available during transition.
+@app.get("/api/erp/catalogs")
+async def erp_catalogs_api(request: Request, db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    if not require_login(request, db):
+        return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    return {"ok": True, **erp_catalogs.payload()}
+
+@app.post("/api/erp/vehicle-entries")
+async def erp_vehicle_entry(request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    user = require_login(request, db)
+    if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    try:
+        with database.engine.begin() as conn: result = erp_service.create_entry(conn, data, user.nome)
+        return {"ok": True, **result}
+    except ValueError as exc: return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+@app.get("/gestao-os", response_class=HTMLResponse)
+async def erp_work_order_screen(request: Request, db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled(): return HTMLResponse("Integração ERP desativada pela feature flag.", status_code=404)
+    user = require_login(request, db)
+    if not user: return RedirectResponse(url="/login", status_code=303)
+    return templates.TemplateResponse(request, "gestao_os.html", {"request": request, "current_user": user})
+
+@app.get("/exportar_controle_producao")
+async def exportar_controle_producao(request: Request, db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled():
+        return erp_disabled_response()
+    if not require_login(request, db):
+        return RedirectResponse(url="/login", status_code=303)
+    with database.engine.connect() as conn:
+        output, _, _ = erp_report.build_work_order_report(conn)
+    filename = f"Controle_Producao_MES_{datetime.datetime.now(LOCAL_TZ):%Y%m%d_%H%M}.xlsx"
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+@app.post("/api/erp/vehicle-entries/{entry_id}/work-orders")
+async def erp_work_order(entry_id: str, request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    user = require_login(request, db)
+    if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    try:
+        with database.engine.begin() as conn: result = erp_service.create_work_order(conn, entry_id, data, user.nome)
+        return {"ok": True, **result}
+    except ValueError as exc: return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+@app.post("/api/erp/work-orders/{work_id}/activate")
+async def erp_activate(work_id: str, request: Request, db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    user = require_login(request, db)
+    if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    try:
+        with database.engine.begin() as conn: result = erp_service.activate_work_order(conn, work_id, user.nome)
+        return {"ok": True, **result}
+    except ValueError as exc: return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+@app.put("/api/erp/work-orders/{work_id}/stage-configuration")
+async def erp_stage_configuration(
+    work_id: str,
+    request: Request,
+    data: dict = Body(...),
+    db: Session = Depends(database.get_db),
+):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    user = require_login(request, db)
+    if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    try:
+        with database.engine.begin() as conn:
+            if data.get("activate"):
+                result = erp_service.configure_and_activate(conn, work_id, data, user.nome)
+            else:
+                result = erp_service.configure_stages(conn, work_id, data, user.nome)
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+@app.get("/api/erp/kanban")
+async def erp_kanban(request: Request, db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    if not require_login(request, db): return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    with database.engine.connect() as conn: return {"ok": True, "cards": erp_service.active_cards(conn)}
+
+@app.post("/api/erp/work-orders/{work_id}/stages/{stage_code:path}")
+async def erp_stage(work_id: str, stage_code: str, request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    user = require_login(request, db)
+    if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    try:
+        with database.engine.begin() as conn: result = erp_service.update_stage(conn, work_id, stage_code, data, user.nome)
+        return {"ok": True, **result}
+    except ValueError as exc: return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+@app.post("/api/erp/work-orders/{work_id}/location")
+async def erp_location(
+    work_id: str,
+    request: Request,
+    data: dict = Body(...),
+    db: Session = Depends(database.get_db),
+):
+    if not erp_feature_enabled():
+        return erp_disabled_response()
+    user = require_login(request, db)
+    if not user:
+        return JSONResponse(
+            {"ok": False, "error": "Login necessario."},
+            status_code=401,
+        )
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.update_work_order_location(
+                conn,
+                work_id,
+                data.get("localizacao"),
+                user.nome,
+                data.get("idempotency_key"),
+            )
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+@app.post("/api/erp/work-orders/{work_id}/finalize")
+async def erp_finalize(work_id: str, request: Request, data: dict = Body(default={}), db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    user = require_login(request, db)
+    if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.finalize(
+                conn,
+                work_id,
+                user.nome,
+                bool(data.get("delivered")),
+                str(data.get("observacoes") or ""),
+                data.get("status"),
+                data.get("data_evento"),
+            )
+        return {"ok": True, **result}
+    except ValueError as exc: return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+@app.post("/api/erp/work-orders/{work_id}/schedules")
+async def erp_schedule(work_id: str, request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    user = require_login(request, db)
+    if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    try:
+        with database.engine.begin() as conn: erp_service.reschedule(conn, work_id, data.get("nova_data"), str(data.get("motivo") or ""), user.nome)
+        return {"ok": True}
+    except ValueError as exc: return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+@app.get("/api/erp/work-orders")
+async def erp_work_orders(
+    request: Request,
+    search: str = "",
+    status: str = "",
+    db: Session = Depends(database.get_db),
+):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    if not require_login(request, db): return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    with database.engine.connect() as conn:
+        return {"ok": True, "orders": erp_service.list_work_orders(conn, search, status)}
+
+@app.get("/api/erp/work-orders/{work_id}")
+async def erp_work_order_detail(work_id: str, request: Request, db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    if not require_login(request, db): return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    try:
+        with database.engine.begin() as conn:
+            return {"ok": True, **erp_service.work_order_detail(conn, work_id)}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+
+@app.put("/api/erp/work-orders/{work_id}")
+async def erp_update_work_order(work_id: str, request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    user = require_login(request, db)
+    if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.update_work_order(conn, work_id, data, user.nome)
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+# Backend contract used by Suprimentos. It does not depend on a MES browser
+# session and is protected by the same service token pattern used by Estoque.
+@app.get("/api/erp/internal/catalogs")
+async def erp_internal_catalogs(request: Request):
+    actor = erp_backend_actor(request)
+    if not actor:
+        return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
+    return {"ok": True, **erp_catalogs.payload()}
+
+@app.get("/api/erp/internal/work-orders")
+async def erp_internal_work_orders(request: Request, search: str = "", status: str = ""):
+    actor = erp_backend_actor(request)
+    if not actor: return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
+    with database.engine.connect() as conn:
+        return {"ok": True, "orders": erp_service.list_work_orders(conn, search, status)}
+
+@app.get("/api/erp/internal/work-orders/{work_id}")
+async def erp_internal_work_order_detail(work_id: str, request: Request):
+    actor = erp_backend_actor(request)
+    if not actor: return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
+    try:
+        with database.engine.begin() as conn:
+            return {"ok": True, **erp_service.work_order_detail(conn, work_id)}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+
+@app.post("/api/erp/internal/vehicle-entries")
+async def erp_internal_vehicle_entry(request: Request, data: dict = Body(...)):
+    actor = erp_backend_actor(request)
+    if not actor: return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.create_entry(conn, data, actor)
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+@app.post("/api/erp/internal/vehicle-entries/{entry_id}/work-orders")
+async def erp_internal_work_order(entry_id: str, request: Request, data: dict = Body(...)):
+    actor = erp_backend_actor(request)
+    if not actor: return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.create_work_order(conn, entry_id, data, actor)
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+@app.put("/api/erp/internal/work-orders/{work_id}")
+async def erp_internal_update_work_order(work_id: str, request: Request, data: dict = Body(...)):
+    actor = erp_backend_actor(request)
+    if not actor: return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.update_work_order(conn, work_id, data, actor)
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+@app.post("/api/erp/internal/work-orders/{work_id}/activate")
+async def erp_internal_activate(work_id: str, request: Request):
+    actor = erp_backend_actor(request)
+    if not actor: return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.activate_work_order(conn, work_id, actor)
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+@app.post("/api/erp/internal/work-orders/{work_id}/technical-close")
+async def erp_internal_technical_close(
+    work_id: str,
+    request: Request,
+    data: dict = Body(default={}),
+):
+    actor = erp_backend_actor(request)
+    if not actor:
+        return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.technical_close_work_order(
+                conn,
+                work_id,
+                actor,
+                str(data.get("motivo") or data.get("reason") or ""),
+            )
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+@app.post("/api/erp/internal/work-orders/{work_id}/technical-reopen")
+async def erp_internal_technical_reopen(
+    work_id: str,
+    request: Request,
+    data: dict = Body(default={}),
+):
+    actor = erp_backend_actor(request)
+    if not actor:
+        return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.technical_reopen_work_order(
+                conn,
+                work_id,
+                actor,
+                str(data.get("motivo") or data.get("reason") or ""),
+            )
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+@app.post("/api/erp/internal/work-orders/{work_id}/schedules")
+async def erp_internal_schedule(work_id: str, request: Request, data: dict = Body(...)):
+    actor = erp_backend_actor(request)
+    if not actor: return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
+    try:
+        with database.engine.begin() as conn:
+            erp_service.reschedule(conn, work_id, data.get("nova_data"), str(data.get("motivo") or ""), actor)
+        return {"ok": True}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8010))

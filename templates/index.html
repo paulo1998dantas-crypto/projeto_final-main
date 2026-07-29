@@ -66,6 +66,10 @@
                         Linha
                         <select name="linha" aria-label="Filtrar por linha" class="w-32 rounded border border-slate-700 bg-slate-800 px-2 py-1 text-[10px] font-bold normal-case tracking-normal text-white outline-none focus:border-blue-500">
                             <option value="" {% if not linha_atual %}selected{% endif %}>Todas as linhas</option>
+                            <option value="LB" {% if linha_atual == 'LB' %}selected{% endif %}>LB</option>
+                            <option value="LAB" {% if linha_atual == 'LAB' %}selected{% endif %}>LAB</option>
+                            <option value="LE" {% if linha_atual == 'LE' %}selected{% endif %}>LE</option>
+                            <option value="LAE" {% if linha_atual == 'LAE' %}selected{% endif %}>LAE</option>
                             <option value="BÁSICA" {% if linha_atual == 'BÁSICA' %}selected{% endif %}>Linha Básica</option>
                             <option value="EXECUTIVA" {% if linha_atual == 'EXECUTIVA' %}selected{% endif %}>Linha Executiva</option>
                         </select>
@@ -81,6 +85,7 @@
                 </div>
                 <time id="relogio-tv" class="w-[68px] text-center font-mono text-sm font-black text-white"></time>
                 <button id="botao-tela-cheia" type="button" onclick="alternarTelaCheia()" class="rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 font-bold hover:bg-slate-700">⛶ Tela cheia</button>
+                <a href="/gestao-os" class="rounded-md bg-cyan-700 px-2.5 py-1.5 font-bold hover:bg-cyan-600">O.S. / Histórico</a>
                 <a href="/?visao=gerencial" class="rounded-md bg-blue-600 px-2.5 py-1.5 font-bold hover:bg-blue-500">Painel</a>
             </div>
         </div>
@@ -96,8 +101,10 @@
                 {% if current_user and current_user.is_admin %}
                 <a href="/usuarios" class="bg-slate-700 px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold hover:bg-slate-600 transition">Usuários</a>
                 {% endif %}
+                <a href="/gestao-os" class="bg-cyan-700 px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold hover:bg-cyan-600 transition">O.S. / Histórico</a>
                 <a href="/importar" class="bg-blue-600 px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold hover:bg-blue-700 transition">Importar</a>
-                <a href="/exportar_historico" class="bg-emerald-600 px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold hover:bg-emerald-700 transition">Exportar Logs</a>
+                <a href="/exportar_controle_producao" class="bg-emerald-600 px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold hover:bg-emerald-700 transition">Exportar Controle</a>
+                <a href="/exportar_historico" class="bg-emerald-700 px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold hover:bg-emerald-800 transition">Exportar Logs</a>
                 <a href="/exportar_tempos" class="bg-indigo-600 px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold hover:bg-indigo-700 transition">Exportar Tempos</a>
                 <a href="/limpar_historico" onclick="return confirm('Apagar todos os logs permanentemente?')"
                    class="bg-rose-600 px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold hover:bg-rose-700 transition">Limpar Logs</a>
@@ -155,9 +162,7 @@
                     <div class="col-span-7 flex items-center justify-center rounded-md border border-blue-500/25 bg-blue-500/10 px-2 text-center text-[10px] font-black uppercase tracking-wider text-blue-200">
                         Etapas produtivas <span class="ml-1 font-semibold normal-case tracking-normal text-blue-400">sequência lógica de produção</span>
                     </div>
-                    <div class="col-span-1 flex flex-col items-center justify-center rounded-md border border-emerald-500/25 bg-emerald-500/10 px-1 text-center text-[9px] font-black uppercase leading-tight text-emerald-200">
-                        Entregas <span class="font-semibold normal-case text-emerald-400">por data</span>
-                    </div>
+                    <div aria-hidden="true" class="col-span-1"></div>
                     {% for coluna in kanban_colunas %}
                     <section data-column-id="{{ coluna.id }}" class="flex min-w-0 flex-col overflow-hidden rounded-lg border border-slate-800 bg-slate-900/80">
                         <div class="flex min-h-11 items-center justify-between gap-1 border-b border-slate-800 bg-slate-900 px-2 py-1.5 shadow-sm">
@@ -169,11 +174,12 @@
                         </div>
                         <div class="visao-geral-list min-h-0 flex-1 space-y-1 overflow-y-auto p-1">
                             {% for card in coluna.cards %}
-                            <a href="/veiculo/{{ card.chassi }}" title="{{ card.modelo }} | {{ card.chassi }} | {{ card.linha }} | Semana {{ card.semana_producao }} | {{ card.cliente }} | {{ card.destino }}" class="block rounded-md border border-slate-800 bg-slate-950/70 p-2 hover:border-blue-500 hover:bg-slate-900 transition">
+                            <a href="{{ card.detail_url }}" title="{{ card.modelo }} | {{ card.chassi_exibicao }} | {{ card.linha }} | Semana {{ card.semana_producao }} | {{ card.cliente }} | {{ card.destino }}" class="block rounded-md border border-slate-800 bg-slate-950/70 p-2 hover:border-blue-500 hover:bg-slate-900 transition">
                                 <div class="flex min-w-0 items-center justify-between gap-1">
-                                    <p class="truncate font-mono text-[clamp(11px,0.78vw,14px)] font-black uppercase leading-tight text-white">{{ card.chassi }}</p>
+                                    <p class="truncate font-mono text-[clamp(11px,0.78vw,14px)] font-black uppercase leading-tight text-white">{{ card.chassi_exibicao }}</p>
                                     <span class="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-black {% if card.status == 'ENTREGA' %}bg-emerald-400/15 text-emerald-300{% elif card.status == 'PARCIAL' %}bg-amber-400/15 text-amber-300{% else %}bg-rose-400/15 text-rose-300{% endif %}">{% if card.status == "ENTREGA" %}E{% elif card.status == "PARCIAL" %}P{% else %}N{% endif %}</span>
                                 </div>
+                                {% if card.source == "ERP" %}<p class="mt-1 text-[9px] font-black uppercase text-cyan-300">ITEM {{ card.item_number }} · O.S. {{ card.numero_os }}</p>{% endif %}
                                 <p class="mt-1 truncate text-[clamp(10px,0.7vw,12px)] font-black uppercase leading-tight text-slate-300">{{ card.modelo_resumido }}</p>
                                 <div class="mt-1.5 flex items-center justify-between gap-1 text-[9px] font-bold text-slate-400">
                                     <span class="truncate">{{ card.data_entrega }}{% if card.semana_producao != '-' %} · Sem. {{ card.semana_producao }}{% endif %}</span>
@@ -217,11 +223,12 @@
                         </div>
                         <div class="space-y-2 p-2 min-h-[52vh]">
                             {% for card in coluna.cards %}
-                            <a href="/veiculo/{{ card.chassi }}" class="block rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm hover:border-blue-400 hover:shadow-md transition">
+                            <a href="{{ card.detail_url }}" class="block rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm hover:border-blue-400 hover:shadow-md transition">
                                 <div class="flex items-start justify-between gap-2">
                                     <div class="min-w-0">
                                         <p class="truncate text-[13px] font-black uppercase text-slate-800">{{ card.modelo }}</p>
-                                        <p class="truncate font-mono text-[10px] font-semibold text-slate-500">{{ card.chassi }}</p>
+                                        <p class="truncate font-mono text-[10px] font-semibold text-slate-500">{{ card.chassi_exibicao }}</p>
+                                        {% if card.source == "ERP" %}<p class="text-[10px] font-black text-cyan-700">ITEM {{ card.item_number }} · O.S. {{ card.numero_os }}</p>{% endif %}
                                     </div>
                                     <span class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-black {% if card.status == 'ENTREGA' %}bg-emerald-50 text-emerald-700{% elif card.status == 'PARCIAL' %}bg-amber-50 text-amber-700{% else %}bg-rose-50 text-rose-700{% endif %}">{% if card.status == "ENTREGA" %}ENTREGA{% elif card.status == "PARCIAL" %}P{% else %}NOK{% endif %}</span>
                                 </div>
@@ -258,7 +265,7 @@
         <div class="grid grid-cols-1 md:grid-cols-2 {% if modo_resumido %}lg:grid-cols-5{% else %}lg:grid-cols-4{% endif %} gap-3 md:gap-6">
             {% for v in veiculos %}
             {% if modo_resumido %}
-            <a href="/veiculo/{{ v.chassi }}" class="block bg-white rounded-xl shadow-sm border border-slate-200 p-3 md:p-4 hover:border-blue-400 hover:shadow-md transition">
+            <a href="{{ v.detail_url if v.detail_url is defined else '/veiculo/' ~ v.chassi }}" class="block bg-white rounded-xl shadow-sm border border-slate-200 p-3 md:p-4 hover:border-blue-400 hover:shadow-md transition">
                 <div class="flex items-start justify-between gap-3">
                     <div class="min-w-0">
                         <p class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">MMV</p>
@@ -269,7 +276,7 @@
                 <div class="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
                     <div class="min-w-0">
                         <p class="text-[10px] text-slate-400 font-bold uppercase">Chassi</p>
-                        <p class="font-mono font-semibold text-slate-700 truncate">{{ v.chassi }}</p>
+                        <p class="font-mono font-semibold text-slate-700 truncate">{{ v.chassi_exibicao or v.chassi }}</p>
                     </div>
                     <div class="min-w-0">
                         <p class="text-[10px] text-slate-400 font-bold uppercase">Data de entrega</p>
@@ -307,7 +314,7 @@
                             </div>
                         </div>
                         <div class="text-right">
-                            <span class="text-[10px] bg-slate-100 px-2 py-1 rounded font-mono text-slate-500">{{ v.chassi }}</span>
+                            <span class="text-[10px] bg-slate-100 px-2 py-1 rounded font-mono text-slate-500">{{ v.chassi_exibicao or v.chassi }}</span>
                             <div class="text-[10px] text-slate-500 mt-1">Loc.: {{ v.localizacao or "-" }}</div>
                         </div>
                     </div>
@@ -350,7 +357,7 @@
                     </div>
                 </div>
 
-                <a href="/veiculo/{{ v.chassi }}" class="block w-full bg-slate-50 border-t border-slate-100 p-3 text-center text-sm font-bold text-slate-600 group-hover:bg-blue-600 group-hover:text-white transition">
+                <a href="{{ v.detail_url if v.detail_url is defined else '/veiculo/' ~ v.chassi }}" class="block w-full bg-slate-50 border-t border-slate-100 p-3 text-center text-sm font-bold text-slate-600 group-hover:bg-blue-600 group-hover:text-white transition">
                     VER DETALHES
                 </a>
             </div>
@@ -403,6 +410,8 @@ function kanbanStatusBadge(status) {
 const visaoGeral = document.body.dataset.visao === "geral";
 
 function renderKanbanCard(card) {
+    const detailUrl = card.detail_url || `/veiculo/${encodeURIComponent(card.chassi)}`;
+    const displayedChassis = card.chassi_exibicao || String(card.chassi || "").slice(-8);
     const progresso = Number(card.progresso || 0);
     if (visaoGeral) {
         const statusClass = card.status === "ENTREGA"
@@ -411,14 +420,15 @@ function renderKanbanCard(card) {
                 ? "bg-amber-400/15 text-amber-300"
                 : "bg-rose-400/15 text-rose-300";
         const statusLabel = card.status === "ENTREGA" ? "E" : card.status === "PARCIAL" ? "P" : "N";
-        const titulo = [card.modelo, card.chassi, card.linha, `Semana ${card.semana_producao || "-"}`, card.cliente, card.destino].map(escapeHtml).join(" | ");
+        const titulo = [card.modelo, displayedChassis, card.linha, `Semana ${card.semana_producao || "-"}`, card.cliente, card.destino].map(escapeHtml).join(" | ");
         const semana = card.semana_producao && card.semana_producao !== "-" ? ` · Sem. ${escapeHtml(card.semana_producao)}` : "";
         return `
-            <a href="/veiculo/${encodeURIComponent(card.chassi)}" title="${titulo}" class="block rounded-md border border-slate-800 bg-slate-950/70 p-2 hover:border-blue-500 hover:bg-slate-900 transition">
+            <a href="${escapeHtml(detailUrl)}" title="${titulo}" class="block rounded-md border border-slate-800 bg-slate-950/70 p-2 hover:border-blue-500 hover:bg-slate-900 transition">
                 <div class="flex min-w-0 items-center justify-between gap-1">
-                    <p class="truncate font-mono text-[clamp(11px,0.78vw,14px)] font-black uppercase leading-tight text-white">${escapeHtml(card.chassi)}</p>
+                    <p class="truncate font-mono text-[clamp(11px,0.78vw,14px)] font-black uppercase leading-tight text-white">${escapeHtml(displayedChassis)}</p>
                     <span class="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-black ${statusClass}">${statusLabel}</span>
                 </div>
+                ${card.source === "ERP" ? `<p class="mt-1 text-[9px] font-black uppercase text-cyan-300">ITEM ${escapeHtml(card.item_number)} · O.S. ${escapeHtml(card.numero_os)}</p>` : ""}
                 <p class="mt-1 truncate text-[clamp(10px,0.7vw,12px)] font-black uppercase leading-tight text-slate-300">${escapeHtml(card.modelo_resumido || card.modelo)}</p>
                 <div class="mt-1.5 flex items-center justify-between gap-1 text-[9px] font-bold text-slate-400">
                     <span class="truncate">${escapeHtml(card.data_entrega)}${semana}</span>
@@ -437,11 +447,12 @@ function renderKanbanCard(card) {
         ? `<span class="rounded bg-violet-50 px-1.5 py-0.5 font-bold text-violet-700">Sem. ${escapeHtml(card.semana_producao)}</span>`
         : "";
     return `
-        <a href="/veiculo/${encodeURIComponent(card.chassi)}" class="block rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm hover:border-blue-400 hover:shadow-md transition">
+        <a href="${escapeHtml(detailUrl)}" class="block rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm hover:border-blue-400 hover:shadow-md transition">
             <div class="flex items-start justify-between gap-2">
                 <div class="min-w-0">
                     <p class="truncate text-[13px] font-black uppercase text-slate-800">${escapeHtml(card.modelo)}</p>
-                    <p class="truncate font-mono text-[10px] font-semibold text-slate-500">${escapeHtml(card.chassi)}</p>
+                    <p class="truncate font-mono text-[10px] font-semibold text-slate-500">${escapeHtml(displayedChassis)}</p>
+                    ${card.source === "ERP" ? `<p class="text-[10px] font-black text-cyan-700">ITEM ${escapeHtml(card.item_number)} · O.S. ${escapeHtml(card.numero_os)}</p>` : ""}
                 </div>
                 ${kanbanStatusBadge(card.status)}
             </div>
@@ -474,9 +485,7 @@ function renderKanbanGroupHeaders() {
         <div class="col-span-7 flex items-center justify-center rounded-md border border-blue-500/25 bg-blue-500/10 px-2 text-center text-[10px] font-black uppercase tracking-wider text-blue-200">
             Etapas produtivas <span class="ml-1 font-semibold normal-case tracking-normal text-blue-400">sequência lógica de produção</span>
         </div>
-        <div class="col-span-1 flex flex-col items-center justify-center rounded-md border border-emerald-500/25 bg-emerald-500/10 px-1 text-center text-[9px] font-black uppercase leading-tight text-emerald-200">
-            Entregas <span class="font-semibold normal-case text-emerald-400">por data</span>
-        </div>
+        <div aria-hidden="true" class="col-span-1"></div>
     `;
 }
 
