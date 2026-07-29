@@ -154,15 +154,12 @@ def _query_report_data(conn):
 
 def _report_row(row, stage_map, schedule_rows, status_notes, max_schedules):
     stage_notes = []
-    blocked = []
     stage_values = {}
     for code, _, _ in STAGES:
         stage = stage_map.get(code)
         stage_values[STAGE_HEADER_BY_CODE[code]] = stage_input_code(stage) if stage else "?"
         if stage and str(stage.get("observacoes") or "").strip():
             stage_notes.append(f"[{code}] {stage['observacoes']}")
-        if stage and stage.get("status") == "BLOQUEADA":
-            blocked.append(f"{code}: {stage.get('bloqueio_motivo') or 'BLOQUEADA'}")
 
     data_considerar = _date_to_consider(row.get("data_chegada"), row.get("data_aprovacao"))
     end_reference = row.get("termino_producao") or row.get("data_entrega")
@@ -214,7 +211,7 @@ def _report_row(row, stage_map, schedule_rows, status_notes, max_schedules):
         # em Suprimentos, sem alterar o status produtivo do MES.
         "ARQUIVADO": "SIM" if row.get("technical_status") == "CONCLUIDA" else "NÃO",
         **stage_values,
-        "B.O.": " | ".join(blocked),
+        "B.O.": "",
         "OBSERVAÇÕES CONTROLE PRODUÇÃO": " | ".join(stage_notes),
         "OBSERVAÇÕES GERAIS": " | ".join(dict.fromkeys(general_notes)),
         "SEQUENCIAMENTO": _sequence_week(row.get("data_comercial_prevista")),
