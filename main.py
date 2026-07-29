@@ -31,8 +31,15 @@ import erp_report
 
 LOCAL_TZ = ZoneInfo("America/Sao_Paulo")
 
-# Inicialização do banco de dados
-database.Base.metadata.create_all(bind=database.engine)
+def legacy_schema_auto_migrate_enabled():
+    """Allow legacy auto-DDL only in an explicitly controlled environment."""
+    return os.environ.get(
+        "MES_LEGACY_SCHEMA_AUTO_MIGRATE", "false"
+    ).strip().lower() in {"1", "true", "yes", "sim", "on"}
+
+
+if legacy_schema_auto_migrate_enabled():
+    database.Base.metadata.create_all(bind=database.engine)
 
 # Garante novas colunas sem migração formal
 def ensure_columns():
@@ -97,7 +104,8 @@ def ensure_columns():
         if "data_apontamento" in hist_cols and dialect == "postgresql":
             conn.execute(text("ALTER TABLE historico ALTER COLUMN data_apontamento TYPE TIMESTAMP WITH TIME ZONE"))
 
-ensure_columns()
+if legacy_schema_auto_migrate_enabled():
+    ensure_columns()
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
@@ -290,16 +298,23 @@ def verify_password(password: str, password_hash: str) -> bool:
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 120_000)
     return hmac.compare_digest(digest.hex(), digest_hex)
 
-def ensure_default_admin():
+def bootstrap_admin_if_configured():
+    username = os.environ.get("MES_BOOTSTRAP_ADMIN_USER", "").strip()
+    password = os.environ.get("MES_BOOTSTRAP_ADMIN_PASSWORD", "")
+    if not username or not password:
+        return
+
     db = database.SessionLocal()
     try:
-        usuario = db.query(models.Usuario).filter(func.upper(models.Usuario.nome) == "PAULO").first()
+        usuario = db.query(models.Usuario).filter(
+            func.upper(models.Usuario.nome) == username.upper()
+        ).first()
         if not usuario:
-            db.add(models.Usuario(nome="Paulo", senha_hash=hash_password("2410"), is_admin=1))
-            db.commit()
-        else:
-            usuario.senha_hash = hash_password("2410")
-            usuario.is_admin = 1
+            db.add(models.Usuario(
+                nome=username,
+                senha_hash=hash_password(password),
+                is_admin=1,
+            ))
             db.commit()
     finally:
         db.close()
@@ -949,7 +964,7 @@ def carregar_veiculos_dashboard(
     status_maps.update(erp_status_maps)
     return veiculos_db, status_maps
 
-ensure_default_admin()
+bootstrap_admin_if_configured()
 
 @app.get("/")
 async def home(

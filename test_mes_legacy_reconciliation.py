@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from mes_legacy_reconciliation import classify_candidates, normalize_chassis, stage_status
 
@@ -31,6 +32,16 @@ class MesLegacyReconciliationTests(unittest.TestCase):
             ],
         )
         self.assertEqual(matrix[0]["classification"], "AMBIGUOUS_MULTIPLE_TARGET_ORDERS")
+
+    def test_startup_has_no_hardcoded_admin_password(self):
+        source = Path("main.py").read_text(encoding="utf-8")
+        self.assertNotIn('hash_password("2410")', source)
+        self.assertIn("MES_BOOTSTRAP_ADMIN_PASSWORD", source)
+
+    def test_legacy_auto_ddl_is_opt_in(self):
+        source = Path("main.py").read_text(encoding="utf-8")
+        self.assertIn("MES_LEGACY_SCHEMA_AUTO_MIGRATE", source)
+        self.assertIn("if legacy_schema_auto_migrate_enabled():", source)
 
 
 if __name__ == "__main__":
