@@ -744,6 +744,7 @@ def montar_card_kanban(veiculo, status_map, etapa):
         "work_order_id": getattr(veiculo, "work_order_id", None),
         "numero_os": getattr(veiculo, "numero_os", None),
         "item_number": getattr(veiculo, "item_number", None),
+        "sequencia": getattr(veiculo, "sequencia", None),
         "detail_url": getattr(veiculo, "detail_url", f"/veiculo/{veiculo.chassi}"),
         "chassi": veiculo.chassi,
         "chassi_exibicao": getattr(veiculo, "chassi_exibicao", chassi_exibicao(veiculo.chassi)),
@@ -762,6 +763,9 @@ def montar_card_kanban(veiculo, status_map, etapa):
     }
 
 def data_entrega_ordenacao(veiculo):
+    sequencia = getattr(veiculo, "sequencia", None)
+    if sequencia is not None:
+        return (0, int(sequencia), veiculo.ordem or 0)
     data = veiculo.data_entrega
     if not data:
         return (1, datetime.datetime.max, veiculo.ordem or 0)
@@ -773,7 +777,9 @@ def montar_kanban(veiculos, status_maps, incluir_plotagem=True):
     colunas = []
     for coluna in KANBAN_COLUNAS:
         cards = []
-        veiculos_coluna = sorted(veiculos, key=data_entrega_ordenacao) if coluna["id"] == "entregas" else veiculos
+        # A mesma sequência vigente deve guiar todas as etapas do quadro; não
+        # apenas a coluna de entrega. Isso substitui a antiga posição do upload.
+        veiculos_coluna = sorted(veiculos, key=data_entrega_ordenacao)
         for veiculo in veiculos_coluna:
             dashboard_key = getattr(veiculo, "dashboard_key", str(veiculo.chassi).strip())
             status_map = status_maps.get(dashboard_key, {})
@@ -865,15 +871,19 @@ def carregar_erp_dashboard(
     if not erp_feature_enabled() or not inspect(database.engine).has_table("erp_work_orders"):
         return [], {}
 
+    sequence_schema = inspect(database.engine).has_table("erp_work_order_sequences")
+    sequence_fields = "seq.sequencia,seq.semana_planejada" if sequence_schema else "null::integer as sequencia,null::text as semana_planejada"
+    sequence_join = "left join erp_work_order_sequences seq on seq.work_order_id=w.id and seq.ativo=true" if sequence_schema else ""
     with database.engine.connect() as conn:
-        rows = conn.execute(text("""
+        rows = conn.execute(text(f"""
             select w.id as work_order_id,w.numero_os,w.status,w.linha,
                    w.cliente_nome,w.municipio,w.uf,w.transformacao,
                    w.ar_condicionado,w.conjunto_bancos,w.data_comercial_prevista,
-                   e.item_number,v.chassi,v.marca,v.modelo,v.versao
+                   e.item_number,v.chassi,v.marca,v.modelo,v.versao,{sequence_fields}
             from erp_work_orders w
             join erp_vehicle_entries e on e.id=w.vehicle_entry_id
             join erp_vehicles v on v.id=e.vehicle_id
+            {sequence_join}
         """)).mappings().all()
         stage_rows = conn.execute(text("""
             select s.work_order_id,s.stage_code,s.status,s.aplicavel,s.localizacao,s.ordem
@@ -895,7 +905,7 @@ def carregar_erp_dashboard(
             continue
         planned = row["data_comercial_prevista"]
         planned_date = planned.date() if isinstance(planned, datetime.datetime) else planned
-        week = str(planned_date.isocalendar().week) if planned_date else ""
+        week = str(row.get("semana_planejada") or (planned_date.isocalendar().week if planned_date else ""))
         searchable = normalize_filter(" ".join(str(row.get(name) or "") for name in (
             "item_number", "numero_os", "chassi", "marca", "modelo", "versao",
             "cliente_nome", "municipio", "uf", "linha", "transformacao",
@@ -946,7 +956,8 @@ def carregar_erp_dashboard(
             modelo=" ".join(str(row.get(name) or "").strip() for name in ("marca", "modelo", "versao")).strip(),
             linha=str(row["linha"] or ""),
             semana_producao=week,
-            ordem=row["item_number"],
+            sequencia=row.get("sequencia"),
+            ordem=row.get("sequencia") or row["item_number"],
             ar_condicionado=str(row["ar_condicionado"] or ""),
             cj_bco=str(row["conjunto_bancos"] or ""),
             cliente=str(row["cliente_nome"] or ""),
@@ -961,7 +972,7 @@ def carregar_erp_dashboard(
         vehicles.append(vehicle)
         status_maps[dashboard_key] = status_map
 
-    return sorted(vehicles, key=lambda item: (item.ordem or 0, item.chassi)), status_maps
+    return sorted(vehicles, key=data_entrega_ordenacao), status_maps
 
 def carregar_veiculos_dashboard(
     db: Session,
@@ -2102,6 +2113,17 @@ async def erp_work_order_screen(request: Request, db: Session = Depends(database
         return permission_denied()
     return templates.TemplateResponse(request, "gestao_os.html", {"request": request, "current_user": user})
 
+@app.get("/sequenciamento", response_class=HTMLResponse)
+async def erp_sequencing_screen(request: Request, db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled():
+        return HTMLResponse("Integração ERP desativada pela feature flag.", status_code=404)
+    user = require_login(request, db)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE):
+        return permission_denied()
+    return templates.TemplateResponse(request, "sequenciamento.html", {"request": request, "current_user": user})
+
 @app.get("/exportar_controle_producao")
 async def exportar_controle_producao(request: Request, db: Session = Depends(database.get_db)):
     if not erp_feature_enabled():
@@ -2261,6 +2283,50 @@ async def erp_schedule(work_id: str, request: Request, data: dict = Body(...), d
         with database.engine.begin() as conn: erp_service.reschedule(conn, work_id, data.get("nova_data"), str(data.get("motivo") or ""), user.nome)
         return {"ok": True}
     except ValueError as exc: return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+@app.get("/api/erp/sequencing")
+async def erp_sequencing_overview(request: Request, db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled():
+        return erp_disabled_response()
+    user = require_login(request, db)
+    if not user:
+        return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE):
+        return permission_denied(api=True)
+    with database.engine.connect() as conn:
+        return {"ok": True, **erp_service.sequence_overview(conn)}
+
+@app.put("/api/erp/sequencing/profile")
+async def erp_update_sequence_profile(request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled():
+        return erp_disabled_response()
+    user = require_login(request, db)
+    if not user:
+        return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE):
+        return permission_denied(api=True)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.update_sequence_profile(conn, data, user.nome)
+        return {"ok": True, **result}
+    except (TypeError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+@app.put("/api/erp/work-orders/{work_id}/sequence")
+async def erp_update_sequence_priority(work_id: str, request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled():
+        return erp_disabled_response()
+    user = require_login(request, db)
+    if not user:
+        return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE):
+        return permission_denied(api=True)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.update_manual_sequence_priority(conn, work_id, data.get("prioridade_manual"), user.nome)
+        return {"ok": True, **result}
+    except (TypeError, ValueError) as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 @app.get("/api/erp/work-orders")
 async def erp_work_orders(

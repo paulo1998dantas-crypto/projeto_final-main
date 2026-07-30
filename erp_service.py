@@ -1,5 +1,7 @@
 """New operational O.S./MES domain. Legacy MES tables remain read-only compatible."""
 from datetime import datetime, date, timedelta
+from functools import cmp_to_key
+import json
 from uuid import uuid4
 import re
 import unicodedata
@@ -34,6 +36,26 @@ WORK_ORDER_FIELDS = (
 WORK_ORDER_DATE_FIELDS = {"data_aprovacao", "data_comercial_prevista"}
 
 LEAD_TIME_DAYS = {"LE": 45, "LAE": 45, "LB": 30, "LAB": 30}
+
+# A sequência operacional é deliberadamente separada das colunas *_legacy.
+# Estas últimas continuam servindo exclusivamente à rastreabilidade da planilha.
+SEQUENCE_FIELDS = {
+    "delivery_date": "Data de entrega vigente",
+    "manual_priority": "Prioridade manual",
+    "line": "Linha",
+    "vehicle_type": "Tipo de veículo",
+    "transformation": "Transformação",
+    "air_conditioning": "Ar-condicionado",
+    "banks": "Conjunto de bancos",
+    "client": "Cliente",
+    "item_number": "ITEM",
+}
+DEFAULT_SEQUENCE_CRITERIA = [
+    {"field": "delivery_date", "direction": "ASC"},
+    {"field": "manual_priority", "direction": "ASC"},
+    {"field": "line", "direction": "ASC"},
+    {"field": "item_number", "direction": "ASC"},
+]
 
 def _id(): return str(uuid4())
 def _one(result):
@@ -193,6 +215,212 @@ def _commercial_date(arrival, approval, line):
         return None
     return max(dates) + timedelta(days=LEAD_TIME_DAYS.get(str(line or "").strip().upper(), 30))
 
+
+def _sequence_schema_ready(conn):
+    """Keep the application backward-compatible while the additive migration rolls out."""
+    return bool(conn.execute(text(
+        "select to_regclass('public.erp_work_order_sequences') is not null"
+    )).scalar())
+
+
+def _normalized_sequence_criteria(criteria):
+    if not isinstance(criteria, list):
+        raise ValueError("Os critérios de sequenciamento devem ser uma lista.")
+    normalized = []
+    for item in criteria:
+        if not isinstance(item, dict):
+            raise ValueError("Cada critério de sequenciamento deve informar campo e direção.")
+        field = str(item.get("field") or "").strip()
+        direction = str(item.get("direction") or "ASC").strip().upper()
+        if field not in SEQUENCE_FIELDS or direction not in {"ASC", "DESC"}:
+            raise ValueError("Critério de sequenciamento inválido.")
+        if field in {entry["field"] for entry in normalized}:
+            raise ValueError("Um campo não pode se repetir na sequência.")
+        normalized.append({"field": field, "direction": direction})
+    if not normalized or len(normalized) > 5:
+        raise ValueError("Informe entre um e cinco critérios de sequenciamento.")
+    return normalized
+
+
+def _sequence_value(row, field):
+    mapping = {
+        "delivery_date": _date_value(row.get("data_comercial_prevista")),
+        "manual_priority": row.get("prioridade_manual"),
+        "line": _token(row.get("linha")),
+        "vehicle_type": _token(row.get("tipo_veiculo")),
+        "transformation": _token(row.get("transformacao")),
+        "air_conditioning": _token(row.get("ar_condicionado")),
+        "banks": _token(row.get("conjunto_bancos")),
+        "client": _token(row.get("cliente_nome")),
+        "item_number": row.get("item_number"),
+    }
+    return mapping[field]
+
+
+def _compare_sequence_rows(left, right, criteria):
+    for criterion in criteria:
+        left_value = _sequence_value(left, criterion["field"])
+        right_value = _sequence_value(right, criterion["field"])
+        left_empty = left_value in (None, "")
+        right_empty = right_value in (None, "")
+        if left_empty != right_empty:
+            return 1 if left_empty else -1  # vazios sempre depois, inclusive DESC
+        if left_empty:
+            continue
+        if left_value != right_value:
+            comparison = 1 if left_value > right_value else -1
+            return comparison if criterion["direction"] == "ASC" else -comparison
+    left_item, right_item = int(left.get("item_number") or 0), int(right.get("item_number") or 0)
+    if left_item != right_item:
+        return -1 if left_item < right_item else 1
+    return -1 if str(left["id"]) < str(right["id"]) else (1 if str(left["id"]) > str(right["id"]) else 0)
+
+
+def _active_sequence_profile(conn):
+    if not _sequence_schema_ready(conn):
+        return {"id": None, "nome": "Prazo de entrega", "criterios": DEFAULT_SEQUENCE_CRITERIA}
+    profile = _one(conn.execute(text("""
+        select id,nome,criterios
+        from erp_sequence_profiles
+        where ativo=true
+        order by updated_at desc,created_at desc
+        limit 1
+    """)))
+    if not profile:
+        return {"id": None, "nome": "Prazo de entrega", "criterios": DEFAULT_SEQUENCE_CRITERIA}
+    profile["criterios"] = _normalized_sequence_criteria(profile.get("criterios"))
+    return profile
+
+
+def recalculate_work_order_sequences(conn, actor="SISTEMA"):
+    """Persist the WIP order and mirror its delivery week/rank into every stage.
+
+    One advisory transaction lock avoids two concurrent reprogramações producing
+    different ranks.  It never changes dates, status, historical schedules or
+    legacy sequence columns.
+    """
+    if not _sequence_schema_ready(conn):
+        return {"recalculated": False, "reason": "schema_pending", "count": 0}
+    conn.execute(text("select pg_advisory_xact_lock(hashtext('erp_wip_sequence'))"))
+    profile = _active_sequence_profile(conn)
+    rows = [dict(row._mapping) for row in conn.execute(text("""
+        select w.id,w.status,w.data_comercial_prevista,w.linha,w.tipo_veiculo,
+               w.transformacao,w.ar_condicionado,w.conjunto_bancos,w.cliente_nome,
+               e.item_number,seq.prioridade_manual
+          from erp_work_orders w
+          join erp_vehicle_entries e on e.id=w.vehicle_entry_id
+          left join erp_work_order_sequences seq on seq.work_order_id=w.id
+         where w.status in ('ATIVA','EM_PRODUÇÃO')
+         for update of w
+    """))]
+    rows.sort(key=cmp_to_key(lambda left, right: _compare_sequence_rows(
+        left, right, profile["criterios"]
+    )))
+    for position, row in enumerate(rows, start=1):
+        delivery = _date_value(row.get("data_comercial_prevista"))
+        week = str(delivery.isocalendar().week) if delivery else None
+        conn.execute(text("""
+            insert into erp_work_order_sequences(
+                work_order_id,profile_id,data_entrega_vigente,semana_planejada,
+                sequencia,ativo,updated_by,updated_at
+            ) values(:work,:profile,:delivery,:week,:sequence,true,:actor,now())
+            on conflict(work_order_id) do update set
+                profile_id=excluded.profile_id,
+                data_entrega_vigente=excluded.data_entrega_vigente,
+                semana_planejada=excluded.semana_planejada,
+                sequencia=excluded.sequencia,
+                ativo=true,
+                updated_by=excluded.updated_by,
+                updated_at=excluded.updated_at
+        """), {
+            "work": row["id"], "profile": profile.get("id"),
+            "delivery": delivery, "week": week, "sequence": position, "actor": actor,
+        })
+        conn.execute(text("""
+            update erp_work_order_stages
+               set data_planejada=:delivery,
+                   semana_planejada=:week,
+                   sequencia_planejada=:sequence
+             where work_order_id=:work
+        """), {"work": row["id"], "delivery": delivery, "week": week, "sequence": position})
+    conn.execute(text("""
+        update erp_work_order_sequences
+           set ativo=false,updated_at=now(),updated_by=:actor
+         where ativo=true
+           and work_order_id not in (
+               select id from erp_work_orders where status in ('ATIVA','EM_PRODUÇÃO')
+           )
+    """), {"actor": actor})
+    return {"recalculated": True, "count": len(rows), "profile": profile["nome"]}
+
+
+def sequence_overview(conn):
+    if not _sequence_schema_ready(conn):
+        return {"schema_ready": False, "profile": None, "orders": []}
+    profile = _active_sequence_profile(conn)
+    rows = [dict(row._mapping) for row in conn.execute(text("""
+        select seq.work_order_id,seq.sequencia,seq.prioridade_manual,
+               seq.data_entrega_vigente,seq.semana_planejada,seq.updated_at,
+               w.numero_os,w.status,w.linha,w.cliente_nome,w.transformacao,
+               e.item_number,v.chassi,v.marca,v.modelo,v.versao
+          from erp_work_order_sequences seq
+          join erp_work_orders w on w.id=seq.work_order_id
+          join erp_vehicle_entries e on e.id=w.vehicle_entry_id
+          join erp_vehicles v on v.id=e.vehicle_id
+         where seq.ativo=true and w.status in ('ATIVA','EM_PRODUÇÃO')
+         order by seq.sequencia nulls last,e.item_number
+    """))]
+    return {"schema_ready": True, "profile": profile, "orders": rows}
+
+
+def update_sequence_profile(conn, payload, actor):
+    if not _sequence_schema_ready(conn):
+        raise ValueError("A migration de sequenciamento ainda não foi aplicada.")
+    criteria = _normalized_sequence_criteria(payload.get("criterios"))
+    name = str(payload.get("nome") or "Sequência WIP").strip()[:100]
+    if not name:
+        raise ValueError("Informe o nome do critério de sequenciamento.")
+    profile_id = str(payload.get("id") or _id())
+    conn.execute(text("update erp_sequence_profiles set ativo=false where ativo=true"))
+    conn.execute(text("""
+        insert into erp_sequence_profiles(id,nome,criterios,ativo,created_by,updated_by)
+        values(:id,:name,cast(:criteria as jsonb),true,:actor,:actor)
+        on conflict(id) do update set
+            nome=excluded.nome,criterios=excluded.criterios,ativo=true,
+            updated_by=excluded.updated_by,updated_at=now()
+    """), {"id": profile_id, "name": name, "criteria": json.dumps(criteria), "actor": actor})
+    conn.execute(text("""
+        insert into erp_audit_events(entity_type,entity_id,action,actor,origin,after_data)
+        values('SEQUENCE_PROFILE',:id,'SEQUENCE_PROFILE_UPDATED',:actor,'MES',
+               jsonb_build_object('nome',:name,'criterios',cast(:criteria as jsonb)))
+    """), {"id": profile_id, "actor": actor, "name": name, "criteria": json.dumps(criteria)})
+    return recalculate_work_order_sequences(conn, actor)
+
+
+def update_manual_sequence_priority(conn, work_id, priority, actor):
+    if not _sequence_schema_ready(conn):
+        raise ValueError("A migration de sequenciamento ainda não foi aplicada.")
+    work = _one(conn.execute(text("""
+        select id,status from erp_work_orders where id=:id for update
+    """), {"id": work_id}))
+    if not work or work["status"] not in {"ATIVA", "EM_PRODUÇÃO"}:
+        raise ValueError("A prioridade manual só pode ser definida para O.S. em WIP.")
+    parsed = None if priority in (None, "") else int(priority)
+    if parsed is not None and not 0 <= parsed <= 999999:
+        raise ValueError("A prioridade manual deve estar entre 0 e 999999.")
+    conn.execute(text("""
+        insert into erp_work_order_sequences(work_order_id,prioridade_manual,ativo,updated_by)
+        values(:id,:priority,true,:actor)
+        on conflict(work_order_id) do update set
+            prioridade_manual=excluded.prioridade_manual,updated_by=excluded.updated_by,updated_at=now()
+    """), {"id": work_id, "priority": parsed, "actor": actor})
+    conn.execute(text("""
+        insert into erp_audit_events(entity_type,entity_id,action,actor,origin,after_data)
+        values('WORK_ORDER',:id,'SEQUENCE_PRIORITY_UPDATED',:actor,'MES',
+               jsonb_build_object('prioridade_manual',cast(:priority as integer)))
+    """), {"id": work_id, "actor": actor, "priority": parsed})
+    return recalculate_work_order_sequences(conn, actor)
+
 def create_entry(conn, payload, actor):
     chassi = _normalize_chassis(payload.get("chassi"))
     if not chassi: raise ValueError('Chassi completo e obrigatorio.')
@@ -292,6 +520,12 @@ def update_work_order(conn, work_id, payload, actor):
                     work_order_id,data_anterior,nova_data,motivo,usuario,vigente
                 ) values(:id,null,:date,'PROGRAMAÇÃO INICIAL',:actor,true)
             """), {"id": work_id, "date": fields["data_comercial_prevista"], "actor": actor})
+        conn.execute(text("""
+            update erp_work_order_stages
+               set data_planejada=:date,
+                   semana_planejada=to_char(:date::date,'IW')
+             where work_order_id=:id
+        """), {"id": work_id, "date": fields["data_comercial_prevista"]})
     if not is_draft:
         for code, _, _ in STAGES:
             stage = _one(conn.execute(text("""
@@ -332,6 +566,8 @@ def update_work_order(conn, work_id, payload, actor):
         "id": work_id, "actor": actor, "version": work["version"],
         "action": "RASCUNHO_ATUALIZADO" if is_draft else "O_S_ATUALIZADA",
     })
+    if not is_draft:
+        recalculate_work_order_sequences(conn, actor)
     return {"id": work_id, "numero_os": work["numero_os"], "data_comercial_prevista": fields["data_comercial_prevista"]}
 
 def activate_work_order(conn, work_id, actor):
@@ -385,6 +621,7 @@ def activate_work_order(conn, work_id, actor):
     conn.execute(text("update erp_work_orders set status='ATIVA',ativado_por=:actor,ativado_at=now(),updated_at=now(),version=version+1 where id=:id"),{'id':work_id,'actor':actor})
     conn.execute(text("update erp_vehicle_entries set status='ATIVA' where id=:id"), {"id": work["vehicle_entry_id"]})
     conn.execute(text("insert into erp_work_order_status_history(work_order_id,status_anterior,novo_status,usuario,observacao) values(:id,:old,'ATIVA',:actor,'Etapas publicadas no MES')"),{'id':work_id,'old':work['status'],'actor':actor})
+    recalculate_work_order_sequences(conn, actor)
     return {'id':work_id,'replayed':False}
 
 def active_cards(conn):
@@ -392,15 +629,18 @@ def active_cards(conn):
         select w.id,w.numero_os,w.status,w.technical_status,e.item_number,
                v.chassi,v.marca,v.modelo,v.versao,
                w.cliente_nome,w.linha,w.transformacao,w.data_comercial_prevista,
+               seq.sequencia,seq.semana_planejada,seq.prioridade_manual,
                count(s.id) filter(where s.aplicavel) as etapas_aplicaveis,
                count(s.id) filter(where s.status='CONCLUÍDA') as etapas_concluidas
         from erp_work_orders w
         join erp_vehicle_entries e on e.id=w.vehicle_entry_id
         join erp_vehicles v on v.id=e.vehicle_id
+        left join erp_work_order_sequences seq on seq.work_order_id=w.id and seq.ativo=true
         left join erp_work_order_stages s on s.work_order_id=w.id
         where w.status in ('ATIVA','EM_PRODUÇÃO')
-        group by w.id,e.item_number,v.chassi,v.marca,v.modelo,v.versao
-        order by w.data_comercial_prevista nulls last,e.item_number
+        group by w.id,e.item_number,v.chassi,v.marca,v.modelo,v.versao,
+                 seq.sequencia,seq.semana_planejada,seq.prioridade_manual
+        order by seq.sequencia nulls last,w.data_comercial_prevista nulls last,e.item_number
     """))
     return [dict(x._mapping) for x in rows]
 
@@ -471,6 +711,7 @@ def list_work_orders(conn, search="", status="", limit=1000):
                w.technical_status,w.technical_closed_at,w.technical_closed_by,
                w.technical_close_reason,
                w.created_at,w.updated_at,
+               seq.sequencia,seq.semana_planejada,seq.prioridade_manual,
                count(s.id) as etapas_total,
                count(s.id) filter(where s.aplicavel) as etapas_aplicaveis,
                count(s.id) filter(where s.status='CONCLUÍDA') as etapas_concluidas,
@@ -478,19 +719,20 @@ def list_work_orders(conn, search="", status="", limit=1000):
         from erp_vehicle_entries e
         join erp_vehicles v on v.id=e.vehicle_id
         left join erp_work_orders w on w.vehicle_entry_id=e.id
+        left join erp_work_order_sequences seq on seq.work_order_id=w.id and seq.ativo=true
         left join erp_work_order_stages s on s.work_order_id=w.id
         where (:status='' or coalesce(w.status,e.status)=:status)
           and (:search='%%' or concat_ws(' ',e.item_number,v.chassi,v.marca,v.modelo,
                e.cliente_nome,w.numero_os,w.cliente_nome,w.proposta_numero,w.linha,
                w.transformacao) ilike :search)
-        group by e.id,v.id,w.id
+        group by e.id,v.id,w.id,seq.sequencia,seq.semana_planejada,seq.prioridade_manual
         order by
           case
             when w.status in ('ATIVA','EM_PRODUÇÃO') then 0
             when w.status in ('RASCUNHO','AGUARDANDO_O_S') or w.id is null then 1
             else 2
           end,
-          e.item_number desc
+          seq.sequencia nulls last,e.item_number desc
         limit :limit
     """), params)
     return [dict(row._mapping) for row in rows]
@@ -499,9 +741,11 @@ def work_order_detail(conn, work_id):
     work = _one(conn.execute(text("""
         select w.*,e.item_number,e.data_chegada,e.status as entry_status,e.observacoes as entry_notes,
                e.avarias,v.chassi,v.marca,v.modelo,v.versao,v.mmv
+               ,seq.sequencia,seq.semana_planejada,seq.prioridade_manual
         from erp_work_orders w
         join erp_vehicle_entries e on e.id=w.vehicle_entry_id
         join erp_vehicles v on v.id=e.vehicle_id
+        left join erp_work_order_sequences seq on seq.work_order_id=w.id
         where w.id=:id
     """), {"id": work_id}))
     if not work:
@@ -789,6 +1033,7 @@ def update_stage(conn, work_id, code, payload, actor):
             "actor": actor,
             "note": transition_note,
         })
+        recalculate_work_order_sequences(conn, actor)
     return {"replayed": False, "status": new, "work_order_status": next_status}
 
 def update_work_order_location(conn, work_id, location, actor, idempotency_key=None):
@@ -876,6 +1121,7 @@ def finalize(conn, work_id, actor, delivered=False, notes='', target_status=None
         "id": work_id, "action": status, "actor": actor, "old": work["status"],
         "new": status, "event_time": event_time, "notes": notes,
     })
+    recalculate_work_order_sequences(conn, actor)
     return {"id": work_id, "status": status}
 
 def technical_close_work_order(conn, work_id, actor, reason=""):
@@ -956,3 +1202,11 @@ def reschedule(conn, work_id, new_date, reason, actor):
     conn.execute(text('update erp_work_order_schedules set vigente=false where work_order_id=:id and vigente'),{'id':work_id})
     conn.execute(text('insert into erp_work_order_schedules(work_order_id,data_anterior,nova_data,motivo,usuario,vigente) values(:id,(select data_comercial_prevista from erp_work_orders where id=:id),:date,:reason,:actor,true)'),{'id':work_id,'date':new_date,'reason':reason,'actor':actor})
     conn.execute(text('update erp_work_orders set data_comercial_prevista=:date,updated_at=now() where id=:id'),{'id':work_id,'date':new_date})
+    if _sequence_schema_ready(conn):
+        conn.execute(text("""
+            update erp_work_order_stages
+               set data_planejada=:date,semana_planejada=to_char(:date::date,'IW')
+             where work_order_id=:id
+        """), {"id": work_id, "date": _date_value(new_date)})
+    recalculate_work_order_sequences(conn, actor)
+    return {"id": work_id, "data_comercial_prevista": _date_value(new_date)}
