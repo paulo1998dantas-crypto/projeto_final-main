@@ -1661,15 +1661,105 @@ async def atualizar_banco(request: Request, data: dict = Body(...), db: Session 
     db.commit()
     return {"status": "ok"}
 
+def _xlsx_response(rows, columns, filename):
+    """Return a stable XLSX even when the selected report has no rows."""
+    frame = pd.DataFrame(rows, columns=columns)
+    out = io.BytesIO()
+    with pd.ExcelWriter(out, engine="openpyxl") as writer:
+        frame.to_excel(writer, index=False)
+    out.seek(0)
+    return StreamingResponse(
+        out,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+def _erp_history_export_rows():
+    with database.engine.connect() as conn:
+        rows = conn.execute(text("""
+            select e.item_number,w.numero_os,v.chassi,
+                   concat_ws(' ',nullif(trim(v.marca),''),nullif(trim(v.modelo),''),
+                             nullif(trim(v.versao),'')) as modelo,
+                   s.stage_code,ev.action,ev.status_anterior,ev.novo_status,
+                   ev.operador,ev.inicio,ev.termino,ev.localizacao,ev.created_at
+              from erp_work_order_stage_events ev
+              join erp_work_order_stages s on s.id=ev.work_order_stage_id
+              join erp_work_orders w on w.id=s.work_order_id
+              join erp_vehicle_entries e on e.id=w.vehicle_entry_id
+              join erp_vehicles v on v.id=e.vehicle_id
+             order by ev.created_at,e.item_number,s.ordem,ev.id
+        """)).mappings()
+        return [
+            {
+                "ITEM": row["item_number"],
+                "O.S.": row["numero_os"],
+                "CHASSI": row["chassi"],
+                "MODELO": row["modelo"],
+                "ETAPA": row["stage_code"],
+                "AÇÃO": row["action"],
+                "STATUS ANTERIOR": row["status_anterior"],
+                "STATUS": row["novo_status"],
+                "RESPONSAVEL": row["operador"],
+                "INICIO": to_excel_dt(row["inicio"]),
+                "TERMINO": to_excel_dt(row["termino"]),
+                "LOCALIZACAO": row["localizacao"],
+                "DATA": to_excel_dt(row["created_at"]),
+                "ORIGEM": "ERP",
+            }
+            for row in rows
+        ]
+
+
+def _erp_time_export_rows():
+    with database.engine.connect() as conn:
+        rows = conn.execute(text("""
+            select e.item_number,w.numero_os,v.chassi,
+                   concat_ws(' ',nullif(trim(v.marca),''),nullif(trim(v.modelo),''),
+                             nullif(trim(v.versao),'')) as modelo,
+                   s.stage_code,s.status,s.responsavel,s.inicio,s.termino,s.localizacao
+              from erp_work_order_stages s
+              join erp_work_orders w on w.id=s.work_order_id
+              join erp_vehicle_entries e on e.id=w.vehicle_entry_id
+              join erp_vehicles v on v.id=e.vehicle_id
+             order by e.item_number,s.ordem,s.id
+        """)).mappings()
+        return [
+            {
+                "ITEM": row["item_number"],
+                "O.S.": row["numero_os"],
+                "CHASSI": row["chassi"],
+                "MODELO": row["modelo"],
+                "ETAPA": row["stage_code"],
+                "STATUS": row["status"],
+                "RESPONSAVEL": row["responsavel"],
+                "INICIO": to_excel_dt(row["inicio"]),
+                "TERMINO": to_excel_dt(row["termino"]),
+                "LOCALIZACAO": row["localizacao"],
+                "ORIGEM": "ERP",
+            }
+            for row in rows
+        ]
+
+
 @app.get("/exportar_historico")
 async def exportar(request: Request, db: Session = Depends(database.get_db)):
     if not require_login(request, db):
         return RedirectResponse(url="/login", status_code=303)
+    if erp_feature_enabled() and inspect(database.engine).has_table("erp_work_order_stage_events"):
+        columns = [
+            "ITEM", "O.S.", "CHASSI", "MODELO", "ETAPA", "AÇÃO",
+            "STATUS ANTERIOR", "STATUS", "RESPONSAVEL", "INICIO",
+            "TERMINO", "LOCALIZACAO", "DATA", "ORIGEM",
+        ]
+        return _xlsx_response(
+            _erp_history_export_rows(),
+            columns,
+            "logs_apontamentos_mes.xlsx",
+        )
     if not legacy_operational_schema_available():
         return legacy_disabled_response()
     logs = db.query(models.Historico).all()
-    if not logs:
-        return {"message": "Sem dados"}
 
     veiculos = db.query(models.Veiculo).all()
     loc_map = {str(v.chassi).strip(): v.localizacao for v in veiculos}
@@ -1693,22 +1783,26 @@ async def exportar(request: Request, db: Session = Depends(database.get_db)):
         for l in logs
     ])
 
-    out = io.BytesIO()
-    with pd.ExcelWriter(out, engine="openpyxl") as w:
-        df.to_excel(w, index=False)
-
-    out.seek(0)
-
-    return StreamingResponse(
-        out,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=relatorio.xlsx"}
+    return _xlsx_response(
+        df.to_dict(orient="records"),
+        list(df.columns),
+        "relatorio.xlsx",
     )
 
 @app.get("/exportar_tempos")
 async def exportar_tempos(request: Request, db: Session = Depends(database.get_db)):
     if not require_login(request, db):
         return RedirectResponse(url="/login", status_code=303)
+    if erp_feature_enabled() and inspect(database.engine).has_table("erp_work_order_stages"):
+        columns = [
+            "ITEM", "O.S.", "CHASSI", "MODELO", "ETAPA", "STATUS",
+            "RESPONSAVEL", "INICIO", "TERMINO", "LOCALIZACAO", "ORIGEM",
+        ]
+        return _xlsx_response(
+            _erp_time_export_rows(),
+            columns,
+            "tempos_localizacao.xlsx",
+        )
     if not legacy_operational_schema_available():
         return legacy_disabled_response()
     aponts = db.query(models.Apontamento).all()
@@ -1729,16 +1823,10 @@ async def exportar_tempos(request: Request, db: Session = Depends(database.get_d
         for a in aponts
     ])
 
-    out = io.BytesIO()
-    with pd.ExcelWriter(out, engine="openpyxl") as w:
-        df.to_excel(w, index=False)
-
-    out.seek(0)
-
-    return StreamingResponse(
-        out,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=tempos_localizacao.xlsx"}
+    return _xlsx_response(
+        df.to_dict(orient="records"),
+        list(df.columns),
+        "tempos_localizacao.xlsx",
     )
 
 @app.get("/limpar_historico")
