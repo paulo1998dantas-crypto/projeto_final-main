@@ -13,16 +13,24 @@
     </header>
 
     <main class="p-4 max-w-2xl mx-auto">
+        <div id="save-feedback" class="hidden mb-4 rounded-xl border px-4 py-3 text-sm font-bold" role="status"></div>
         <div class="bg-white p-5 rounded-2xl shadow-sm mb-6 border-l-4 border-blue-600 space-y-4">
             <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
-                    <p class="text-[10px] font-black uppercase tracking-widest text-blue-600">Ficha do veículo</p>
+                    <p class="text-[10px] font-black uppercase tracking-widest text-blue-600">
+                        {% if erp_mode %}ITEM {{ veiculo.item_number }} · O.S. {{ veiculo.numero_os }}{% else %}Ficha do veículo{% endif %}
+                    </p>
                     <h1 class="text-2xl font-black text-slate-800 uppercase">{{ veiculo.modelo }}</h1>
                     <p class="text-xs text-slate-400">CHASSI: {{ veiculo.chassi }}</p>
                 </div>
-                <span class="self-start rounded-full bg-blue-50 px-3 py-1 text-xs font-black uppercase text-blue-700">
-                    {{ veiculo.linha or "LINHA NÃO INFORMADA" }}
-                </span>
+                <div class="flex flex-col items-end gap-1">
+                    {% if erp_mode %}
+                    <span class="rounded-full bg-emerald-50 px-3 py-1 text-xs font-black uppercase text-emerald-700">{{ veiculo.status }}</span>
+                    {% endif %}
+                    <span class="rounded-full bg-blue-50 px-3 py-1 text-xs font-black uppercase text-blue-700">
+                        {{ veiculo.linha or "LINHA NÃO INFORMADA" }}
+                    </span>
+                </div>
             </div>
 
             <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -78,14 +86,18 @@
             {% for etapa in etapas %}
             {% set ap = apont_map.get(etapa) %}
             {% set status = ap.status if ap else "" %}
-            <div class="bg-white p-4 rounded-xl border shadow-sm space-y-3 etapa-row" data-etapa="{{ etapa }}" data-status="{{ status }}">
+            <div class="bg-white p-4 rounded-xl border shadow-sm space-y-3 etapa-row"
+                 data-etapa="{{ etapa }}"
+                 data-status="{{ status }}"
+                 data-location="{{ ap.localizacao if ap and ap.localizacao else '' }}"
+                 data-note="{{ ap.observacoes if ap and ap.observacoes else '' }}">
                 <div class="flex justify-between items-center">
                     <span class="font-bold text-slate-700 text-[11px] uppercase">{{ etapa }}</span>
                     <div class="flex gap-1">
-                        <button onclick="salvar('{{ etapa }}', 'N/A', this)" class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'N/A' %} bg-slate-600 text-white border-slate-800 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">N/A</button>
-                        <button onclick="salvar('{{ etapa }}', 'NÃO', this)" class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'NÃO' %} bg-red-500 text-white border-red-700 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">NOK</button>
-                        <button onclick="salvar('{{ etapa }}', 'PARCIAL', this)" class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'PARCIAL' %} bg-amber-500 text-white border-amber-700 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">P</button>
-                        <button onclick="salvar('{{ etapa }}', 'SIM', this)" class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'SIM' %} bg-green-500 text-white border-green-700 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">OK</button>
+                        <button type="button" onclick="salvar('{{ etapa }}', 'N/A', this)" class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'N/A' %} bg-slate-600 text-white border-slate-800 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">N/A</button>
+                        <button type="button" onclick="salvar('{{ etapa }}', 'NÃO', this)" class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'NÃO' %} bg-red-500 text-white border-red-700 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">N</button>
+                        <button type="button" onclick="salvar('{{ etapa }}', 'PARCIAL', this)" class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'PARCIAL' %} bg-amber-500 text-white border-amber-700 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">P</button>
+                        <button type="button" onclick="salvar('{{ etapa }}', 'SIM', this)" class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'SIM' %} bg-green-500 text-white border-green-700 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">S</button>
                     </div>
                 </div>
 
@@ -112,8 +124,26 @@
     </main>
 
     <script>
+    const ERP_MODE = {{ "true" if erp_mode else "false" }};
+    // `tojson` evita que o autoescape do HTML transforme as aspas do UUID em
+    // entidades (&quot;), o que interrompia todo o JavaScript desta tela.
+    const ERP_WORK_ORDER_ID = {{ work_order_id|tojson if erp_mode else 'null' }};
+
     function getRow(el) {
         return el.closest('.etapa-row');
+    }
+
+    function erpInputCode(status) {
+        return {"SIM": "S", "PARCIAL": "P", "NÃO": "N", "N/A": "N/A"}[status] || "N";
+    }
+
+    function feedback(text, error = false) {
+        const box = document.getElementById('save-feedback');
+        box.textContent = text;
+        box.className = `mb-4 rounded-xl border px-4 py-3 text-sm font-bold ${error ? 'border-red-200 bg-red-50 text-red-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'}`;
+        box.classList.remove('hidden');
+        clearTimeout(window.feedbackTimer);
+        window.feedbackTimer = setTimeout(() => box.classList.add('hidden'), 3200);
     }
 
     function getPayload(row, statusOverride) {
@@ -123,12 +153,15 @@
         const termino = inputs[2].value || "";
         const status = statusOverride || row.dataset.status || "";
         return {
-            chassi: "{{ veiculo.chassi }}",
+            chassi: {{ veiculo.chassi|tojson }},
             etapa: row.dataset.etapa,
             status: status,
+            input_code: erpInputCode(status),
             responsavel: responsavel,
             inicio: inicio,
-            termino: termino
+            termino: termino,
+            localizacao: row.dataset.location || "",
+            observacoes: row.dataset.note || ""
         };
     }
 
@@ -136,8 +169,17 @@
         const row = getRow(btn);
         const payload = getPayload(row, status);
         payload.registrar_historico = true;
-        const res = await fetch('/apontar', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
-        if (res.ok) {
+        payload.idempotency_key = crypto.randomUUID();
+        const endpoint = ERP_MODE
+            ? `/api/erp/work-orders/${ERP_WORK_ORDER_ID}/stages/${encodeURIComponent(row.dataset.etapa)}`
+            : '/apontar';
+        btn.disabled = true;
+        try {
+            const res = await fetch(endpoint, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                throw new Error(body.error || body.detail || "Não foi possível salvar a etapa.");
+            }
             row.dataset.status = status;
             btn.parentElement.querySelectorAll('button').forEach(b => {
                 b.className = "w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 bg-slate-100 text-slate-400 border-slate-300";
@@ -146,6 +188,11 @@
             else if (status === 'NÃO') btn.className = "w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 bg-red-500 text-white border-red-700";
             else if (status === 'PARCIAL') btn.className = "w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 bg-amber-500 text-white border-amber-700";
             else btn.className = "w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 bg-slate-600 text-white border-slate-800";
+            feedback(`${etapa}: ${status} registrado.`);
+        } catch (error) {
+            feedback(error.message || "Não foi possível salvar a etapa.", true);
+        } finally {
+            btn.disabled = false;
         }
     }
 
@@ -153,18 +200,41 @@
         const row = getRow(el);
         const payload = getPayload(row);
         payload.registrar_historico = false;
-        await fetch('/apontar', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+        payload.idempotency_key = crypto.randomUUID();
+        const endpoint = ERP_MODE
+            ? `/api/erp/work-orders/${ERP_WORK_ORDER_ID}/stages/${encodeURIComponent(row.dataset.etapa)}`
+            : '/apontar';
+        const res = await fetch(endpoint, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+        if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            feedback(body.error || body.detail || "Não foi possível salvar os dados da etapa.", true);
+        } else {
+            feedback(`${row.dataset.etapa}: dados atualizados.`);
+        }
     }
 
     async function salvarLocalizacao(sel) {
-        const payload = { chassi: "{{ veiculo.chassi }}", localizacao: sel.value };
-        await fetch('/veiculo_localizacao', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+        const payload = {
+            chassi: {{ veiculo.chassi|tojson }},
+            localizacao: sel.value,
+            idempotency_key: crypto.randomUUID()
+        };
+        const endpoint = ERP_MODE
+            ? `/api/erp/work-orders/${ERP_WORK_ORDER_ID}/location`
+            : '/veiculo_localizacao';
+        const res = await fetch(endpoint, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+        if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            feedback(body.error || body.detail || "Não foi possível atualizar a localização.", true);
+        } else {
+            feedback("Localização atualizada.");
+        }
     }
 
     function usarMeuNome(btn) {
         const row = getRow(btn);
         const input = row.querySelector('input[type="text"]');
-        input.value = "{{ user_name }}";
+        input.value = {{ user_name|tojson }};
         salvarCampos(input);
     }
     </script>

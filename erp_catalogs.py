@@ -1,0 +1,151 @@
+"""Catálogos operacionais compartilhados pelo Suprimentos e pelo MES.
+
+Enquanto esses dados ainda não possuem manutenção no ModuloCadastro, o MES
+publica uma única cópia por API. Isso evita listas divergentes nos frontends.
+"""
+
+VENDEDORES = ["JI", "JOÃO CARVALHO", "SERGIO BRUNETTI", "OUTROS"]
+MERCADOS = ["LICITAÇÃO", "VAREJO"]
+TIPOS_VEICULO = ["MICRO", "MISTO"]
+LINHAS = ["LB", "LAB", "LE", "LAE"]
+
+AR_FORNECEDORES = ["GE", "CLIM"]
+AR_TIPOS = [
+    "COMPLEMENTO",
+    "CABINE/SALÃO",
+    "COMPLEMENTO C/ CX CONDENSADORA",
+    "DERIVAÇÃO C/ CX PRÉ CONDENSADORA",
+    "COMPLEMENTO E/S/J C/ COMANDO TRASEIRO BOTÃO",
+    "COMPLEMENTO E/S/J C/ COMANDO ORIGINAL",
+    "COMPLEMENTO E/S/J COM COMANDO TRASEIRO DIGITAL",
+    "OUTRO",
+    "AG",
+    "AR ORIGINAL",
+    "NÃO",
+    "COMPLEMENTO C/ COMANDO DIGITAL TRASEIRO",
+]
+SIM_NAO = ["SIM", "NÃO"]
+
+MARCAS = [
+    "MERCEDES-BENZ", "FORD", "RENAULT", "PEUGEOT", "CITROËN", "FIAT", "IVECO",
+]
+MODELOS = [
+    "SPRINTER 417", "SPRINTER 517", "TRANSIT", "MASTER", "EXPERT", "BOXER",
+    "JUMPY", "JUMPER", "SCUDO", "DUCATO", "DAILY 45-160", "DAILY 50-180",
+    "KANGOO",
+]
+VERSOES = [
+    "9,5 M³ FURGÃO",
+    "19,5 M³ 16L",
+    "9,5 M³ VITRÊ REVESTIDA",
+    "10,5 M³",
+    "14 M³",
+    "15,5 M³",
+    "10,5 M³ VITRÊ REVESTIDA",
+    "14 M³ VITRÊ REVESTIDA",
+    "15,5 M³ VITRÊ REVESTIDA",
+    "10,5 M³ ORIGINAL 16L",
+    "15,5 M³ ORIGINAL 18L",
+    "15,5 M³ ORIGINAL 20L",
+    "15,5 M³ ORIGINAL 21L",
+    "L2H3",
+    "L3H3",
+    "L3H2 VITRÊ",
+    "L4H3 VITRÊ",
+    "L3H2 ORIGINAL 15L",
+    "L4H3 ORIGINAL 18L",
+    "L1H1",
+    "L2H2",
+    "L3H2",
+    "L3H2 ORIGINAL 16L",
+    "FURGÃO",
+    "VITRÊ",
+    "ORIGINAL 17L",
+    "ORIGINAL 16L",
+]
+
+TRANSFORMACOES = [
+    ("40340002", "JI CONFORT 517 14 M SELADO PLUS"),
+    ("40340003", "JI CONFORT 517 14 M VISTA ESSENCIAL"),
+    ("40340004", "JI CONFORT 517 14 M VISTA PLUS"),
+    ("40340005", "JI CONFORT 517 14 M VITRE REVESTIDA"),
+    ("40340006", "JI CONFORT 517 15 M SELADO ESSENCIAL"),
+    ("40340007", "JI CONFORT E/J TA SELADO"),
+    ("40340008", "JI CONFORT E/J TA VISTA"),
+    ("40340009", "JI CONFORT 417 10 M SELADO ESSENCIAL"),
+    ("40340010", "JI CONFORT 417 10 M SELADO PLUS"),
+    ("40340011", "JI CONFORT 417 10 M VISTA ESSENCIAL"),
+    ("40340012", "JI CONFORT 417 10 M VISTA PLUS"),
+    ("40340013", "JI CONFORT 417 10 M VITRE REVESTIDA"),
+    ("40340014", "JI CONFORT 417 14 M SELADO ESSENCIAL"),
+    ("40340015", "JI CONFORT 417 14 M SELADO PLUS"),
+    ("40340016", "JI CONFORT 417 14 M VISTA ESSENCIAL"),
+    ("40340017", "JI CONFORT 417 14 M VISTA PLUS"),
+    ("40340018", "JI CONFORT 417 14 M VITRE REVESTIDA"),
+    ("40340019", "JI CONFORT 517 15 M SELADO PLUS"),
+    ("40340020", "JI CONFORT 517 15 M VISTA ESSENCIAL"),
+    ("40340021", "JI CONFORT 517 15 M VISTA PLUS"),
+    ("40340022", "JI CONFORT 517 15 M VITRE REVESTIDA"),
+    ("40340023", "JI CONFORT B/J/D SELADO"),
+    ("40340024", "JI CONFORT B/J/D VISTA"),
+    ("40340025", "JI CONFORT B/J/D VITRE"),
+    ("40340026", "JI CONFORT E/J TA VITRE"),
+    ("40340027", "JI CONFORT E/S/ J TB SELADO"),
+    ("40340028", "JI CONFORT E/S/ J TB VISTA"),
+    ("40340029", "JI CONFORT E/S/ J TB VITRE"),
+    ("40340030", "JI CONFORT IVECO 50 VITRE ESSENCIAL"),
+    ("40340031", "JI CONFORT MASTER L1H1 SELADO"),
+    ("40340032", "JI CONFORT MASTER L2H2 SELADO ESSENCIAL"),
+    ("40340033", "JI CONFORT MASTER L2H2 SELADO PLUS"),
+    ("40340034", "JI CONFORT MASTER L2H2 VISTA ESSENCIAL"),
+    ("40340035", "JI CONFORT MASTER L2H2 VISTA PLUS"),
+    ("40340036", "JI CONFORT MASTER L3H2 SELADO ESSENCIAL"),
+    ("40340037", "JI CONFORT MASTER L3H2 SELADO PLUS"),
+    ("40340038", "JI CONFORT MASTER L3H2 VISTA ESSENCIAL"),
+    ("40340039", "JI CONFORT MASTER L3H2 VISTA PLUS"),
+    ("40340040", "JI CONFORT MASTER L3H2 VITRE ESSENCIAL"),
+    ("40340041", "JI CONFORT MASTER L3H2 VITRE PLUS"),
+    ("40340042", "JI CONFORT TRANSIT L3H2 VITRE"),
+    ("40340043", "JI CONFORT TRANSIT L3H3 SELADO"),
+    ("40340044", "JI CONFORT TRANSIT L3H3 VISTA"),
+    ("40340045", "JI CONFORT TRANSIT L4H3 VITRE"),
+    ("40340046", "JI URBAN E/J TA SELADO"),
+    ("40340047", "JI URBAN E/J TA VISTA"),
+    ("40340048", "JI URBAN E/J TA VITRE"),
+    ("40340049", "JI URBAN E/S/ J TB SELADO"),
+    ("40340050", "JI URBAN E/S/ J TB VISTA"),
+    ("40340051", "JI URBAN E/S/ J TB VITRE"),
+    ("40340052", "JI URBAN TRANSIT L3H2 VITRE"),
+    ("40340053", "JI URBAN E/S/ J TB SELADO C/ VELUDO"),
+    ("40340054", "JI URBAN E/S/ J TB VISTA C/ VELUDO"),
+    ("40340055", "JI URBAN E/S/ J VITRE TB C/ VELUDO"),
+    ("40340056", "JI D-CLASS TB SELADO E/S/J"),
+    ("40340057", "JI D-CLASS TB VITRE E/S/J"),
+]
+
+REQUIRED_WORK_ORDER_FIELDS = [
+    "tipo_servico", "proposta_numero", "data_aprovacao", "vendedor", "mercado",
+    "cliente_nome", "municipio", "uf", "tipo_veiculo", "linha",
+    "transformacao_codigo", "transformacao", "tipo_sistema_ar", "ar_quente",
+    "data_comercial_prevista",
+]
+
+
+def payload():
+    return {
+        "vendedores": VENDEDORES,
+        "mercados": MERCADOS,
+        "tipos_veiculo": TIPOS_VEICULO,
+        "linhas": LINHAS,
+        "ar_fornecedores": AR_FORNECEDORES,
+        "ar_tipos": AR_TIPOS,
+        "sim_nao": SIM_NAO,
+        "marcas": MARCAS,
+        "modelos": MODELOS,
+        "versoes": VERSOES,
+        "transformacoes": [
+            {"codigo": codigo, "descricao": descricao}
+            for codigo, descricao in TRANSFORMACOES
+        ],
+        "required_work_order_fields": REQUIRED_WORK_ORDER_FIELDS,
+    }

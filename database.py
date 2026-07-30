@@ -3,6 +3,26 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
 
+
+def load_local_env():
+    """Load optional developer-only configuration without overriding real env vars.
+
+    `.env.local` is ignored by Git and is deliberately not used in Render.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env.local")
+    if not os.path.isfile(path):
+        return
+    with open(path, "r", encoding="utf-8") as handle:
+        for raw in handle:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+load_local_env()
+
 # ======================================================
 # CONFIGURAÇÃO DE BANCO DE DADOS – SUPABASE (POSTGRESQL)
 # ======================================================
@@ -12,8 +32,11 @@ import os
 
 SQLALCHEMY_DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://postgres.rfjgwjtykqmriijsqlac:Pn5833313000@aws-1-us-east-1.pooler.supabase.com:5432/postgres"
+    ""
 )
+
+if not SQLALCHEMY_DATABASE_URL:
+    raise RuntimeError("DATABASE_URL e obrigatoria. Configure-a no ambiente; nunca use credenciais no codigo.")
 
 # Engine configurada para PostgreSQL com pool estável
 engine = create_engine(
