@@ -2083,7 +2083,10 @@ async def erp_vehicle_entry(request: Request, data: dict = Body(...), db: Sessio
     if not erp_feature_enabled(): return erp_disabled_response()
     user = require_login(request, db)
     if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
-    if not has_permission(user, authz.MES_VEHICLE_ENTRIES_CREATE):
+    if not (
+        has_permission(user, authz.MES_WORK_ORDERS_MANAGE)
+        and has_permission(user, authz.MES_VEHICLE_ENTRIES_CREATE)
+    ):
         return permission_denied(api=True)
     try:
         with database.engine.begin() as conn: result = erp_service.create_entry(conn, data, user.nome)
@@ -2095,7 +2098,7 @@ async def erp_work_order_screen(request: Request, db: Session = Depends(database
     if not erp_feature_enabled(): return HTMLResponse("Integração ERP desativada pela feature flag.", status_code=404)
     user = require_login(request, db)
     if not user: return RedirectResponse(url="/login", status_code=303)
-    if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE):
+    if not has_permission(user, authz.MES_DASHBOARD_READ):
         return permission_denied()
     return templates.TemplateResponse(request, "gestao_os.html", {"request": request, "current_user": user})
 
@@ -2177,7 +2180,10 @@ async def erp_stage(work_id: str, stage_code: str, request: Request, data: dict 
     if not erp_feature_enabled(): return erp_disabled_response()
     user = require_login(request, db)
     if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
-    if not has_permission(user, authz.MES_STAGE_WRITE):
+    if not (
+        has_permission(user, authz.MES_WORK_ORDERS_MANAGE)
+        and has_permission(user, authz.MES_STAGE_WRITE)
+    ):
         return permission_denied(api=True)
     try:
         with database.engine.begin() as conn: result = erp_service.update_stage(conn, work_id, stage_code, data, user.nome)
@@ -2199,7 +2205,10 @@ async def erp_location(
             {"ok": False, "error": "Login necessario."},
             status_code=401,
         )
-    if not has_permission(user, authz.MES_STAGE_WRITE):
+    if not (
+        has_permission(user, authz.MES_WORK_ORDERS_MANAGE)
+        and has_permission(user, authz.MES_STAGE_WRITE)
+    ):
         return permission_denied(api=True)
     try:
         with database.engine.begin() as conn:
@@ -2219,7 +2228,10 @@ async def erp_finalize(work_id: str, request: Request, data: dict = Body(default
     if not erp_feature_enabled(): return erp_disabled_response()
     user = require_login(request, db)
     if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
-    if not has_permission(user, authz.MES_FINALIZE):
+    if not (
+        has_permission(user, authz.MES_WORK_ORDERS_MANAGE)
+        and has_permission(user, authz.MES_FINALIZE)
+    ):
         return permission_denied(api=True)
     try:
         with database.engine.begin() as conn:
@@ -2240,7 +2252,10 @@ async def erp_schedule(work_id: str, request: Request, data: dict = Body(...), d
     if not erp_feature_enabled(): return erp_disabled_response()
     user = require_login(request, db)
     if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
-    if not has_permission(user, authz.MES_SCHEDULE_MANAGE):
+    if not (
+        has_permission(user, authz.MES_WORK_ORDERS_MANAGE)
+        and has_permission(user, authz.MES_SCHEDULE_MANAGE)
+    ):
         return permission_denied(api=True)
     try:
         with database.engine.begin() as conn: erp_service.reschedule(conn, work_id, data.get("nova_data"), str(data.get("motivo") or ""), user.nome)
@@ -2257,7 +2272,7 @@ async def erp_work_orders(
     if not erp_feature_enabled(): return erp_disabled_response()
     user = require_login(request, db)
     if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
-    if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE):
+    if not has_permission(user, authz.MES_DASHBOARD_READ):
         return permission_denied(api=True)
     with database.engine.connect() as conn:
         return {"ok": True, "orders": erp_service.list_work_orders(conn, search, status)}
@@ -2267,7 +2282,7 @@ async def erp_work_order_detail(work_id: str, request: Request, db: Session = De
     if not erp_feature_enabled(): return erp_disabled_response()
     user = require_login(request, db)
     if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
-    if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE):
+    if not has_permission(user, authz.MES_DASHBOARD_READ):
         return permission_denied(api=True)
     try:
         with database.engine.begin() as conn:

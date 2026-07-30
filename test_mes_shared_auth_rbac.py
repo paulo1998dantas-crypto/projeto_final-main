@@ -58,16 +58,23 @@ class MesSharedAuthRbacTests(unittest.TestCase):
         for role in ("OPERADOR", "COMPRADOR"):
             permissions = authz._default_permissions({role})
             self.assertIn(authz.MES_DASHBOARD_READ, permissions)
-            self.assertIn(authz.MES_STAGE_WRITE, permissions)
             self.assertIn(authz.MES_EXPORTS_READ, permissions)
+            self.assertNotIn(authz.MES_STAGE_WRITE, permissions)
             self.assertNotIn(authz.MES_WORK_ORDERS_MANAGE, permissions)
-        for role in ("PCP", "ENGENHARIA"):
-            permissions = authz._default_permissions({role})
-            self.assertIn(authz.MES_WORK_ORDERS_MANAGE, permissions)
-            self.assertIn(authz.MES_FINALIZE, permissions)
-            self.assertNotIn(authz.MES_LEGACY_IMPORT, permissions)
-            self.assertNotIn(authz.MES_USERS_MANAGE, permissions)
-        self.assertEqual(authz._default_permissions({"FINANCEIRO"}), frozenset())
+        engineering = authz._default_permissions({"ENGENHARIA"})
+        self.assertIn(authz.MES_DASHBOARD_READ, engineering)
+        self.assertIn(authz.MES_EXPORTS_READ, engineering)
+        self.assertNotIn(authz.MES_WORK_ORDERS_MANAGE, engineering)
+        self.assertNotIn(authz.MES_FINALIZE, engineering)
+        pcp = authz._default_permissions({"PCP"})
+        self.assertIn(authz.MES_WORK_ORDERS_MANAGE, pcp)
+        self.assertIn(authz.MES_FINALIZE, pcp)
+        self.assertNotIn(authz.MES_LEGACY_IMPORT, pcp)
+        self.assertNotIn(authz.MES_USERS_MANAGE, pcp)
+        self.assertEqual(
+            authz._default_permissions({"FINANCEIRO"}),
+            frozenset({authz.MES_DASHBOARD_READ}),
+        )
 
     def test_multiple_roles_union_permissions(self):
         permissions = authz._default_permissions({"OPERADOR", "PCP"})
@@ -117,7 +124,7 @@ class MesSharedAuthRbacTests(unittest.TestCase):
     def test_human_routes_enforce_permissions(self):
         expected = {
             main.home: "MES_DASHBOARD_READ",
-            main.erp_work_order_screen: "MES_WORK_ORDERS_MANAGE",
+            main.erp_work_order_screen: "MES_DASHBOARD_READ",
             main.erp_vehicle_entry: "MES_VEHICLE_ENTRIES_CREATE",
             main.erp_stage: "MES_STAGE_WRITE",
             main.erp_location: "MES_STAGE_WRITE",

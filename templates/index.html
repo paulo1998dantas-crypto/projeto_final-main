@@ -85,7 +85,7 @@
                 </div>
                 <time id="relogio-tv" class="w-[68px] text-center font-mono text-sm font-black text-white"></time>
                 <button id="botao-tela-cheia" type="button" onclick="alternarTelaCheia()" class="rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 font-bold hover:bg-slate-700">⛶ Tela cheia</button>
-                {% if current_user.can("mes.work_orders.manage") %}
+                {% if current_user.can("mes.dashboard.read") %}
                 <a href="/gestao-os" class="rounded-md bg-cyan-700 px-2.5 py-1.5 font-bold hover:bg-cyan-600">O.S. / Histórico</a>
                 {% endif %}
                 {% if current_user.can("mes.exports.read") %}
@@ -108,7 +108,7 @@
                 {% if current_user and current_user.can("mes.users.manage") %}
                 <a href="/usuarios" class="bg-slate-700 px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold hover:bg-slate-600 transition">Usuários</a>
                 {% endif %}
-                {% if current_user.can("mes.work_orders.manage") %}
+                {% if current_user.can("mes.dashboard.read") %}
                 <a href="/gestao-os" class="bg-cyan-700 px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold hover:bg-cyan-600 transition">O.S. / Histórico</a>
                 {% endif %}
                 {% if current_user.can("mes.legacy.import") %}

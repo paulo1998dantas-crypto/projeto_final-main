@@ -25,21 +25,21 @@ dialog{width:min(1480px,98vw);max-height:96vh;border:0;border-radius:9px;padding
 <main>
 <header class="head">
   <div><h1>MES — Gestão integrada de O.S.</h1><p>Entrada de veículos, etapas produtivas, programação, finalização, entrega e histórico na mesma base.</p></div>
-  <div class="actions"><a class="btn" href="/?visao=gerencial">Painel produtivo</a><a class="btn" href="/?visao=geral">Visão geral</a>{% if current_user.can("mes.exports.read") %}<a class="btn success" href="/exportar_controle_producao">Exportar controle diário</a><a class="btn success" href="/exportar_historico">Exportar logs</a><a class="btn primary" href="/exportar_tempos">Exportar tempos</a>{% endif %}{% if current_user.can("mes.vehicle_entries.create") %}<button class="btn success" type="button" onclick="openEntry()">+ Entrada de veículo</button>{% endif %}<button class="btn primary" type="button" onclick="loadOrders()">Atualizar</button></div>
+  <div class="actions"><a class="btn" href="/?visao=gerencial">Painel produtivo</a><a class="btn" href="/?visao=geral">Visão geral</a>{% if current_user.can("mes.exports.read") %}<a class="btn success" href="/exportar_controle_producao">Exportar controle diário</a><a class="btn success" href="/exportar_historico">Exportar logs</a><a class="btn primary" href="/exportar_tempos">Exportar tempos</a>{% endif %}{% if current_user.can("mes.work_orders.manage") and current_user.can("mes.vehicle_entries.create") %}<button class="btn success" type="button" onclick="openEntry()">+ Entrada de veículo</button>{% endif %}<button class="btn primary" type="button" onclick="loadOrders()">Atualizar</button></div>
 </header>
 <div id="message" class="message" hidden></div>
 <section class="metrics">
-  <div class="metric"><span>Entradas sem O.S.</span><strong id="m-entries">—</strong></div>
-  <div class="metric"><span>Ag. parametrização</span><strong id="m-configuration">—</strong></div>
-  <div class="metric"><span>O.S. ativas</span><strong id="m-active">—</strong></div>
+  <div class="metric"><span>Entradas aguardando O.S.</span><strong id="m-entries">—</strong></div>
+  <div class="metric"><span>Em pátio</span><strong id="m-active">—</strong></div>
   <div class="metric"><span>Em produção</span><strong id="m-production">—</strong></div>
   <div class="metric"><span>Finalizadas</span><strong id="m-finished">—</strong></div>
   <div class="metric"><span>Entregues / retiradas</span><strong id="m-delivered">—</strong></div>
+  <div class="metric"><span>Todos os veículos</span><strong id="m-total">—</strong></div>
 </section>
 <section class="panel">
   <div class="toolbar">
     <label class="search">Buscar<input id="search" type="search" placeholder="ITEM, O.S., chassi, cliente, linha ou transformação" oninput="render()"></label>
-    <label>Visão<select id="view" onchange="render()"><option value="ACTIVE">Quadro ativo</option><option value="ENTRIES">Entradas aguardando O.S.</option><option value="HISTORY">Finalizadas e entregues</option><option value="ALL">Todas as O.S.</option></select></label>
+    <label>Visão<select id="view" onchange="render()"><option value="WIP">Em processo (WIP)</option><option value="ENTRIES">Entradas aguardando O.S.</option><option value="FINISHED">Finalizadas</option><option value="DELIVERED">Entregues</option><option value="ALL">Todos os veículos</option></select></label>
     <button class="btn" type="button" onclick="document.getElementById('search').value='';render()">Limpar</button>
   </div>
   <div id="cards" class="cards"></div><div id="empty" class="empty" hidden>Nenhum registro encontrado nesta visão.</div>
@@ -74,15 +74,15 @@ dialog{width:min(1480px,98vw);max-height:96vh;border:0;border-radius:9px;padding
         <button class="btn success" type="button" onclick="saveStageConfiguration(true)">Concluir parametrização e ativar card</button>
       </div>
     </header>
-    <div class="table-wrap"><table class="stage-table"><thead><tr><th>Etapa</th><th>Status</th><th>Responsável</th><th>Localização</th><th>Início</th><th>Término</th><th>Observações</th><th></th></tr></thead><tbody id="stage-rows"></tbody></table></div>
+    <div class="table-wrap"><table class="stage-table"><thead id="stage-head"></thead><tbody id="stage-rows"></tbody></table></div>
   </section>
-  <section class="section">
+  {% if current_user.can("mes.work_orders.manage") %}<section class="section">
     <header class="section-head"><h3>Programação e encerramento</h3><span class="muted">A data inicial vem da abertura da O.S.; alterações aqui são reprogramações.</span></header>
     <div class="lifecycle">
       {% if current_user.can("mes.schedule.manage") %}<div><h4>Reprogramar entrega</h4><div class="form-row"><label>Nova data<input id="schedule-date" type="date"></label><label>Motivo<input id="schedule-reason" placeholder="Motivo obrigatório"></label><button class="btn primary" type="button" onclick="schedule()">Registrar</button></div></div>{% endif %}
       {% if current_user.can("mes.finalize") %}<div><h4>Finalização, entrega ou retirada</h4><div class="form-row"><label>Status<select id="closing-status"><option value="FINALIZADA">Produção finalizada</option><option value="ENTREGUE">Entregue</option><option value="RETIRADA">Retirada</option></select></label><label>Data/hora<input id="closing-date" type="datetime-local"></label><label>Observação<input id="closing-note" placeholder="Condição final, entrega, responsável..."></label><button class="btn success" type="button" onclick="closeWork()">Registrar</button></div></div>{% endif %}
     </div>
-  </section>
+  </section>{% endif %}
   <section class="section">
     <header class="section-head"><h3>Histórico completo</h3><span class="muted">Status, programação e apontamentos produtivos.</span></header>
     <div class="history"><div class="history-col"><h4>Status da O.S.</h4><div id="status-history"></div></div><div class="history-col"><h4>Programações</h4><div id="schedule-history"></div></div><div class="history-col"><h4>Apontamentos</h4><div id="stage-history"></div></div></div>
@@ -133,6 +133,108 @@ async function saveStage(button){const row=button.closest('tr'),work=state.detai
 async function schedule(){const w=state.detail.work_order,payload={nova_data:document.getElementById('schedule-date').value,motivo:document.getElementById('schedule-reason').value};try{await api(`/api/erp/work-orders/${w.id}/schedules`,{method:'POST',body:JSON.stringify(payload)});await openDetail(w.id);await loadOrders();message('Reprogramação registrada com histórico.')}catch(error){message(error.message,true)}}
 async function closeWork(){const w=state.detail.work_order,status=document.getElementById('closing-status').value,localEvent=document.getElementById('closing-date').value,data_evento=localEvent?new Date(localEvent).toISOString():null,observacoes=document.getElementById('closing-note').value;const label={FINALIZADA:'finalizar a produção',ENTREGUE:'registrar a entrega',RETIRADA:'registrar a retirada'}[status];if(!confirm(`Confirma ${label} da O.S. ${w.numero_os}?`))return;try{await api(`/api/erp/work-orders/${w.id}/finalize`,{method:'POST',body:JSON.stringify({status,data_evento,observacoes})});detailDialog.close();await loadOrders();document.getElementById('view').value='HISTORY';render();message(`O.S. ${w.numero_os}: ${status.replaceAll('_',' ')}. Histórico preservado.`)}catch(error){message(error.message,true)}}
 function renderHistory(){const d=state.detail;document.getElementById('status-history').innerHTML=(d.status_history||[]).map(x=>eventHtml(`${x.status_anterior||'INÍCIO'} → ${x.novo_status}`,`${datetime(x.created_at)} · ${x.usuario}`,x.observacao||x.motivo)).join('')||'<div class="event muted">Sem alterações.</div>';document.getElementById('schedule-history').innerHTML=(d.schedules||[]).map(x=>eventHtml(`${x.data_anterior?date(x.data_anterior):'DATA INICIAL'} → ${date(x.nova_data)}`,`${datetime(x.created_at)} · ${x.usuario} · ${x.vigente?'DATA VIGENTE':'DATA ALTERADA'}`,x.motivo)).join('')||'<div class="event muted">Sem programação.</div>';document.getElementById('stage-history').innerHTML=(d.stage_events||[]).map(x=>eventHtml(`${x.stage_code}: ${x.status_anterior||'—'} → ${x.novo_status}`,`${datetime(x.created_at)} · ${x.operador}`,x.observacao)).join('')||'<div class="event muted">Sem apontamentos.</div>'}
+const canManage={{ current_user.can("mes.work_orders.manage")|tojson }};
+const operationalStatus=value=>norm(value);
+const isClosedWork=work=>['FINALIZADA','ENTREGUE','RETIRADA','CANCELADA','ARQUIVADA'].includes(work.status);
+
+function displayStatus(row){
+  const status=operationalStatus(row?.status||row?.entry_status||'AGUARDANDO O.S.');
+  if(status==='ATIVA')return 'EM PATIO';
+  return String(row?.status||row?.entry_status||'AGUARDANDO O.S.').replaceAll('_',' ');
+}
+
+function metrics(){
+  const rows=state.orders;
+  document.getElementById('m-entries').textContent=rows.filter(x=>!x.work_order_id).length;
+  document.getElementById('m-active').textContent=rows.filter(x=>operationalStatus(x.status)==='ATIVA').length;
+  document.getElementById('m-production').textContent=rows.filter(x=>operationalStatus(x.status)==='EM PRODUCAO').length;
+  document.getElementById('m-finished').textContent=rows.filter(x=>operationalStatus(x.status)==='FINALIZADA').length;
+  document.getElementById('m-delivered').textContent=rows.filter(x=>['ENTREGUE','RETIRADA'].includes(operationalStatus(x.status))).length;
+  document.getElementById('m-total').textContent=rows.length;
+}
+
+function render(){
+  const query=norm(document.getElementById('search').value);
+  const view=document.getElementById('view').value;
+  const isWip=x=>x.work_order_id&&['ATIVA','EM PRODUCAO'].includes(operationalStatus(x.status));
+  const rows=state.orders.filter(x=>{
+    const status=operationalStatus(x.status);
+    const selected=view==='ENTRIES'?!x.work_order_id:
+      view==='WIP'?isWip(x):
+      view==='FINISHED'?x.work_order_id&&status==='FINALIZADA':
+      view==='DELIVERED'?x.work_order_id&&['ENTREGUE','RETIRADA'].includes(status):true;
+    const searchable=[x.item_number,x.numero_os,x.chassi,x.cliente_nome,x.entry_client,x.linha,x.transformacao].join(' ');
+    return selected&&(!query||norm(searchable).includes(query));
+  });
+  document.getElementById('empty').hidden=rows.length>0;
+  document.getElementById('cards').innerHTML=rows.map(x=>{
+    if(!x.work_order_id)return `<article class="card entry"><div class="line"><h3>ITEM ${esc(x.item_number)}</h3><span class="badge">AGUARDANDO O.S.</span></div><strong>${esc(x.chassi)}</strong><div class="muted">${esc(x.entry_client||'Cliente nao informado')}</div><div class="line"><span>${esc([x.marca,x.modelo,x.versao].filter(Boolean).join(' ')||'Veiculo nao detalhado')}</span><span>${date(x.data_chegada)}</span></div><p class="muted">Disponivel para abertura da O.S. em Suprimentos.</p></article>`;
+    const total=Number(x.etapas_aplicaveis||0),done=Number(x.etapas_concluidas||0),pct=total?Math.round(done*100/total):0;
+    const vehicle=[x.marca,x.modelo,x.versao].filter(Boolean).join(' ')||'Veiculo nao detalhado';
+    return `<article class="card" onclick="openDetail('${x.work_order_id}')"><div class="line"><h3>ITEM ${esc(x.item_number)} · O.S. ${esc(x.numero_os)}</h3><span class="badge ${esc(x.status)}">${esc(displayStatus(x))}</span></div><strong>${esc(String(x.chassi||'').slice(-8))}</strong><div>${esc(vehicle)}</div><div class="muted">${esc(x.cliente_nome||x.entry_client||'Cliente nao informado')}</div><div class="line"><span>${esc(x.linha||'—')} · ${esc(x.transformacao||'—')}</span><span>${date(x.data_comercial_prevista)}</span></div><div class="progress"><span style="width:${pct}%"></span></div><div class="line muted"><span>${done}/${total} etapas concluidas</span></div></article>`;
+  }).join('');
+}
+
+function stageResult(stage){
+  const code=String(stage.input_code||'N').toUpperCase();
+  if(code==='S')return 'FEITO';
+  if(code==='P')return 'PARCIAL';
+  if(code==='N/A')return 'NAO APLICAVEL';
+  return 'NAO FEITO';
+}
+
+function renderStages(){
+  const work=state.detail.work_order;
+  const stages=state.detail.stages||[];
+  const closed=isClosedWork(work);
+  const hardLocked=['CANCELADA','ARQUIVADA'].includes(work.status);
+  const configuring=['RASCUNHO','AGUARDANDO_O_S'].includes(work.status);
+  const header=document.getElementById('stage-head');
+  const help=document.getElementById('stage-help');
+  const configurationActions=document.getElementById('configuration-actions');
+  if(!canManage){
+    if(configurationActions)configurationActions.hidden=true;
+    header.innerHTML='<tr><th>Etapa</th><th>Feito?</th><th>Responsavel</th><th>Inicio</th><th>Fim</th><th>Observacoes</th></tr>';
+    help.textContent='Consulta resumida das etapas e do historico completo de alteracoes.';
+    document.getElementById('stage-rows').innerHTML=stages.map(s=>`<tr><td><span class="stage-code">${esc(s.stage_code)}</span></td><td><span class="badge ${esc(s.status)}">${esc(stageResult(s))}</span></td><td>${esc(s.responsavel||'—')}</td><td>${esc(datetime(s.inicio))}</td><td>${esc(datetime(s.termino))}</td><td>${esc(s.observacoes||'—')}</td></tr>`).join('');
+    return;
+  }
+  if(configurationActions)configurationActions.hidden=!configuring;
+  header.innerHTML='<tr><th>Etapa</th><th>Status</th><th>Responsavel</th><th>Localizacao</th><th>Inicio</th><th>Termino</th><th>Observacoes</th><th></th></tr>';
+  help.textContent=configuring?'Defina todas as etapas antes de ativar o card.':closed?'Historico tecnico: datas podem ser corrigidas sem reabrir a O.S.':'';
+  document.getElementById('stage-rows').innerHTML=stages.map(s=>`<tr data-stage="${esc(s.stage_code)}"><td><span class="stage-code">${esc(s.stage_code)}</span><br><span class="badge ${esc(s.status)}">${esc(s.input_code||'?')} · ${esc(s.status.replaceAll('_',' '))}</span></td><td><select class="stage-status" ${closed?'disabled':''}>${stageInputs.map(([value,label])=>`<option value="${value}" ${value===(s.input_code||'?')?'selected':''}>${label}</option>`).join('')}</select></td><td><input class="stage-owner" value="${esc(s.responsavel||'')}" ${closed||configuring?'disabled':''}></td><td><input class="stage-location" value="${esc(s.localizacao||'')}" ${closed||configuring?'disabled':''}></td><td><input class="stage-start" type="datetime-local" value="${esc(inputDatetime(s.inicio))}" ${hardLocked?'disabled':''}></td><td><input class="stage-finish" type="datetime-local" value="${esc(inputDatetime(s.termino))}" ${hardLocked?'disabled':''}></td><td><input class="stage-note notes" value="${esc(s.observacoes||'')}" ${closed||configuring?'disabled':''}></td><td>${configuring?'—':`<button class="btn primary" ${hardLocked?'disabled':''} type="button" onclick="saveStage(this)">Salvar</button>`}</td></tr>`).join('');
+}
+
+async function loadOrders(){
+  try{
+    message('Carregando dados integrados...');
+    const data=await api('/api/erp/work-orders');
+    state.orders=data.orders||[];
+    if(canManage)state.catalogs=await api('/api/erp/catalogs');
+    metrics();render();message('');
+    if(!state.queryHandled){
+      state.queryHandled=true;
+      const params=new URLSearchParams(location.search);
+      if(canManage&&params.get('new_entry')==='1')openEntry();
+      else if(params.get('work_order_id'))await openDetail(params.get('work_order_id'));
+    }
+  }catch(error){message(error.message,true)}
+}
+
+async function closeWork(){
+  const w=state.detail.work_order,status=document.getElementById('closing-status').value;
+  const localEvent=document.getElementById('closing-date').value;
+  const data_evento=localEvent?new Date(localEvent).toISOString():null;
+  const observacoes=document.getElementById('closing-note').value;
+  if(!confirm(`Confirma o encerramento da O.S. ${w.numero_os}?`))return;
+  try{
+    await api(`/api/erp/work-orders/${w.id}/finalize`,{method:'POST',body:JSON.stringify({status,data_evento,observacoes})});
+    detailDialog.close();await loadOrders();
+    document.getElementById('view').value=status==='FINALIZADA'?'FINISHED':'DELIVERED';render();
+    message(`O.S. ${w.numero_os}: ${status.replaceAll('_',' ')}. Historico preservado.`);
+  }catch(error){message(error.message,true)}
+}
+
 loadOrders();
 </script>
 </body>
