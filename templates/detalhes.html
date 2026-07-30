@@ -7,6 +7,7 @@
     <title>Checklist</title>
 </head>
 <body class="bg-slate-50">
+    {% set can_point = current_user and current_user.can("mes.stage.write") %}
     <header class="bg-slate-900 p-4 sticky top-0 z-50 flex justify-between items-center text-white">
         <a href="/" class="text-yellow-400 font-bold">← VOLTAR</a>
         <img src="/static/logo.png" class="h-6">
@@ -73,7 +74,7 @@
 
             <div>
                 <label class="text-[10px] text-slate-400 font-bold uppercase">Localização do chassi</label>
-                <select class="w-full border border-slate-200 rounded-lg p-2 text-xs" onchange="salvarLocalizacao(this)">
+                <select class="w-full border border-slate-200 rounded-lg p-2 text-xs" onchange="salvarLocalizacao(this)" {% if not can_point %}disabled{% endif %}>
                     <option value="">Selecione</option>
                     {% for loc in localizacoes %}
                     <option value="{{ loc }}" {% if veiculo.localizacao == loc %}selected{% endif %}>{{ loc }}</option>
@@ -94,10 +95,10 @@
                 <div class="flex justify-between items-center">
                     <span class="font-bold text-slate-700 text-[11px] uppercase">{{ etapa }}</span>
                     <div class="flex gap-1">
-                        <button type="button" onclick="salvar('{{ etapa }}', 'N/A', this)" class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'N/A' %} bg-slate-600 text-white border-slate-800 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">N/A</button>
-                        <button type="button" onclick="salvar('{{ etapa }}', 'NÃO', this)" class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'NÃO' %} bg-red-500 text-white border-red-700 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">N</button>
-                        <button type="button" onclick="salvar('{{ etapa }}', 'PARCIAL', this)" class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'PARCIAL' %} bg-amber-500 text-white border-amber-700 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">P</button>
-                        <button type="button" onclick="salvar('{{ etapa }}', 'SIM', this)" class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'SIM' %} bg-green-500 text-white border-green-700 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">S</button>
+                        <button type="button" onclick="salvar('{{ etapa }}', 'N/A', this)" {% if not can_point %}disabled{% endif %} class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'N/A' %} bg-slate-600 text-white border-slate-800 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">N/A</button>
+                        <button type="button" onclick="salvar('{{ etapa }}', 'NÃO', this)" {% if not can_point %}disabled{% endif %} class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'NÃO' %} bg-red-500 text-white border-red-700 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">N</button>
+                        <button type="button" onclick="salvar('{{ etapa }}', 'PARCIAL', this)" {% if not can_point %}disabled{% endif %} class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'PARCIAL' %} bg-amber-500 text-white border-amber-700 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">P</button>
+                        <button type="button" onclick="salvar('{{ etapa }}', 'SIM', this)" {% if not can_point %}disabled{% endif %} class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'SIM' %} bg-green-500 text-white border-green-700 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">S</button>
                     </div>
                 </div>
 
@@ -105,17 +106,17 @@
                     <div class="flex gap-2">
                         <input type="text" placeholder="Responsável" value="{{ ap.responsavel if ap and ap.responsavel else '' }}"
                                class="w-full border border-slate-200 rounded-lg p-2 text-xs"
-                               onblur="salvarCampos(this)">
+                               onblur="salvarCampos(this)" {% if not can_point %}disabled{% endif %}>
                         <button type="button" class="px-3 text-[10px] font-bold uppercase bg-slate-100 text-slate-600 rounded-lg border border-slate-200"
-                                onclick="usarMeuNome(this)">Meu nome</button>
+                                onclick="usarMeuNome(this)" {% if not can_point %}disabled{% endif %}>Meu nome</button>
                     </div>
                     <div class="grid grid-cols-2 gap-2">
                         <input type="datetime-local" placeholder="Início" value="{{ ap.inicio_str if ap else '' }}"
                                class="w-full border border-slate-200 rounded-lg p-2 text-xs"
-                               onblur="salvarCampos(this)">
+                               onblur="salvarCampos(this)" {% if not can_point %}disabled{% endif %}>
                         <input type="datetime-local" placeholder="Término" value="{{ ap.termino_str if ap else '' }}"
                                class="w-full border border-slate-200 rounded-lg p-2 text-xs"
-                               onblur="salvarCampos(this)">
+                               onblur="salvarCampos(this)" {% if not can_point %}disabled{% endif %}>
                     </div>
                 </div>
             </div>

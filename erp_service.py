@@ -404,6 +404,54 @@ def active_cards(conn):
     """))
     return [dict(x._mapping) for x in rows]
 
+
+def active_work_order_options(conn, search="", limit=20):
+    """Return compact active O.S. options for other ERP backends.
+
+    The full chassis remains the stored identifier; ``chassi_exibicao`` is
+    presentation-only. Closed technical records are intentionally excluded
+    from new stock commitments.
+    """
+    query = str(search or "").strip()
+    bounded_limit = min(max(int(limit or 20), 1), 100)
+    rows = conn.execute(text("""
+        select w.id as work_order_id,w.numero_os,e.item_number,v.chassi,
+               right(v.chassi,8) as chassi_exibicao,
+               coalesce(nullif(trim(w.cliente_nome),''),nullif(trim(e.cliente_nome),''),'') as cliente,
+               concat_ws(' ',nullif(trim(v.marca),''),nullif(trim(v.modelo),''),
+                         nullif(trim(v.versao),'')) as veiculo
+          from erp_work_orders w
+          join erp_vehicle_entries e on e.id=w.vehicle_entry_id
+          join erp_vehicles v on v.id=e.vehicle_id
+         where w.status in ('ATIVA','EM_PRODUÇÃO')
+           and coalesce(w.technical_status,'ABERTA')='ABERTA'
+           and (
+                :search=''
+                or concat_ws(' ',w.numero_os,e.item_number,v.chassi,right(v.chassi,8),
+                             w.cliente_nome,e.cliente_nome,v.marca,v.modelo,v.versao)
+                   ilike :pattern
+           )
+         order by e.item_number desc,w.numero_os
+         limit :limit
+    """), {
+        "search": query,
+        "pattern": f"%{query}%",
+        "limit": bounded_limit,
+    }).mappings()
+    options = []
+    for row in rows:
+        option = dict(row)
+        option["label"] = " · ".join(
+            value for value in (
+                f"O.S. {option['numero_os']}",
+                str(option.get("chassi_exibicao") or ""),
+                str(option.get("cliente") or ""),
+            ) if value
+        )
+        options.append(option)
+    return options
+
+
 def list_work_orders(conn, search="", status="", limit=1000):
     params = {
         "search": f"%{str(search or '').strip()}%",

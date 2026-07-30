@@ -27,6 +27,7 @@ class MesCutoverGuardTests(unittest.TestCase):
         endpoint_names = (
             "erp_internal_catalogs",
             "erp_internal_work_orders",
+            "erp_internal_work_order_options",
             "erp_internal_work_order_detail",
             "erp_internal_vehicle_entry",
             "erp_internal_work_order",

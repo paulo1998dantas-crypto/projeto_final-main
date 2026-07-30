@@ -28,6 +28,7 @@ import database, models
 import erp_service
 import erp_catalogs
 import erp_report
+import authz
 
 LOCAL_TZ = ZoneInfo("America/Sao_Paulo")
 
@@ -165,17 +166,27 @@ async def healthz():
         with database.engine.connect() as conn:
             conn.execute(text("select 1"))
         inspector = inspect(database.engine)
-        return {
+        auth_schema_ready = (
+            authz.shared_schema_status(database.engine)["ready"]
+            if authz.shared_auth_enabled()
+            else (
+                inspector.has_table("usuarios")
+                and inspector.has_table("sessoes_usuario")
+            )
+        )
+        payload = {
             "ok": True,
             "database": True,
             "erp_feature": erp_feature_enabled(),
             "erp_schema": inspector.has_table("erp_work_orders"),
+            "auth_mode": authz.auth_mode(),
             "legacy_schema": legacy_operational_schema_available(),
-            "auth_schema": (
-                inspector.has_table("usuarios")
-                and inspector.has_table("sessoes_usuario")
-            ),
+            "auth_schema": auth_schema_ready,
         }
+        if authz.shared_auth_enabled() and not auth_schema_ready:
+            payload["ok"] = False
+            return JSONResponse(payload, status_code=503)
+        return payload
     except Exception:
         return JSONResponse(
             {
@@ -328,6 +339,8 @@ def verify_password(password: str, password_hash: str) -> bool:
     return hmac.compare_digest(digest.hex(), digest_hex)
 
 def bootstrap_admin_if_configured():
+    if authz.shared_auth_enabled():
+        return
     username = os.environ.get("MES_BOOTSTRAP_ADMIN_USER", "").strip()
     password = os.environ.get("MES_BOOTSTRAP_ADMIN_PASSWORD", "")
     if not username or not password:
@@ -349,6 +362,8 @@ def bootstrap_admin_if_configured():
         db.close()
 
 def get_current_user(request: Request, db: Session):
+    if authz.shared_auth_enabled():
+        return authz.get_shared_current_user(request, database.engine)
     token = (request.cookies.get(SESSION_COOKIE) or "").strip()
     if not token:
         return None
@@ -362,7 +377,8 @@ def get_current_user(request: Request, db: Session):
         db.delete(sessao)
         db.commit()
         return None
-    return db.query(models.Usuario).filter(models.Usuario.id == sessao.usuario_id).first()
+    usuario = db.query(models.Usuario).filter(models.Usuario.id == sessao.usuario_id).first()
+    return authz.principal_from_legacy(usuario) if usuario else None
 
 def get_user_name(request: Request, db: Session):
     usuario = get_current_user(request, db)
@@ -379,6 +395,18 @@ def create_session(db: Session, usuario):
     return token
 
 def set_session_cookie(response, token: str):
+    if authz.shared_auth_enabled():
+        response.set_cookie(
+            authz.SHARED_SESSION_COOKIE,
+            token,
+            max_age=60 * 60 * 24 * authz.SESSION_DAYS,
+            httponly=True,
+            secure=bool(os.environ.get("RENDER")),
+            samesite="lax",
+        )
+        response.delete_cookie(SESSION_COOKIE)
+        response.delete_cookie("pcp_nome")
+        return
     response.set_cookie(
         SESSION_COOKIE,
         token,
@@ -391,7 +419,17 @@ def set_session_cookie(response, token: str):
 
 def clear_session_cookie(response):
     response.delete_cookie(SESSION_COOKIE)
+    response.delete_cookie(authz.SHARED_SESSION_COOKIE)
     response.delete_cookie("pcp_nome")
+
+
+def permission_denied(api=False):
+    payload = {"ok": False, "error": "Acesso não autorizado para este perfil."}
+    return JSONResponse(payload, status_code=403) if api else HTMLResponse(payload["error"], status_code=403)
+
+
+def has_permission(user, permission):
+    return authz.can(user, permission)
 
 def safe_str(value):
     if value is None or (hasattr(pd, "isna") and pd.isna(value)):
@@ -1016,6 +1054,8 @@ async def home(
     current_user = require_login(request, db)
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
+    if not has_permission(current_user, authz.MES_DASHBOARD_READ):
+        return permission_denied()
     data_inicio_atual, data_fim_atual = intervalo_entrega_normalizado(entrega_inicio, entrega_fim)
     visao_param = safe_str(visao).lower()
     visao_atual = visao_param if visao_param in ["resumida", "completa", "gerencial", "geral"] else "resumida"
@@ -1156,8 +1196,11 @@ async def kanban_dados(
     entrega_inicio: str = None,
     entrega_fim: str = None,
 ):
-    if not require_login(request, db):
+    current_user = require_login(request, db)
+    if not current_user:
         return JSONResponse({"status": "erro", "detail": "Login necessário"}, status_code=401)
+    if not has_permission(current_user, authz.MES_DASHBOARD_READ):
+        return permission_denied(api=True)
 
     veiculos, status_maps = carregar_veiculos_dashboard(
         db,
@@ -1183,8 +1226,11 @@ async def detalhes(
     work_order_id: str = None,
     db: Session = Depends(database.get_db),
 ):
-    if not require_login(request, db):
+    current_user = require_login(request, db)
+    if not current_user:
         return RedirectResponse(url="/login", status_code=303)
+    if not has_permission(current_user, authz.MES_DASHBOARD_READ):
+        return permission_denied()
     c_limpo = chassi.strip()
     user_name = get_user_name(request, db)
 
@@ -1273,6 +1319,7 @@ async def detalhes(
                 "erp_mode": True,
                 "work_order_id": work_order_id,
                 "current_stage": (current_stage or {}).get("stage_code") or "",
+                "current_user": current_user,
             },
         )
 
@@ -1336,13 +1383,17 @@ async def detalhes(
             "erp_mode": False,
             "work_order_id": "",
             "current_stage": "",
+            "current_user": current_user,
         }
     )
 
 @app.post("/upload")
 async def upload_base(request: Request, file: UploadFile = File(...), db: Session = Depends(database.get_db)):
-    if not require_login(request, db):
+    current_user = require_login(request, db)
+    if not current_user:
         return {"status": "erro", "detail": "Login necessário"}
+    if not has_permission(current_user, authz.MES_LEGACY_IMPORT):
+        return permission_denied(api=True)
     if not legacy_upload_enabled() or not legacy_operational_schema_available():
         return legacy_disabled_response()
     try:
@@ -1482,8 +1533,11 @@ async def upload_base(request: Request, file: UploadFile = File(...), db: Sessio
 
 @app.post("/upload_apontamentos")
 async def upload_apontamentos(request: Request, file: UploadFile = File(...), db: Session = Depends(database.get_db)):
-    if not require_login(request, db):
+    current_user = require_login(request, db)
+    if not current_user:
         return {"status": "erro", "detail": "Login necessário"}
+    if not has_permission(current_user, authz.MES_LEGACY_IMPORT):
+        return permission_denied(api=True)
     if not legacy_upload_enabled() or not legacy_operational_schema_available():
         return legacy_disabled_response()
     try:
@@ -1572,8 +1626,11 @@ async def upload_apontamentos(request: Request, file: UploadFile = File(...), db
 
 @app.post("/apontar")
 async def salvar(request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
-    if not require_login(request, db):
+    current_user = require_login(request, db)
+    if not current_user:
         return JSONResponse({"status": "erro", "detail": "Login necessário"}, status_code=401)
+    if not has_permission(current_user, authz.MES_STAGE_WRITE):
+        return permission_denied(api=True)
     if not legacy_operational_schema_available():
         return legacy_disabled_response()
     ch = str(data["chassi"]).strip()
@@ -1625,8 +1682,11 @@ async def salvar(request: Request, data: dict = Body(...), db: Session = Depends
 
 @app.post("/veiculo_localizacao")
 async def atualizar_localizacao(request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
-    if not require_login(request, db):
+    current_user = require_login(request, db)
+    if not current_user:
         return JSONResponse({"status": "erro", "detail": "Login necessário"}, status_code=401)
+    if not has_permission(current_user, authz.MES_STAGE_WRITE):
+        return permission_denied(api=True)
     if not legacy_operational_schema_available():
         return legacy_disabled_response()
     ch = str(data.get("chassi", "")).strip()
@@ -1642,8 +1702,11 @@ async def atualizar_localizacao(request: Request, data: dict = Body(...), db: Se
 
 @app.post("/veiculo_banco")
 async def atualizar_banco(request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
-    if not require_login(request, db):
+    current_user = require_login(request, db)
+    if not current_user:
         return JSONResponse({"status": "erro", "detail": "Login necessário"}, status_code=401)
+    if not has_permission(current_user, authz.MES_STAGE_WRITE):
+        return permission_denied(api=True)
     if not legacy_operational_schema_available():
         return legacy_disabled_response()
     ch = str(data.get("chassi", "")).strip()
@@ -1744,8 +1807,11 @@ def _erp_time_export_rows():
 
 @app.get("/exportar_historico")
 async def exportar(request: Request, db: Session = Depends(database.get_db)):
-    if not require_login(request, db):
+    current_user = require_login(request, db)
+    if not current_user:
         return RedirectResponse(url="/login", status_code=303)
+    if not has_permission(current_user, authz.MES_EXPORTS_READ):
+        return permission_denied()
     if erp_feature_enabled() and inspect(database.engine).has_table("erp_work_order_stage_events"):
         columns = [
             "ITEM", "O.S.", "CHASSI", "MODELO", "ETAPA", "AÇÃO",
@@ -1791,8 +1857,11 @@ async def exportar(request: Request, db: Session = Depends(database.get_db)):
 
 @app.get("/exportar_tempos")
 async def exportar_tempos(request: Request, db: Session = Depends(database.get_db)):
-    if not require_login(request, db):
+    current_user = require_login(request, db)
+    if not current_user:
         return RedirectResponse(url="/login", status_code=303)
+    if not has_permission(current_user, authz.MES_EXPORTS_READ):
+        return permission_denied()
     if erp_feature_enabled() and inspect(database.engine).has_table("erp_work_order_stages"):
         columns = [
             "ITEM", "O.S.", "CHASSI", "MODELO", "ETAPA", "STATUS",
@@ -1829,10 +1898,13 @@ async def exportar_tempos(request: Request, db: Session = Depends(database.get_d
         "tempos_localizacao.xlsx",
     )
 
-@app.get("/limpar_historico")
+@app.post("/limpar_historico")
 async def limpar_logs(request: Request, db: Session = Depends(database.get_db)):
-    if not require_login(request, db):
+    current_user = require_login(request, db)
+    if not current_user:
         return RedirectResponse(url="/login", status_code=303)
+    if not has_permission(current_user, authz.MES_LEGACY_IMPORT):
+        return permission_denied()
     if not legacy_upload_enabled() or not legacy_operational_schema_available():
         return legacy_disabled_response()
     db.query(models.Historico).delete()
@@ -1841,8 +1913,11 @@ async def limpar_logs(request: Request, db: Session = Depends(database.get_db)):
 
 @app.get("/importar")
 async def pg_importar(request: Request, db: Session = Depends(database.get_db)):
-    if not require_login(request, db):
+    current_user = require_login(request, db)
+    if not current_user:
         return RedirectResponse(url="/login", status_code=303)
+    if not has_permission(current_user, authz.MES_LEGACY_IMPORT):
+        return permission_denied()
     if not legacy_upload_enabled() or not legacy_operational_schema_available():
         return HTMLResponse(
             "Importação legada desativada neste ambiente.",
@@ -1859,6 +1934,35 @@ async def login_page(request: Request, db: Session = Depends(database.get_db)):
 @app.post("/login")
 async def login_post(request: Request, nome: str = Form(...), senha: str = Form(...), db: Session = Depends(database.get_db)):
     nome_limpo = str(nome).strip()
+    if authz.shared_auth_enabled():
+        try:
+            principal = authz.authenticate_shared_user(database.engine, nome_limpo, str(senha))
+        except RuntimeError as exc:
+            return templates.TemplateResponse(
+                request,
+                "login.html",
+                {"request": request, "erro": str(exc)},
+                status_code=503,
+            )
+        if not principal:
+            return templates.TemplateResponse(
+                request,
+                "login.html",
+                {"request": request, "erro": "Usuário ou senha inválidos."},
+                status_code=401,
+            )
+        if not has_permission(principal, authz.MES_DASHBOARD_READ):
+            return templates.TemplateResponse(
+                request,
+                "login.html",
+                {"request": request, "erro": "Este usuário não possui acesso ao MES."},
+                status_code=403,
+            )
+        token = authz.create_shared_session(database.engine, principal)
+        resp = RedirectResponse(url="/?visao=geral", status_code=303)
+        set_session_cookie(resp, token)
+        return resp
+
     usuario = db.query(models.Usuario).filter(func.upper(models.Usuario.nome) == nome_limpo.upper()).first()
     if not usuario or not verify_password(str(senha), usuario.senha_hash or ""):
         return templates.TemplateResponse(
@@ -1872,8 +1976,16 @@ async def login_post(request: Request, nome: str = Form(...), senha: str = Form(
     set_session_cookie(resp, token)
     return resp
 
-@app.get("/logout")
+@app.post("/logout")
 async def logout(request: Request, db: Session = Depends(database.get_db)):
+    if authz.shared_auth_enabled():
+        authz.revoke_shared_session(
+            database.engine,
+            request.cookies.get(authz.SHARED_SESSION_COOKIE),
+        )
+        resp = RedirectResponse(url="/login", status_code=303)
+        clear_session_cookie(resp)
+        return resp
     token = (request.cookies.get(SESSION_COOKIE) or "").strip()
     if token:
         db.query(models.SessaoUsuario).filter(models.SessaoUsuario.token == token).delete()
@@ -1887,8 +1999,16 @@ async def usuarios_page(request: Request, db: Session = Depends(database.get_db)
     current_user = require_login(request, db)
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
-    if not current_user.is_admin:
-        return RedirectResponse(url="/", status_code=303)
+    if not has_permission(current_user, authz.MES_USERS_MANAGE):
+        return permission_denied()
+    if authz.shared_auth_enabled():
+        return RedirectResponse(
+            url=os.environ.get(
+                "MES_USER_MANAGEMENT_URL",
+                "https://moduloestoque-cni2.onrender.com/usuarios",
+            ),
+            status_code=303,
+        )
     usuarios = db.query(models.Usuario).order_by(models.Usuario.nome.asc()).all()
     return templates.TemplateResponse(
         request,
@@ -1907,8 +2027,16 @@ async def usuarios_create(
     current_user = require_login(request, db)
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
-    if not current_user.is_admin:
-        return RedirectResponse(url="/", status_code=303)
+    if not has_permission(current_user, authz.MES_USERS_MANAGE):
+        return permission_denied()
+    if authz.shared_auth_enabled():
+        return RedirectResponse(
+            url=os.environ.get(
+                "MES_USER_MANAGEMENT_URL",
+                "https://moduloestoque-cni2.onrender.com/usuarios",
+            ),
+            status_code=303,
+        )
 
     nome_limpo = str(nome).strip()
     senha_limpa = str(senha).strip()
@@ -1943,8 +2071,11 @@ async def usuarios_create(
 @app.get("/api/erp/catalogs")
 async def erp_catalogs_api(request: Request, db: Session = Depends(database.get_db)):
     if not erp_feature_enabled(): return erp_disabled_response()
-    if not require_login(request, db):
+    user = require_login(request, db)
+    if not user:
         return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE):
+        return permission_denied(api=True)
     return {"ok": True, **erp_catalogs.payload()}
 
 @app.post("/api/erp/vehicle-entries")
@@ -1952,6 +2083,8 @@ async def erp_vehicle_entry(request: Request, data: dict = Body(...), db: Sessio
     if not erp_feature_enabled(): return erp_disabled_response()
     user = require_login(request, db)
     if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_VEHICLE_ENTRIES_CREATE):
+        return permission_denied(api=True)
     try:
         with database.engine.begin() as conn: result = erp_service.create_entry(conn, data, user.nome)
         return {"ok": True, **result}
@@ -1962,14 +2095,19 @@ async def erp_work_order_screen(request: Request, db: Session = Depends(database
     if not erp_feature_enabled(): return HTMLResponse("Integração ERP desativada pela feature flag.", status_code=404)
     user = require_login(request, db)
     if not user: return RedirectResponse(url="/login", status_code=303)
+    if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE):
+        return permission_denied()
     return templates.TemplateResponse(request, "gestao_os.html", {"request": request, "current_user": user})
 
 @app.get("/exportar_controle_producao")
 async def exportar_controle_producao(request: Request, db: Session = Depends(database.get_db)):
     if not erp_feature_enabled():
         return erp_disabled_response()
-    if not require_login(request, db):
+    user = require_login(request, db)
+    if not user:
         return RedirectResponse(url="/login", status_code=303)
+    if not has_permission(user, authz.MES_EXPORTS_READ):
+        return permission_denied()
     with database.engine.connect() as conn:
         output, _, _ = erp_report.build_work_order_report(conn)
     filename = f"Controle_Producao_MES_{datetime.datetime.now(LOCAL_TZ):%Y%m%d_%H%M}.xlsx"
@@ -1984,6 +2122,8 @@ async def erp_work_order(entry_id: str, request: Request, data: dict = Body(...)
     if not erp_feature_enabled(): return erp_disabled_response()
     user = require_login(request, db)
     if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE):
+        return permission_denied(api=True)
     try:
         with database.engine.begin() as conn: result = erp_service.create_work_order(conn, entry_id, data, user.nome)
         return {"ok": True, **result}
@@ -1994,6 +2134,8 @@ async def erp_activate(work_id: str, request: Request, db: Session = Depends(dat
     if not erp_feature_enabled(): return erp_disabled_response()
     user = require_login(request, db)
     if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE):
+        return permission_denied(api=True)
     try:
         with database.engine.begin() as conn: result = erp_service.activate_work_order(conn, work_id, user.nome)
         return {"ok": True, **result}
@@ -2009,6 +2151,8 @@ async def erp_stage_configuration(
     if not erp_feature_enabled(): return erp_disabled_response()
     user = require_login(request, db)
     if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE):
+        return permission_denied(api=True)
     try:
         with database.engine.begin() as conn:
             if data.get("activate"):
@@ -2022,7 +2166,10 @@ async def erp_stage_configuration(
 @app.get("/api/erp/kanban")
 async def erp_kanban(request: Request, db: Session = Depends(database.get_db)):
     if not erp_feature_enabled(): return erp_disabled_response()
-    if not require_login(request, db): return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    user = require_login(request, db)
+    if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_DASHBOARD_READ):
+        return permission_denied(api=True)
     with database.engine.connect() as conn: return {"ok": True, "cards": erp_service.active_cards(conn)}
 
 @app.post("/api/erp/work-orders/{work_id}/stages/{stage_code:path}")
@@ -2030,6 +2177,8 @@ async def erp_stage(work_id: str, stage_code: str, request: Request, data: dict 
     if not erp_feature_enabled(): return erp_disabled_response()
     user = require_login(request, db)
     if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_STAGE_WRITE):
+        return permission_denied(api=True)
     try:
         with database.engine.begin() as conn: result = erp_service.update_stage(conn, work_id, stage_code, data, user.nome)
         return {"ok": True, **result}
@@ -2050,6 +2199,8 @@ async def erp_location(
             {"ok": False, "error": "Login necessario."},
             status_code=401,
         )
+    if not has_permission(user, authz.MES_STAGE_WRITE):
+        return permission_denied(api=True)
     try:
         with database.engine.begin() as conn:
             result = erp_service.update_work_order_location(
@@ -2068,6 +2219,8 @@ async def erp_finalize(work_id: str, request: Request, data: dict = Body(default
     if not erp_feature_enabled(): return erp_disabled_response()
     user = require_login(request, db)
     if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_FINALIZE):
+        return permission_denied(api=True)
     try:
         with database.engine.begin() as conn:
             result = erp_service.finalize(
@@ -2087,6 +2240,8 @@ async def erp_schedule(work_id: str, request: Request, data: dict = Body(...), d
     if not erp_feature_enabled(): return erp_disabled_response()
     user = require_login(request, db)
     if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_SCHEDULE_MANAGE):
+        return permission_denied(api=True)
     try:
         with database.engine.begin() as conn: erp_service.reschedule(conn, work_id, data.get("nova_data"), str(data.get("motivo") or ""), user.nome)
         return {"ok": True}
@@ -2100,14 +2255,20 @@ async def erp_work_orders(
     db: Session = Depends(database.get_db),
 ):
     if not erp_feature_enabled(): return erp_disabled_response()
-    if not require_login(request, db): return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    user = require_login(request, db)
+    if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE):
+        return permission_denied(api=True)
     with database.engine.connect() as conn:
         return {"ok": True, "orders": erp_service.list_work_orders(conn, search, status)}
 
 @app.get("/api/erp/work-orders/{work_id}")
 async def erp_work_order_detail(work_id: str, request: Request, db: Session = Depends(database.get_db)):
     if not erp_feature_enabled(): return erp_disabled_response()
-    if not require_login(request, db): return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    user = require_login(request, db)
+    if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE):
+        return permission_denied(api=True)
     try:
         with database.engine.begin() as conn:
             return {"ok": True, **erp_service.work_order_detail(conn, work_id)}
@@ -2119,6 +2280,8 @@ async def erp_update_work_order(work_id: str, request: Request, data: dict = Bod
     if not erp_feature_enabled(): return erp_disabled_response()
     user = require_login(request, db)
     if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE):
+        return permission_denied(api=True)
     try:
         with database.engine.begin() as conn:
             result = erp_service.update_work_order(conn, work_id, data, user.nome)
@@ -2143,6 +2306,24 @@ async def erp_internal_work_orders(request: Request, search: str = "", status: s
     if not actor: return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
     with database.engine.connect() as conn:
         return {"ok": True, "orders": erp_service.list_work_orders(conn, search, status)}
+
+
+@app.get("/api/erp/internal/work-order-options")
+async def erp_internal_work_order_options(
+    request: Request,
+    q: str = "",
+    limit: int = 20,
+):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    actor = erp_backend_actor(request)
+    if not actor:
+        return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
+    with database.engine.connect() as conn:
+        return {
+            "ok": True,
+            "options": erp_service.active_work_order_options(conn, q, limit),
+        }
+
 
 @app.get("/api/erp/internal/work-orders/{work_id}")
 async def erp_internal_work_order_detail(work_id: str, request: Request):

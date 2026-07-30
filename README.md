@@ -33,6 +33,34 @@ Ela não altera apontamentos existentes nem qualquer saldo de estoque.
 O arquivo `.env.local` deve apontar somente para o PostgreSQL Docker local.
 Não altere Supabase ou Render para validar este fluxo.
 
+## Autenticação compartilhada e perfis
+
+O modo padrão continua sendo `MES_AUTH_MODE=legacy`, permitindo rollback sem
+alterar as contas antigas. Depois de aplicar e validar as tabelas RBAC
+compartilhadas, use `MES_AUTH_MODE=shared_users`. Nesse modo:
+
+- `public.users` é a fonte única de usuário, senha e estado ativo.
+- Os vários perfis vêm de `erp_user_roles` e suas permissões de
+  `erp_role_permissions`, com exceções por usuário.
+- O MES grava somente o hash do token em `erp_app_sessions` e revoga a sessão
+  automaticamente quando `users.auth_version` muda.
+- `/usuarios` redireciona para o gerenciamento central do Estoque.
+- todas as tabelas e colunas do contrato RBAC são obrigatórias; qualquer falta
+  bloqueia login/sessão e faz `/healthz` responder `503`, sem reativar usuários
+  legados.
+
+Ordem segura no Render: mantenha `MES_AUTH_MODE=legacy`, aplique e reconcilie as
+migrations no banco compartilhado, publique o código, altere a `DATABASE_URL`
+do MES e, por último, mude para `MES_AUTH_MODE=shared_users`. O rollback volta
+somente o modo para `legacy`; não remova tabelas nem vínculos.
+
+As aplicações continuam com cookies próprios porque são serviços Render
+independentes; a credencial e os perfis, porém, são os mesmos.
+
+O endpoint interno
+`/api/erp/internal/work-order-options?q=...&limit=20`, protegido pelo token de
+backend, fornece O.S. ativas para seletores de chassi/O.S. em outros módulos.
+
 ## Reconciliação do MES legado para o ERP compartilhado
 
 Antes de qualquer migração, execute `mes_legacy_reconciliation.py`. Ele é
