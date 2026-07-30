@@ -159,6 +159,18 @@ def _token(value):
     )
 
 
+def operational_work_order_status(value):
+    """Canonical lifecycle value for MES filters, independent of labels/encoding."""
+    normalized = _token(value).replace("_", " ").strip()
+    # Older imports/releases may have persisted either the accented canonical
+    # value or its ASCII equivalent.  Both are the same WIP lifecycle state.
+    if normalized in {"EM PRODUCAO", "EM PRODUCAO "}:
+        return "EM_PRODUCAO"
+    if normalized == "ATIVA":
+        return "ATIVA"
+    return normalized.replace(" ", "_")
+
+
 def service_type_group(value):
     """Classify the service without turning status into a compound database value."""
     normalized = _token(value).replace("_", " ").replace("-", " ")
@@ -769,6 +781,12 @@ def list_work_orders(conn, search="", status="", limit=1000):
     """), params)
     orders = [dict(row._mapping) for row in rows]
     for order in orders:
+        order["status_operacional"] = operational_work_order_status(
+            order.get("status") or order.get("entry_status")
+        )
+        order["em_wip"] = bool(order.get("work_order_id")) and (
+            order["status_operacional"] in {"ATIVA", "EM_PRODUCAO"}
+        )
         order["tipo_servico_grupo"] = service_type_group(order.get("tipo_servico")) if order.get("work_order_id") else ""
         order["situacao"] = work_order_situation(
             order.get("status") or order.get("entry_status"),

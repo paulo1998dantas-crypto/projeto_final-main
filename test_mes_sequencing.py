@@ -6,6 +6,7 @@ from erp_service import (
     DEFAULT_SEQUENCE_CRITERIA,
     _compare_sequence_rows,
     _normalized_sequence_criteria,
+    operational_work_order_status,
 )
 
 
@@ -53,6 +54,12 @@ class MesSequencingTests(unittest.TestCase):
                 {"field": "line", "direction": "ASC"},
                 {"field": "line", "direction": "DESC"},
             ])
+
+    def test_operational_status_normalizes_wip_encodings(self):
+        self.assertEqual("ATIVA", operational_work_order_status("ATIVA"))
+        self.assertEqual("EM_PRODUCAO", operational_work_order_status("EM_PRODUÇÃO"))
+        self.assertEqual("EM_PRODUCAO", operational_work_order_status("EM_PRODUCAO"))
+        self.assertEqual("EM_PRODUCAO", operational_work_order_status("EM_PRODUCAO".replace(" ", "_")))
 
 
 if __name__ == "__main__":

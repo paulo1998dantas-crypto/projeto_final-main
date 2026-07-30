@@ -134,7 +134,8 @@ async function schedule(){const w=state.detail.work_order,payload={nova_data:doc
 async function closeWork(){const w=state.detail.work_order,status=document.getElementById('closing-status').value,localEvent=document.getElementById('closing-date').value,data_evento=localEvent?new Date(localEvent).toISOString():null,observacoes=document.getElementById('closing-note').value;const label={FINALIZADA:'finalizar a produção',ENTREGUE:'registrar a entrega',RETIRADA:'registrar a retirada'}[status];if(!confirm(`Confirma ${label} da O.S. ${w.numero_os}?`))return;try{await api(`/api/erp/work-orders/${w.id}/finalize`,{method:'POST',body:JSON.stringify({status,data_evento,observacoes})});detailDialog.close();await loadOrders();document.getElementById('view').value='HISTORY';render();message(`O.S. ${w.numero_os}: ${status.replaceAll('_',' ')}. Histórico preservado.`)}catch(error){message(error.message,true)}}
 function renderHistory(){const d=state.detail;document.getElementById('status-history').innerHTML=(d.status_history||[]).map(x=>eventHtml(`${x.status_anterior||'INÍCIO'} → ${x.novo_status}`,`${datetime(x.created_at)} · ${x.usuario}`,x.observacao||x.motivo)).join('')||'<div class="event muted">Sem alterações.</div>';document.getElementById('schedule-history').innerHTML=(d.schedules||[]).map(x=>eventHtml(`${x.data_anterior?date(x.data_anterior):'DATA INICIAL'} → ${date(x.nova_data)}`,`${datetime(x.created_at)} · ${x.usuario} · ${x.vigente?'DATA VIGENTE':'DATA ALTERADA'}`,x.motivo)).join('')||'<div class="event muted">Sem programação.</div>';document.getElementById('stage-history').innerHTML=(d.stage_events||[]).map(x=>eventHtml(`${x.stage_code}: ${x.status_anterior||'—'} → ${x.novo_status}`,`${datetime(x.created_at)} · ${x.operador}`,x.observacao)).join('')||'<div class="event muted">Sem apontamentos.</div>'}
 const canManage={{ current_user.can("mes.work_orders.manage")|tojson }};
-const operationalStatus=value=>norm(value);
+const operationalStatus=value=>norm(value).replace(/[_\s]+/g,' ').trim();
+const rowOperationalStatus=row=>operationalStatus(row?.status_operacional||row?.status||row?.entry_status);
 const isClosedWork=work=>['FINALIZADA','ENTREGUE','RETIRADA','CANCELADA','ARQUIVADA'].includes(work.status);
 
 function displayStatus(row){
@@ -144,21 +145,21 @@ function displayStatus(row){
 function metrics(){
   const rows=state.orders;
   document.getElementById('m-entries').textContent=rows.filter(x=>!x.work_order_id).length;
-  document.getElementById('m-active').textContent=rows.filter(x=>operationalStatus(x.status)==='ATIVA').length;
-  document.getElementById('m-production').textContent=rows.filter(x=>operationalStatus(x.status)==='EM PRODUCAO').length;
-  document.getElementById('m-finished').textContent=rows.filter(x=>operationalStatus(x.status)==='FINALIZADA').length;
-  document.getElementById('m-delivered').textContent=rows.filter(x=>['ENTREGUE','RETIRADA'].includes(operationalStatus(x.status))).length;
+  document.getElementById('m-active').textContent=rows.filter(x=>rowOperationalStatus(x)==='ATIVA').length;
+  document.getElementById('m-production').textContent=rows.filter(x=>rowOperationalStatus(x)==='EM PRODUCAO').length;
+  document.getElementById('m-finished').textContent=rows.filter(x=>rowOperationalStatus(x)==='FINALIZADA').length;
+  document.getElementById('m-delivered').textContent=rows.filter(x=>['ENTREGUE','RETIRADA'].includes(rowOperationalStatus(x))).length;
   document.getElementById('m-total').textContent=rows.length;
 }
 
 function render(){
   const query=norm(document.getElementById('search').value);
   const view=document.getElementById('view').value;
-  const isWip=x=>x.work_order_id&&['ATIVA','EM PRODUCAO'].includes(operationalStatus(x.status));
-  const delivered=x=>x.work_order_id&&['ENTREGUE','RETIRADA'].includes(operationalStatus(x.status));
+  const isWip=x=>x.work_order_id&&(x.em_wip===true||['ATIVA','EM PRODUCAO'].includes(rowOperationalStatus(x)));
+  const delivered=x=>x.work_order_id&&['ENTREGUE','RETIRADA'].includes(rowOperationalStatus(x));
   const typeGroup=x=>String(x.tipo_servico_grupo||'TRANSFORMAÇÃO').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
   const rows=state.orders.filter(x=>{
-    const status=operationalStatus(x.status);
+    const status=rowOperationalStatus(x);
     const selected=view==='ENTRIES'?!x.work_order_id:
       view==='WIP'?isWip(x):
       view==='FINISHED'?x.work_order_id&&status==='FINALIZADA':
