@@ -171,6 +171,40 @@ def _report_row(row, stage_map, schedule_rows, status_notes, max_schedules):
         str(value).strip() for value in (row.get("marca"), row.get("modelo"), row.get("versao"))
         if str(value or "").strip()
     )
+    current_schedule = next(
+        (item for item in reversed(schedule_rows) if item.get("vigente")),
+        schedule_rows[-1] if schedule_rows else None,
+    )
+    current_planned_date = (
+        current_schedule.get("nova_data")
+        if current_schedule
+        else row.get("data_comercial_prevista")
+    )
+    commercial_deadline = (
+        row.get("data_comercial_calculada")
+        or row.get("data_comercial_prevista")
+    )
+    purchase_order_references = list(dict.fromkeys(
+        value.strip()
+        for value in (
+            str(row.get("purchase_orders") or ""),
+            str(row.get("pedido_compras_legacy") or ""),
+        )
+        if value.strip()
+    ))
+    production_notes = list(dict.fromkeys(
+        value.strip()
+        for value in (
+            str(row.get("observacoes_controle_producao") or ""),
+            " | ".join(stage_notes),
+        )
+        if value.strip()
+    ))
+    general_notes = list(dict.fromkeys([
+        *general_notes,
+        str(row.get("observacoes_gerais") or "").strip(),
+    ]))
+    general_notes = [value for value in general_notes if value]
     values = {
         "ITEM": f"JI - {row['item_number']}",
         "Nº PROPOSTA": row.get("proposta_numero") or "",
@@ -199,27 +233,28 @@ def _report_row(row, stage_map, schedule_rows, status_notes, max_schedules):
         "AR QUENTE": row.get("ar_quente") or "",
         "ACESSÓRIO": row.get("acessorio") or "",
         "PLOTAGEM": row.get("plotagem") or "",
-        "DATA COMERCIAL": row.get("data_comercial_prevista"),
+        "DATA COMERCIAL": commercial_deadline,
         "TÉRMINO PRODUÇÃO": row.get("termino_producao"),
         "DIAS PRODUÇÃO": _days_between(row.get("data_aprovacao"), row.get("termino_producao")),
         "DATA SAÍDA": row.get("data_entrega"),
-        "ATRASO?": _delay_label(row.get("data_comercial_prevista"), end_reference, row.get("status")),
-        "INFO": row.get("entry_notes") or "",
+        "ATRASO?": _delay_label(commercial_deadline, end_reference, row.get("status")),
+        "INFO": row.get("info") or row.get("entry_notes") or "",
         "CHASSI 2": str(row.get("chassi") or "")[-8:],
         "AVARIAS": _yes_no(row.get("avarias")),
         # Arquivamento do relatório representa a conclusão técnica registrada
         # em Suprimentos, sem alterar o status produtivo do MES.
         "ARQUIVADO": "SIM" if row.get("technical_status") == "CONCLUIDA" else "NÃO",
         **stage_values,
-        "B.O.": "",
-        "OBSERVAÇÕES CONTROLE PRODUÇÃO": " | ".join(stage_notes),
+        "B.O.": row.get("bo") or "",
+        "OBSERVAÇÕES CONTROLE PRODUÇÃO": " | ".join(production_notes),
         "OBSERVAÇÕES GERAIS": " | ".join(dict.fromkeys(general_notes)),
-        "SEQUENCIAMENTO": _sequence_week(row.get("data_comercial_prevista")),
-        "DATA ENTREGA": row.get("data_comercial_prevista"),
-        "PEDIDO DE COMPRAS": row.get("purchase_orders") or "",
-        # O número da sequência da Agenda não possui ainda campo estrutural próprio.
-        # Mantê-lo vazio evita inventar vínculo por posição de linha.
-        "Nº SEQUENCIA": "",
+        "SEQUENCIAMENTO": (
+            row.get("sequenciamento_legacy")
+            or _sequence_week(current_planned_date)
+        ),
+        "DATA ENTREGA": current_planned_date,
+        "PEDIDO DE COMPRAS": " | ".join(purchase_order_references),
+        "Nº SEQUENCIA": row.get("numero_sequencia_legacy") or "",
     }
     schedule_dates = [item.get("nova_data") for item in schedule_rows]
     values["DATA 1"] = schedule_dates[0] if schedule_dates else row.get("data_comercial_prevista")
