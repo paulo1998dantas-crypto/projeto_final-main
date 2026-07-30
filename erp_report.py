@@ -9,7 +9,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from sqlalchemy import text
 
-from erp_service import STAGES, stage_input_code
+from erp_service import STAGES, stage_input_code, work_order_situation
 
 
 CORE_HEADERS = [
@@ -85,12 +85,11 @@ def _delay_label(planned, finished, status):
 
 
 def _situation(row):
-    if (
-        row.get("status") in {"RASCUNHO", "AGUARDANDO_O_S"}
-        and row.get("stage_configuration_status") == "PENDENTE"
-    ):
-        return "AG. PARAMETRIZAÇÃO DE ETAPAS"
-    return str(row.get("status") or row.get("entry_status") or "AGUARDANDO O.S.").replace("_", " ")
+    return work_order_situation(
+        row.get("status") or row.get("entry_status"),
+        row.get("tipo_servico"),
+        row.get("stage_configuration_status"),
+    )
 
 
 def _sequence_week(value):
@@ -108,10 +107,13 @@ def _query_report_data(conn):
                 w.*,e.item_number,e.data_chegada,e.status as entry_status,
                 e.observacoes as entry_notes,e.avarias,
                 v.chassi,v.marca,v.modelo,v.versao,v.mmv,
+                seq.sequencia as sequencia_persistida,
+                seq.semana_planejada as semana_planejada_persistida,
                 coalesce(po.purchase_orders,'') as purchase_orders
             from erp_work_orders w
             join erp_vehicle_entries e on e.id=w.vehicle_entry_id
             join erp_vehicles v on v.id=e.vehicle_id
+            left join erp_work_order_sequences seq on seq.work_order_id=w.id
             left join lateral (
                 select string_agg(distinct p.numero_oc, ', ' order by p.numero_oc) as purchase_orders
                 from erp_purchase_order_lines l
@@ -249,12 +251,13 @@ def _report_row(row, stage_map, schedule_rows, status_notes, max_schedules):
         "OBSERVAÇÕES CONTROLE PRODUÇÃO": " | ".join(production_notes),
         "OBSERVAÇÕES GERAIS": " | ".join(dict.fromkeys(general_notes)),
         "SEQUENCIAMENTO": (
-            row.get("sequenciamento_legacy")
+            row.get("semana_planejada_persistida")
+            or row.get("sequenciamento_legacy")
             or _sequence_week(current_planned_date)
         ),
         "DATA ENTREGA": current_planned_date,
         "PEDIDO DE COMPRAS": " | ".join(purchase_order_references),
-        "Nº SEQUENCIA": row.get("numero_sequencia_legacy") or "",
+        "Nº SEQUENCIA": row.get("sequencia_persistida") or row.get("numero_sequencia_legacy") or "",
     }
     schedule_dates = [item.get("nova_data") for item in schedule_rows]
     values["DATA 1"] = schedule_dates[0] if schedule_dates else row.get("data_comercial_prevista")

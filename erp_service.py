@@ -158,6 +158,34 @@ def _token(value):
         if not unicodedata.combining(char)
     )
 
+
+def service_type_group(value):
+    """Classify the service without turning status into a compound database value."""
+    normalized = _token(value).replace("_", " ").replace("-", " ")
+    if "POS" in normalized and "VENDA" in normalized:
+        return "PÓS-VENDAS"
+    if normalized in {"", "TRANSFORMACAO"}:
+        return "TRANSFORMAÇÃO"
+    # INSTALAÇÃO DE ACESSÓRIO, RETORNO e OUTRO seguem o mesmo agrupamento
+    # operacional e financeiro de entregas fora da transformação.
+    return "OUTROS"
+
+
+def work_order_situation(status, service_type="", stage_configuration_status=""):
+    """Presentation label; canonical status and service type remain independent."""
+    normalized_status = _token(status)
+    if (
+        normalized_status in {"RASCUNHO", "AGUARDANDO O S", "AGUARDANDO_O_S"}
+        and _token(stage_configuration_status) == "PENDENTE"
+    ):
+        base = "AG. PARAMETRIZAÇÃO DE ETAPAS"
+    elif normalized_status == "ATIVA":
+        base = "EM PÁTIO"
+    else:
+        base = str(status or "AGUARDANDO O.S.").replace("_", " ")
+    group = service_type_group(service_type)
+    return base if group == "TRANSFORMAÇÃO" else f"{base} {group}"
+
 def _date_value(value):
     if isinstance(value, datetime):
         return value.date()
@@ -626,7 +654,7 @@ def activate_work_order(conn, work_id, actor):
 
 def active_cards(conn):
     rows=conn.execute(text("""
-        select w.id,w.numero_os,w.status,w.technical_status,e.item_number,
+        select w.id,w.numero_os,w.status,w.tipo_servico,w.technical_status,e.item_number,
                v.chassi,v.marca,v.modelo,v.versao,
                w.cliente_nome,w.linha,w.transformacao,w.data_comercial_prevista,
                seq.sequencia,seq.semana_planejada,seq.prioridade_manual,
@@ -642,7 +670,11 @@ def active_cards(conn):
                  seq.sequencia,seq.semana_planejada,seq.prioridade_manual
         order by seq.sequencia nulls last,w.data_comercial_prevista nulls last,e.item_number
     """))
-    return [dict(x._mapping) for x in rows]
+    cards = [dict(x._mapping) for x in rows]
+    for card in cards:
+        card["tipo_servico_grupo"] = service_type_group(card.get("tipo_servico"))
+        card["situacao"] = work_order_situation(card.get("status"), card.get("tipo_servico"))
+    return cards
 
 
 def active_work_order_options(conn, search="", limit=20):
@@ -735,7 +767,15 @@ def list_work_orders(conn, search="", status="", limit=1000):
           seq.sequencia nulls last,e.item_number desc
         limit :limit
     """), params)
-    return [dict(row._mapping) for row in rows]
+    orders = [dict(row._mapping) for row in rows]
+    for order in orders:
+        order["tipo_servico_grupo"] = service_type_group(order.get("tipo_servico")) if order.get("work_order_id") else ""
+        order["situacao"] = work_order_situation(
+            order.get("status") or order.get("entry_status"),
+            order.get("tipo_servico"),
+            order.get("stage_configuration_status"),
+        )
+    return orders
 
 def work_order_detail(conn, work_id):
     work = _one(conn.execute(text("""
@@ -750,6 +790,10 @@ def work_order_detail(conn, work_id):
     """), {"id": work_id}))
     if not work:
         raise ValueError("O.S. não encontrada.")
+    work["tipo_servico_grupo"] = service_type_group(work.get("tipo_servico"))
+    work["situacao"] = work_order_situation(
+        work.get("status"), work.get("tipo_servico"), work.get("stage_configuration_status")
+    )
     if (
         work.get("status") in {"RASCUNHO", "AGUARDANDO_O_S"}
         and work.get("stage_configuration_status") == "PENDENTE"

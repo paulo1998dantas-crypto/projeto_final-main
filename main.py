@@ -745,6 +745,9 @@ def montar_card_kanban(veiculo, status_map, etapa):
         "numero_os": getattr(veiculo, "numero_os", None),
         "item_number": getattr(veiculo, "item_number", None),
         "sequencia": getattr(veiculo, "sequencia", None),
+        "tipo_servico": getattr(veiculo, "tipo_servico", ""),
+        "tipo_servico_grupo": getattr(veiculo, "tipo_servico_grupo", ""),
+        "situacao": getattr(veiculo, "situacao", ""),
         "detail_url": getattr(veiculo, "detail_url", f"/veiculo/{veiculo.chassi}"),
         "chassi": veiculo.chassi,
         "chassi_exibicao": getattr(veiculo, "chassi_exibicao", chassi_exibicao(veiculo.chassi)),
@@ -876,7 +879,7 @@ def carregar_erp_dashboard(
     sequence_join = "left join erp_work_order_sequences seq on seq.work_order_id=w.id and seq.ativo=true" if sequence_schema else ""
     with database.engine.connect() as conn:
         rows = conn.execute(text(f"""
-            select w.id as work_order_id,w.numero_os,w.status,w.linha,
+            select w.id as work_order_id,w.numero_os,w.status,w.tipo_servico,w.linha,
                    w.cliente_nome,w.municipio,w.uf,w.transformacao,
                    w.ar_condicionado,w.conjunto_bancos,w.data_comercial_prevista,
                    e.item_number,v.chassi,v.marca,v.modelo,v.versao,{sequence_fields}
@@ -950,6 +953,9 @@ def carregar_erp_dashboard(
             work_order_id=work_id,
             numero_os=row["numero_os"],
             item_number=row["item_number"],
+            tipo_servico=str(row.get("tipo_servico") or ""),
+            tipo_servico_grupo=erp_service.service_type_group(row.get("tipo_servico")),
+            situacao=erp_service.work_order_situation(row.get("status"), row.get("tipo_servico")),
             detail_url=f"/veiculo/{str(row['chassi'] or '').strip()}?work_order_id={work_id}",
             chassi=str(row["chassi"] or ""),
             chassi_exibicao=chassi_exibicao(row["chassi"]),

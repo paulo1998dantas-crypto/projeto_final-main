@@ -88,6 +88,9 @@
                 {% if current_user.can("mes.dashboard.read") %}
                 <a href="/gestao-os" class="rounded-md bg-cyan-700 px-2.5 py-1.5 font-bold hover:bg-cyan-600">O.S. / Histórico</a>
                 {% endif %}
+                {% if current_user.can("mes.work_orders.manage") %}
+                <a href="/sequenciamento" class="rounded-md bg-blue-700 px-2.5 py-1.5 font-bold hover:bg-blue-600">Sequenciamento WIP</a>
+                {% endif %}
                 {% if current_user.can("mes.exports.read") %}
                 <a href="/exportar_controle_producao" class="rounded-md bg-emerald-600 px-2.5 py-1.5 font-bold hover:bg-emerald-500">Exportar Controle</a>
                 <a href="/exportar_historico" class="rounded-md bg-emerald-700 px-2.5 py-1.5 font-bold hover:bg-emerald-600">Exportar Logs</a>
@@ -110,6 +113,9 @@
                 {% endif %}
                 {% if current_user.can("mes.dashboard.read") %}
                 <a href="/gestao-os" class="bg-cyan-700 px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold hover:bg-cyan-600 transition">O.S. / Histórico</a>
+                {% endif %}
+                {% if current_user.can("mes.work_orders.manage") %}
+                <a href="/sequenciamento" class="bg-blue-700 px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold hover:bg-blue-600 transition">Sequenciamento WIP</a>
                 {% endif %}
                 {% if current_user.can("mes.legacy.import") %}
                 <a href="/importar" class="bg-blue-600 px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold hover:bg-blue-700 transition">Importar</a>
@@ -197,7 +203,7 @@
                                     <p class="truncate font-mono text-[clamp(11px,0.78vw,14px)] font-black uppercase leading-tight text-white">{{ card.chassi_exibicao }}</p>
                                     <span class="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-black {% if card.status == 'ENTREGA' %}bg-emerald-400/15 text-emerald-300{% elif card.status == 'PARCIAL' %}bg-amber-400/15 text-amber-300{% else %}bg-rose-400/15 text-rose-300{% endif %}">{% if card.status == "ENTREGA" %}E{% elif card.status == "PARCIAL" %}P{% else %}N{% endif %}</span>
                                 </div>
-                                {% if card.source == "ERP" %}<p class="mt-1 text-[9px] font-black uppercase text-cyan-300">Seq. {{ card.sequencia or '—' }} · ITEM {{ card.item_number }} · O.S. {{ card.numero_os }}</p>{% endif %}
+                                {% if card.source == "ERP" %}<p class="mt-1 text-[9px] font-black uppercase text-cyan-300">{{ card.situacao }} · Seq. {{ card.sequencia or '—' }} · ITEM {{ card.item_number }} · O.S. {{ card.numero_os }}</p>{% endif %}
                                 <p class="mt-1 truncate text-[clamp(10px,0.7vw,12px)] font-black uppercase leading-tight text-slate-300">{{ card.modelo_resumido }}</p>
                                 <div class="mt-1.5 flex items-center justify-between gap-1 text-[9px] font-bold text-slate-400">
                                     <span class="truncate">{{ card.data_entrega }}{% if card.semana_producao != '-' %} · Sem. {{ card.semana_producao }}{% endif %}</span>
@@ -446,7 +452,7 @@ function renderKanbanCard(card) {
                     <p class="truncate font-mono text-[clamp(11px,0.78vw,14px)] font-black uppercase leading-tight text-white">${escapeHtml(displayedChassis)}</p>
                     <span class="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-black ${statusClass}">${statusLabel}</span>
                 </div>
-                ${card.source === "ERP" ? `<p class="mt-1 text-[9px] font-black uppercase text-cyan-300">Seq. ${escapeHtml(card.sequencia || "—")} · ITEM ${escapeHtml(card.item_number)} · O.S. ${escapeHtml(card.numero_os)}</p>` : ""}
+                ${card.source === "ERP" ? `<p class="mt-1 text-[9px] font-black uppercase text-cyan-300">${escapeHtml(card.situacao || card.tipo_servico_grupo || "TRANSFORMAÇÃO")} · Seq. ${escapeHtml(card.sequencia || "—")} · ITEM ${escapeHtml(card.item_number)} · O.S. ${escapeHtml(card.numero_os)}</p>` : ""}
                 <p class="mt-1 truncate text-[clamp(10px,0.7vw,12px)] font-black uppercase leading-tight text-slate-300">${escapeHtml(card.modelo_resumido || card.modelo)}</p>
                 <div class="mt-1.5 flex items-center justify-between gap-1 text-[9px] font-bold text-slate-400">
                     <span class="truncate">${escapeHtml(card.data_entrega)}${semana}</span>
@@ -470,7 +476,7 @@ function renderKanbanCard(card) {
                 <div class="min-w-0">
                     <p class="truncate text-[13px] font-black uppercase text-slate-800">${escapeHtml(card.modelo)}</p>
                     <p class="truncate font-mono text-[10px] font-semibold text-slate-500">${escapeHtml(displayedChassis)}</p>
-                    ${card.source === "ERP" ? `<p class="text-[10px] font-black text-cyan-700">Seq. ${escapeHtml(card.sequencia || "—")} · ITEM ${escapeHtml(card.item_number)} · O.S. ${escapeHtml(card.numero_os)}</p>` : ""}
+                    ${card.source === "ERP" ? `<p class="text-[10px] font-black text-cyan-700">${escapeHtml(card.situacao || card.tipo_servico_grupo || "TRANSFORMAÇÃO")} · Seq. ${escapeHtml(card.sequencia || "—")} · ITEM ${escapeHtml(card.item_number)} · O.S. ${escapeHtml(card.numero_os)}</p>` : ""}
                 </div>
                 ${kanbanStatusBadge(card.status)}
             </div>

@@ -61,6 +61,18 @@ class MesReportSemanticsTests(unittest.TestCase):
         self.assertEqual(row["DATA 1"], date(2026, 8, 20))
         self.assertEqual(row["REPROGRAMA 1"], date(2026, 8, 22))
 
+    def test_post_sale_delivery_is_explicit_in_exported_situation(self):
+        work = self.base_work_order()
+        work.update({"status": "ENTREGUE", "tipo_servico": "PÓS-VENDA"})
+        row = _report_row(work, {}, [], [], 0)
+        self.assertEqual(row["SITUAÇÃO"], "ENTREGUE PÓS-VENDAS")
+
+    def test_other_finalization_is_explicit_in_exported_situation(self):
+        work = self.base_work_order()
+        work.update({"status": "FINALIZADA", "tipo_servico": "INSTALAÇÃO_DE_ACESSÓRIO"})
+        row = _report_row(work, {}, [], [], 0)
+        self.assertEqual(row["SITUAÇÃO"], "FINALIZADA OUTROS")
+
 
 if __name__ == "__main__":
     unittest.main()
