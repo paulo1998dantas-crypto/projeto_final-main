@@ -125,7 +125,7 @@ def legacy_operational_schema_available():
 
 def legacy_upload_enabled():
     return os.environ.get(
-        "ERP_MES_LEGACY_UPLOAD_ENABLED", "true"
+        "ERP_MES_LEGACY_UPLOAD_ENABLED", "false"
     ).strip().lower() in {"1", "true", "yes", "sim", "on"}
 
 

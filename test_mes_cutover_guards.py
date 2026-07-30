@@ -65,6 +65,10 @@ class MesCutoverGuardTests(unittest.TestCase):
             with self.subTest(function=name):
                 self.assertIn("legacy_upload_enabled()", function_source(name))
 
+    def test_legacy_upload_is_fail_closed_by_default(self):
+        source = function_source("legacy_upload_enabled")
+        self.assertIn('"ERP_MES_LEGACY_UPLOAD_ENABLED", "false"', source)
+
 
 if __name__ == "__main__":
     unittest.main()
