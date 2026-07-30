@@ -114,6 +114,31 @@ app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), na
 def erp_feature_enabled():
     return os.environ.get("ERP_FEATURE_FLAG", "false").strip().lower() in {"1", "true", "yes", "sim", "on"}
 
+
+def legacy_operational_schema_available():
+    inspector = inspect(database.engine)
+    return all(
+        inspector.has_table(table_name)
+        for table_name in ("veiculos", "apontamentos", "historico")
+    )
+
+
+def legacy_upload_enabled():
+    return os.environ.get(
+        "ERP_MES_LEGACY_UPLOAD_ENABLED", "true"
+    ).strip().lower() in {"1", "true", "yes", "sim", "on"}
+
+
+def legacy_disabled_response():
+    return JSONResponse(
+        {
+            "status": "erro",
+            "detail": "Fluxo legado do MES desativado neste ambiente.",
+        },
+        status_code=404,
+    )
+
+
 def erp_backend_actor(request: Request):
     supplied = request.headers.get("X-ERP-Backend-Token", "").strip()
     expected = os.environ.get("ERP_BACKEND_TOKEN", "").strip()
@@ -145,7 +170,11 @@ async def healthz():
             "database": True,
             "erp_feature": erp_feature_enabled(),
             "erp_schema": inspector.has_table("erp_work_orders"),
-            "legacy_schema": inspector.has_table("veiculos"),
+            "legacy_schema": legacy_operational_schema_available(),
+            "auth_schema": (
+                inspector.has_table("usuarios")
+                and inspector.has_table("sessoes_usuario")
+            ),
         }
     except Exception:
         return JSONResponse(
@@ -521,9 +550,11 @@ def semana_ordenacao(value):
     return (9999, 99, semana)
 
 def listar_semanas_producao(db: Session):
-    valores = db.query(models.Veiculo.semana_producao).filter(
-        func.trim(func.coalesce(models.Veiculo.semana_producao, "")) != ""
-    ).distinct().all()
+    valores = []
+    if legacy_operational_schema_available():
+        valores = db.query(models.Veiculo.semana_producao).filter(
+            func.trim(func.coalesce(models.Veiculo.semana_producao, "")) != ""
+        ).distinct().all()
     semanas = {normalize_semana_producao(valor[0]) for valor in valores if normalize_semana_producao(valor[0])}
     if erp_feature_enabled() and inspect(database.engine).has_table("erp_work_orders"):
         with database.engine.connect() as conn:
@@ -902,16 +933,20 @@ def carregar_veiculos_dashboard(
     entrega_inicio: str = None,
     entrega_fim: str = None,
 ):
-    query = aplicar_filtros_veiculos(
-        db.query(models.Veiculo),
-        modelo,
-        linha,
-        semana,
-        entrega_inicio,
-        entrega_fim,
-    )
-
-    veiculos_db = query.order_by(models.Veiculo.ordem.asc(), models.Veiculo.chassi.asc()).all()
+    veiculos_db = []
+    if legacy_operational_schema_available():
+        query = aplicar_filtros_veiculos(
+            db.query(models.Veiculo),
+            modelo,
+            linha,
+            semana,
+            entrega_inicio,
+            entrega_fim,
+        )
+        veiculos_db = query.order_by(
+            models.Veiculo.ordem.asc(),
+            models.Veiculo.chassi.asc(),
+        ).all()
 
     chassis = [str(v.chassi).strip() for v in veiculos_db]
     apontamentos = []
@@ -981,14 +1016,6 @@ async def home(
     current_user = require_login(request, db)
     if not current_user:
         return RedirectResponse(url="/login", status_code=303)
-    query = aplicar_filtros_veiculos(
-        db.query(models.Veiculo),
-        modelo,
-        linha,
-        semana,
-        entrega_inicio,
-        entrega_fim,
-    )
     data_inicio_atual, data_fim_atual = intervalo_entrega_normalizado(entrega_inicio, entrega_fim)
     visao_param = safe_str(visao).lower()
     visao_atual = visao_param if visao_param in ["resumida", "completa", "gerencial", "geral"] else "resumida"
@@ -999,7 +1026,20 @@ async def home(
         visao_atual = "resumida"
     modo_resumido = modo_liberacao or visao_atual == "resumida"
 
-    veiculos_db = query.order_by(models.Veiculo.ordem.asc(), models.Veiculo.chassi.asc()).all()
+    veiculos_db = []
+    if legacy_operational_schema_available():
+        query = aplicar_filtros_veiculos(
+            db.query(models.Veiculo),
+            modelo,
+            linha,
+            semana,
+            entrega_inicio,
+            entrega_fim,
+        )
+        veiculos_db = query.order_by(
+            models.Veiculo.ordem.asc(),
+            models.Veiculo.chassi.asc(),
+        ).all()
     veiculos_exibicao = []
 
     chassis = [str(v.chassi).strip() for v in veiculos_db]
@@ -1236,9 +1276,12 @@ async def detalhes(
             },
         )
 
-    veiculo = db.query(models.Veiculo).filter(
-        func.trim(cast(models.Veiculo.chassi, String)) == c_limpo
-    ).first()
+    legacy_available = legacy_operational_schema_available()
+    veiculo = None
+    if legacy_available:
+        veiculo = db.query(models.Veiculo).filter(
+            func.trim(cast(models.Veiculo.chassi, String)) == c_limpo
+        ).first()
 
     if (
         not veiculo
@@ -1262,9 +1305,11 @@ async def detalhes(
                 status_code=303,
             )
 
-    feitos = db.query(models.Apontamento).filter(
-        func.trim(cast(models.Apontamento.chassi, String)) == c_limpo
-    ).all()
+    feitos = []
+    if legacy_available:
+        feitos = db.query(models.Apontamento).filter(
+            func.trim(cast(models.Apontamento.chassi, String)) == c_limpo
+        ).all()
 
     for f in feitos:
         f.inicio_str = to_input_dt(f.inicio)
@@ -1298,6 +1343,8 @@ async def detalhes(
 async def upload_base(request: Request, file: UploadFile = File(...), db: Session = Depends(database.get_db)):
     if not require_login(request, db):
         return {"status": "erro", "detail": "Login necessário"}
+    if not legacy_upload_enabled() or not legacy_operational_schema_available():
+        return legacy_disabled_response()
     try:
         content = await file.read()
 
@@ -1437,6 +1484,8 @@ async def upload_base(request: Request, file: UploadFile = File(...), db: Sessio
 async def upload_apontamentos(request: Request, file: UploadFile = File(...), db: Session = Depends(database.get_db)):
     if not require_login(request, db):
         return {"status": "erro", "detail": "Login necessário"}
+    if not legacy_upload_enabled() or not legacy_operational_schema_available():
+        return legacy_disabled_response()
     try:
         content = await file.read()
 
@@ -1525,6 +1574,8 @@ async def upload_apontamentos(request: Request, file: UploadFile = File(...), db
 async def salvar(request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
     if not require_login(request, db):
         return JSONResponse({"status": "erro", "detail": "Login necessário"}, status_code=401)
+    if not legacy_operational_schema_available():
+        return legacy_disabled_response()
     ch = str(data["chassi"]).strip()
     et = normalize_etapa(data["etapa"])
     st = normalize_status(data.get("status", ""))
@@ -1576,6 +1627,8 @@ async def salvar(request: Request, data: dict = Body(...), db: Session = Depends
 async def atualizar_localizacao(request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
     if not require_login(request, db):
         return JSONResponse({"status": "erro", "detail": "Login necessário"}, status_code=401)
+    if not legacy_operational_schema_available():
+        return legacy_disabled_response()
     ch = str(data.get("chassi", "")).strip()
     localizacao = str(data.get("localizacao", "")).strip()
     if not ch:
@@ -1591,6 +1644,8 @@ async def atualizar_localizacao(request: Request, data: dict = Body(...), db: Se
 async def atualizar_banco(request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
     if not require_login(request, db):
         return JSONResponse({"status": "erro", "detail": "Login necessário"}, status_code=401)
+    if not legacy_operational_schema_available():
+        return legacy_disabled_response()
     ch = str(data.get("chassi", "")).strip()
     banco_presente = str(data.get("banco_presente", "")).strip()
     banco_comentario = str(data.get("banco_comentario", "")).strip()
@@ -1610,6 +1665,8 @@ async def atualizar_banco(request: Request, data: dict = Body(...), db: Session 
 async def exportar(request: Request, db: Session = Depends(database.get_db)):
     if not require_login(request, db):
         return RedirectResponse(url="/login", status_code=303)
+    if not legacy_operational_schema_available():
+        return legacy_disabled_response()
     logs = db.query(models.Historico).all()
     if not logs:
         return {"message": "Sem dados"}
@@ -1652,6 +1709,8 @@ async def exportar(request: Request, db: Session = Depends(database.get_db)):
 async def exportar_tempos(request: Request, db: Session = Depends(database.get_db)):
     if not require_login(request, db):
         return RedirectResponse(url="/login", status_code=303)
+    if not legacy_operational_schema_available():
+        return legacy_disabled_response()
     aponts = db.query(models.Apontamento).all()
     veiculos = db.query(models.Veiculo).all()
     loc_map = {str(v.chassi).strip(): v.localizacao for v in veiculos}
@@ -1686,6 +1745,8 @@ async def exportar_tempos(request: Request, db: Session = Depends(database.get_d
 async def limpar_logs(request: Request, db: Session = Depends(database.get_db)):
     if not require_login(request, db):
         return RedirectResponse(url="/login", status_code=303)
+    if not legacy_upload_enabled() or not legacy_operational_schema_available():
+        return legacy_disabled_response()
     db.query(models.Historico).delete()
     db.commit()
     return RedirectResponse(url="/", status_code=303)
@@ -1694,6 +1755,11 @@ async def limpar_logs(request: Request, db: Session = Depends(database.get_db)):
 async def pg_importar(request: Request, db: Session = Depends(database.get_db)):
     if not require_login(request, db):
         return RedirectResponse(url="/login", status_code=303)
+    if not legacy_upload_enabled() or not legacy_operational_schema_available():
+        return HTMLResponse(
+            "Importação legada desativada neste ambiente.",
+            status_code=404,
+        )
     return templates.TemplateResponse(request, "importar.html", {"request": request})
 
 @app.get("/login", response_class=HTMLResponse)
@@ -1976,6 +2042,7 @@ async def erp_update_work_order(work_id: str, request: Request, data: dict = Bod
 # session and is protected by the same service token pattern used by Estoque.
 @app.get("/api/erp/internal/catalogs")
 async def erp_internal_catalogs(request: Request):
+    if not erp_feature_enabled(): return erp_disabled_response()
     actor = erp_backend_actor(request)
     if not actor:
         return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
@@ -1983,6 +2050,7 @@ async def erp_internal_catalogs(request: Request):
 
 @app.get("/api/erp/internal/work-orders")
 async def erp_internal_work_orders(request: Request, search: str = "", status: str = ""):
+    if not erp_feature_enabled(): return erp_disabled_response()
     actor = erp_backend_actor(request)
     if not actor: return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
     with database.engine.connect() as conn:
@@ -1990,6 +2058,7 @@ async def erp_internal_work_orders(request: Request, search: str = "", status: s
 
 @app.get("/api/erp/internal/work-orders/{work_id}")
 async def erp_internal_work_order_detail(work_id: str, request: Request):
+    if not erp_feature_enabled(): return erp_disabled_response()
     actor = erp_backend_actor(request)
     if not actor: return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
     try:
@@ -2000,6 +2069,7 @@ async def erp_internal_work_order_detail(work_id: str, request: Request):
 
 @app.post("/api/erp/internal/vehicle-entries")
 async def erp_internal_vehicle_entry(request: Request, data: dict = Body(...)):
+    if not erp_feature_enabled(): return erp_disabled_response()
     actor = erp_backend_actor(request)
     if not actor: return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
     try:
@@ -2011,6 +2081,7 @@ async def erp_internal_vehicle_entry(request: Request, data: dict = Body(...)):
 
 @app.post("/api/erp/internal/vehicle-entries/{entry_id}/work-orders")
 async def erp_internal_work_order(entry_id: str, request: Request, data: dict = Body(...)):
+    if not erp_feature_enabled(): return erp_disabled_response()
     actor = erp_backend_actor(request)
     if not actor: return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
     try:
@@ -2022,6 +2093,7 @@ async def erp_internal_work_order(entry_id: str, request: Request, data: dict = 
 
 @app.put("/api/erp/internal/work-orders/{work_id}")
 async def erp_internal_update_work_order(work_id: str, request: Request, data: dict = Body(...)):
+    if not erp_feature_enabled(): return erp_disabled_response()
     actor = erp_backend_actor(request)
     if not actor: return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
     try:
@@ -2033,6 +2105,7 @@ async def erp_internal_update_work_order(work_id: str, request: Request, data: d
 
 @app.post("/api/erp/internal/work-orders/{work_id}/activate")
 async def erp_internal_activate(work_id: str, request: Request):
+    if not erp_feature_enabled(): return erp_disabled_response()
     actor = erp_backend_actor(request)
     if not actor: return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
     try:
@@ -2048,6 +2121,7 @@ async def erp_internal_technical_close(
     request: Request,
     data: dict = Body(default={}),
 ):
+    if not erp_feature_enabled(): return erp_disabled_response()
     actor = erp_backend_actor(request)
     if not actor:
         return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
@@ -2069,6 +2143,7 @@ async def erp_internal_technical_reopen(
     request: Request,
     data: dict = Body(default={}),
 ):
+    if not erp_feature_enabled(): return erp_disabled_response()
     actor = erp_backend_actor(request)
     if not actor:
         return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
@@ -2086,6 +2161,7 @@ async def erp_internal_technical_reopen(
 
 @app.post("/api/erp/internal/work-orders/{work_id}/schedules")
 async def erp_internal_schedule(work_id: str, request: Request, data: dict = Body(...)):
+    if not erp_feature_enabled(): return erp_disabled_response()
     actor = erp_backend_actor(request)
     if not actor: return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
     try:

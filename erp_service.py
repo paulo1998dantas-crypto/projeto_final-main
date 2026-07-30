@@ -1,6 +1,7 @@
 """New operational O.S./MES domain. Legacy MES tables remain read-only compatible."""
 from datetime import datetime, date, timedelta
 from uuid import uuid4
+import re
 import unicodedata
 from sqlalchemy import text
 from erp_catalogs import (
@@ -37,6 +38,98 @@ LEAD_TIME_DAYS = {"LE": 45, "LAE": 45, "LB": 30, "LAB": 30}
 def _id(): return str(uuid4())
 def _one(result):
     row=result.first(); return dict(row._mapping) if row else None
+
+
+def _normalize_chassis(value):
+    return re.sub(r"[^A-Z0-9]", "", str(value or "").strip().upper())
+
+
+def _is_complete_vin(value):
+    return bool(re.fullmatch(r"[A-Z0-9]{17}", str(value or "")))
+
+
+def _resolve_vehicle(conn, chassi, payload):
+    """Return the physical vehicle, promoting one unambiguous legacy row.
+
+    Migration 202607290800 must be applied before this code is deployed.  This
+    function deliberately performs no runtime DDL and never guesses a full VIN
+    from a reduced chassis.
+    """
+    # Serializes two simultaneous entries for the same VIN without locking
+    # unrelated vehicles. The unique constraint on chassi remains the final
+    # protection against writers outside this application.
+    conn.execute(
+        text("select pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"erp_vehicle_vin:{chassi}"},
+    )
+    vehicle = _one(conn.execute(
+        text("select * from erp_vehicles where chassi=:chassi for update"),
+        {"chassi": chassi},
+    ))
+    if vehicle:
+        return vehicle, False
+
+    if not _is_complete_vin(chassi):
+        raise ValueError(
+            "Informe o chassi completo com 17 caracteres. "
+            "Chassi reduzido é aceito somente em registros legados importados."
+        )
+
+    legacy_rows = [
+        dict(row._mapping)
+        for row in conn.execute(text("""
+            select *
+              from erp_vehicles
+             where chassi_completo=false
+               and legacy_chassi_reduzido=:reduced
+             order by id
+             for update
+        """), {"reduced": chassi[-8:]})
+    ]
+    if len(legacy_rows) > 1:
+        raise ValueError(
+            "Existem vários veículos legados com os mesmos oito caracteres finais; "
+            "a promoção para VIN completo exige reconciliação manual."
+        )
+    if legacy_rows:
+        vehicle = legacy_rows[0]
+        conn.execute(text("""
+            update erp_vehicles
+               set chassi=:chassi,
+                   chassi_completo=true,
+                   legacy_chassi_reduzido=null
+             where id=:id
+        """), {"chassi": chassi, "id": vehicle["id"]})
+        vehicle.update({
+            "chassi": chassi,
+            "chassi_completo": True,
+            "legacy_chassi_reduzido": None,
+        })
+        return vehicle, False
+
+    vehicle_id = _id()
+    vehicle = {
+        "id": vehicle_id,
+        "chassi": chassi,
+        "marca": str(payload.get("marca") or ""),
+        "modelo": str(payload.get("modelo") or ""),
+        "versao": str(payload.get("versao") or ""),
+        "mmv": str(payload.get("mmv") or ""),
+        "chassi_completo": True,
+        "legacy_chassi_reduzido": None,
+    }
+    conn.execute(text("""
+        insert into erp_vehicles(
+            id,chassi,marca,modelo,versao,mmv,
+            chassi_completo,legacy_chassi_reduzido
+        ) values(
+            :id,:chassi,:marca,:modelo,:versao,:mmv,
+            true,null
+        )
+    """), vehicle)
+    return vehicle, True
+
+
 def _token(value):
     return "".join(
         char for char in unicodedata.normalize("NFKD", str(value or "").strip().upper())
@@ -101,13 +194,11 @@ def _commercial_date(arrival, approval, line):
     return max(dates) + timedelta(days=LEAD_TIME_DAYS.get(str(line or "").strip().upper(), 30))
 
 def create_entry(conn, payload, actor):
-    chassi=''.join(str(payload.get('chassi') or '').upper().split())
+    chassi = _normalize_chassis(payload.get("chassi"))
     if not chassi: raise ValueError('Chassi completo e obrigatorio.')
-    vehicle=_one(conn.execute(text('select * from erp_vehicles where chassi=:chassi for update'),{'chassi':chassi}))
-    if not vehicle:
-        vehicle_id=_id(); conn.execute(text("insert into erp_vehicles(id,chassi,marca,modelo,versao,mmv) values(:id,:chassi,:marca,:modelo,:versao,:mmv)"),{'id':vehicle_id,'chassi':chassi,'marca':str(payload.get('marca') or ''),'modelo':str(payload.get('modelo') or ''),'versao':str(payload.get('versao') or ''),'mmv':str(payload.get('mmv') or '')})
-    else:
-        vehicle_id=str(vehicle['id'])
+    vehicle, created = _resolve_vehicle(conn, chassi, payload)
+    vehicle_id = str(vehicle["id"])
+    if not created:
         # O chassi identifica o veículo físico. Em uma nova passagem, os dados
         # informados no cadastro devem corrigir descrições antigas (PACK,
         # STANDARD etc.) sem apagar valores existentes quando o campo vier vazio.
