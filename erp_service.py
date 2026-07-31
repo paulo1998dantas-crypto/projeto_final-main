@@ -491,8 +491,37 @@ def create_entry(conn, payload, actor):
 def create_work_order(conn, entry_id, payload, actor):
     entry=_one(conn.execute(text('select item_number,data_chegada from erp_vehicle_entries where id=:id for update'),{'id':entry_id}))
     if not entry: raise ValueError('Entrada de veiculo nao encontrada.')
+    forecast_id=str(payload.get('forecast_id') or '').strip() or None
     current=_one(conn.execute(text('select id,numero_os from erp_work_orders where vehicle_entry_id=:id'),{'id':entry_id}))
-    if current: return {'id':str(current['id']),'numero_os':current['numero_os'],'replayed':True}
+    if current:
+        if forecast_id:
+            linked_forecast=_one(conn.execute(text("""
+                select id,codigo from suprimentos_forecasts
+                where work_order_id=:work_id
+            """), {'work_id': current['id']}))
+            if not linked_forecast or str(linked_forecast['id']) != forecast_id:
+                raise ValueError('Esta entrada ja possui O.S.; o Forecast nao pode ser trocado apos a abertura.')
+            return {
+                'id':str(current['id']), 'numero_os':current['numero_os'],'replayed':True,
+                'forecast_id':str(linked_forecast['id']),'forecast_codigo':linked_forecast['codigo'],
+            }
+        return {'id':str(current['id']),'numero_os':current['numero_os'],'replayed':True}
+
+    forecast=None
+    if forecast_id:
+        forecast=_one(conn.execute(text("""
+            select id,codigo,status,vehicle_entry_id,work_order_id
+            from suprimentos_forecasts
+            where id=:id
+            for update
+        """), {'id':forecast_id}))
+        if not forecast:
+            raise ValueError('Forecast selecionado nao foi encontrado.')
+        if forecast['status'] != 'ATIVO':
+            raise ValueError('O Forecast selecionado nao esta ativo para alocacao.')
+        if forecast['vehicle_entry_id'] or forecast['work_order_id']:
+            raise ValueError('O Forecast selecionado ja esta vinculado a outra entrada ou O.S.')
+
     work_id=_id(); number=str(payload.get('numero_os') or entry['item_number'])
     fields={'tipo_servico':'TRANSFORMAÇÃO','proposta_numero':'','data_aprovacao':None,'vendedor':'','mercado':'','cliente_nome':'','municipio':'','uf':'','tipo_veiculo':'','linha':'','transformacao':'','transformacao_codigo':'','codigo_banco':'','conjunto_bancos':'','acessibilidade':'','lotacao':'','ar_condicionado':'','tipo_sistema_ar':'','ar_quente':'','acessorio':'','plotagem':'','data_comercial_prevista':None}
     fields.update({
@@ -510,9 +539,36 @@ def create_work_order(conn, entry_id, payload, actor):
             ) values(:id,null,:date,'PROGRAMAÇÃO INICIAL',:actor,true)
         """), {"id": work_id, "date": fields["data_comercial_prevista"], "actor": actor})
     conn.execute(text("update erp_vehicle_entries set status='O_S_ABERTA' where id=:id"), {"id": entry_id})
+    if forecast:
+        allocation=conn.execute(text("""
+            update suprimentos_forecasts
+               set status='CONVERTIDO',
+                   vehicle_entry_id=:entry_id,
+                   work_order_id=:work_id,
+                   convertido_at=now(),
+                   convertido_por=:actor,
+                   atualizado_por=:actor,
+                   updated_at=now(),
+                   version=version+1
+             where id=:forecast_id
+               and status='ATIVO'
+               and vehicle_entry_id is null
+               and work_order_id is null
+        """), {'forecast_id':forecast_id,'entry_id':entry_id,'work_id':work_id,'actor':actor})
+        if allocation.rowcount != 1:
+            raise ValueError('O Forecast foi alterado por outro usuario. Atualize a tela e tente novamente.')
+        conn.execute(text("""
+            insert into erp_audit_events(entity_type,entity_id,action,actor,origin,after_data)
+            values(
+                'FORECAST',:forecast_id,'ALOCADO_NA_ABERTURA_OS',:actor,'GESTAO_OS',
+                jsonb_build_object('vehicle_entry_id',:entry_id,'work_order_id',:work_id,'numero_os',:numero_os)
+            )
+        """), {'forecast_id':forecast_id,'entry_id':entry_id,'work_id':work_id,'numero_os':number,'actor':actor})
     return {
         'id':work_id, 'numero_os':number, 'replayed':False,
         'stage_configuration_status':'PENDENTE',
+        'forecast_id':forecast_id,
+        'forecast_codigo':forecast['codigo'] if forecast else None,
     }
 
 def update_work_order(conn, work_id, payload, actor):
@@ -755,6 +811,7 @@ def list_work_orders(conn, search="", status="", limit=1000):
                w.technical_status,w.technical_closed_at,w.technical_closed_by,
                w.technical_close_reason,
                w.created_at,w.updated_at,
+               f.id as forecast_id,f.codigo as forecast_codigo,f.status as forecast_status,
                seq.sequencia,seq.semana_planejada,seq.prioridade_manual,
                count(s.id) as etapas_total,
                count(s.id) filter(where s.aplicavel) as etapas_aplicaveis,
@@ -763,13 +820,14 @@ def list_work_orders(conn, search="", status="", limit=1000):
         from erp_vehicle_entries e
         join erp_vehicles v on v.id=e.vehicle_id
         left join erp_work_orders w on w.vehicle_entry_id=e.id
+        left join suprimentos_forecasts f on f.work_order_id=w.id
         left join erp_work_order_sequences seq on seq.work_order_id=w.id and seq.ativo=true
         left join erp_work_order_stages s on s.work_order_id=w.id
         where (:status='' or coalesce(w.status,e.status)=:status)
           and (:search='%%' or concat_ws(' ',e.item_number,v.chassi,v.marca,v.modelo,
                e.cliente_nome,w.numero_os,w.cliente_nome,w.proposta_numero,w.linha,
                w.transformacao) ilike :search)
-        group by e.id,v.id,w.id,seq.sequencia,seq.semana_planejada,seq.prioridade_manual
+        group by e.id,v.id,w.id,f.id,f.codigo,f.status,seq.sequencia,seq.semana_planejada,seq.prioridade_manual
         order by
           case
             when w.status in ('ATIVA','EM_PRODUÇÃO') then 0
@@ -798,11 +856,13 @@ def list_work_orders(conn, search="", status="", limit=1000):
 def work_order_detail(conn, work_id):
     work = _one(conn.execute(text("""
         select w.*,e.item_number,e.data_chegada,e.status as entry_status,e.observacoes as entry_notes,
-               e.avarias,v.chassi,v.marca,v.modelo,v.versao,v.mmv
+               e.avarias,v.chassi,v.marca,v.modelo,v.versao,v.mmv,
+               f.id as forecast_id,f.codigo as forecast_codigo,f.status as forecast_status
                ,seq.sequencia,seq.semana_planejada,seq.prioridade_manual
         from erp_work_orders w
         join erp_vehicle_entries e on e.id=w.vehicle_entry_id
         join erp_vehicles v on v.id=e.vehicle_id
+        left join suprimentos_forecasts f on f.work_order_id=w.id
         left join erp_work_order_sequences seq on seq.work_order_id=w.id
         where w.id=:id
     """), {"id": work_id}))
