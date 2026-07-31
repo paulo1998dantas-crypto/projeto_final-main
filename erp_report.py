@@ -70,7 +70,7 @@ def _delay_label(planned, finished, status):
     planned_date = _as_date(planned)
     if not planned_date:
         return ""
-    terminal = status in {"FINALIZADA", "ENTREGUE", "RETIRADA", "ARQUIVADA"}
+    terminal = status in {"FINALIZADA", "ENTREGUE", "RETIRADA", "CONCLUIDA", "ARQUIVADA"}
     comparison = _as_date(finished) if terminal and finished else date.today()
     if not comparison:
         return ""
@@ -244,7 +244,7 @@ def _report_row(row, stage_map, schedule_rows, status_notes, max_schedules):
         "CHASSI 2": str(row.get("chassi") or "")[-8:],
         "AVARIAS": _yes_no(row.get("avarias")),
         # Arquivamento do relatório representa a conclusão técnica registrada
-        # em Suprimentos, sem alterar o status produtivo do MES.
+        # em Suprimentos, cujo estado canônico da O.S. é CONCLUIDA.
         "ARQUIVADO": "SIM" if row.get("technical_status") == "CONCLUIDA" else "NÃO",
         **stage_values,
         "B.O.": row.get("bo") or "",

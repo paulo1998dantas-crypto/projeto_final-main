@@ -1017,6 +1017,8 @@ def update_stage(conn, work_id, code, payload, actor):
         for update
     """), {"work": work_id}))
     if not work: raise ValueError('O.S. nao encontrada.')
+    if work["status"] == "CONCLUIDA":
+        raise ValueError("O.S. concluida tecnicamente deve ser reaberta antes de receber apontamentos.")
     stage=_one(conn.execute(text('select * from erp_work_order_stages where work_order_id=:work and stage_code=:code for update'),{'work':work_id,'code':code}))
     if not stage: raise ValueError('Etapa da O.S. nao encontrada.')
     idempotency_key = str(payload.get("idempotency_key") or "").strip() or None
@@ -1157,7 +1159,7 @@ def finalize(conn, work_id, actor, delivered=False, notes='', target_status=None
     status = str(target_status or ('ENTREGUE' if delivered else 'FINALIZADA')).strip().upper()
     if status not in {'FINALIZADA', 'ENTREGUE', 'RETIRADA'}:
         raise ValueError('Status de encerramento inválido.')
-    if work['status'] in {'CANCELADA', 'ARQUIVADA'}:
+    if work['status'] in {'CANCELADA', 'ARQUIVADA', 'CONCLUIDA'}:
         raise ValueError('O.S. cancelada ou arquivada não pode ser encerrada.')
     event_time = event_at or datetime.utcnow()
     conn.execute(text("""
@@ -1187,8 +1189,15 @@ def finalize(conn, work_id, actor, delivered=False, notes='', target_status=None
     return {"id": work_id, "status": status}
 
 def technical_close_work_order(conn, work_id, actor, reason=""):
+    """Conclude an O.S. in the management flow without deleting its history.
+
+    ``technical_status`` keeps the closure rationale, while the canonical
+    ``status`` becomes ``CONCLUIDA`` so all modules consistently stop offering
+    this O.S. for new commitments.  Its prior status is retained exclusively
+    for an explicit technical reopening.
+    """
     work = _one(conn.execute(text("""
-        select id,status,technical_status
+        select id,status,technical_status,technical_previous_status
         from erp_work_orders
         where id=:id
         for update
@@ -1198,11 +1207,21 @@ def technical_close_work_order(conn, work_id, actor, reason=""):
     if work["status"] == "CANCELADA":
         raise ValueError("O.S. cancelada não pode receber conclusão técnica.")
     if work.get("technical_status") == "CONCLUIDA":
-        return {"id": work_id, "technical_status": "CONCLUIDA", "replayed": True}
+        return {
+            "id": work_id,
+            "status": work["status"],
+            "technical_status": "CONCLUIDA",
+            "replayed": True,
+        }
     reason = str(reason or "").strip()
     conn.execute(text("""
         update erp_work_orders
-        set technical_status='CONCLUIDA',
+        set status='CONCLUIDA',
+            technical_previous_status=case
+                when status <> 'CONCLUIDA' then status
+                else technical_previous_status
+            end,
+            technical_status='CONCLUIDA',
             technical_closed_at=now(),
             technical_closed_by=:actor,
             technical_close_reason=:reason,
@@ -1211,20 +1230,37 @@ def technical_close_work_order(conn, work_id, actor, reason=""):
         where id=:id
     """), {"id": work_id, "actor": actor, "reason": reason})
     conn.execute(text("""
+        insert into erp_work_order_status_history(
+            work_order_id,status_anterior,novo_status,usuario,observacao
+        ) values(:id,:old,'CONCLUIDA',:actor,:reason)
+    """), {
+        "id": work_id, "old": work["status"], "actor": actor,
+        "reason": reason,
+    })
+    conn.execute(text("""
         insert into erp_audit_events(
             entity_type,entity_id,action,actor,origin,before_data,after_data,reason
         ) values(
             'WORK_ORDER',:id,'CONCLUSAO_TECNICA',:actor,'SUPRIMENTOS',
-            jsonb_build_object('technical_status','ABERTA'),
-            jsonb_build_object('technical_status','CONCLUIDA'),
+            jsonb_build_object('status',cast(:old as text),'technical_status','ABERTA'),
+            jsonb_build_object('status','CONCLUIDA','technical_status','CONCLUIDA'),
             :reason
         )
-    """), {"id": work_id, "actor": actor, "reason": reason})
-    return {"id": work_id, "technical_status": "CONCLUIDA", "replayed": False}
+    """), {
+        "id": work_id, "actor": actor, "old": work["status"],
+        "reason": reason,
+    })
+    recalculate_work_order_sequences(conn, actor)
+    return {
+        "id": work_id,
+        "status": "CONCLUIDA",
+        "technical_status": "CONCLUIDA",
+        "replayed": False,
+    }
 
 def technical_reopen_work_order(conn, work_id, actor, reason=""):
     work = _one(conn.execute(text("""
-        select id,technical_status
+        select id,status,technical_status,technical_previous_status
         from erp_work_orders
         where id=:id
         for update
@@ -1232,29 +1268,60 @@ def technical_reopen_work_order(conn, work_id, actor, reason=""):
     if not work:
         raise ValueError("O.S. não encontrada.")
     if work.get("technical_status") != "CONCLUIDA":
-        return {"id": work_id, "technical_status": "ABERTA", "replayed": True}
+        return {
+            "id": work_id,
+            "status": work["status"],
+            "technical_status": "ABERTA",
+            "replayed": True,
+        }
     reason = str(reason or "").strip()
+    restored_status = (
+        str(work.get("technical_previous_status") or "").strip().upper()
+        if work.get("status") == "CONCLUIDA"
+        else work["status"]
+    )
+    if not restored_status:
+        restored_status = "ATIVA"
     conn.execute(text("""
         update erp_work_orders
-        set technical_status='ABERTA',
+        set status=:status,
+            technical_previous_status=null,
+            technical_status='ABERTA',
             technical_closed_at=null,
             technical_closed_by=null,
             technical_close_reason='',
             updated_at=now(),
             version=version+1
         where id=:id
-    """), {"id": work_id})
+    """), {"id": work_id, "status": restored_status})
+    conn.execute(text("""
+        insert into erp_work_order_status_history(
+            work_order_id,status_anterior,novo_status,usuario,observacao
+        ) values(:id,:old,:new,:actor,:reason)
+    """), {
+        "id": work_id, "old": work["status"], "new": restored_status,
+        "actor": actor, "reason": reason,
+    })
     conn.execute(text("""
         insert into erp_audit_events(
             entity_type,entity_id,action,actor,origin,before_data,after_data,reason
         ) values(
             'WORK_ORDER',:id,'REABERTURA_TECNICA',:actor,'SUPRIMENTOS',
-            jsonb_build_object('technical_status','CONCLUIDA'),
-            jsonb_build_object('technical_status','ABERTA'),
+            jsonb_build_object('status',cast(:old as text),'technical_status','CONCLUIDA'),
+            jsonb_build_object('status',cast(:new as text),'technical_status','ABERTA'),
             :reason
         )
-    """), {"id": work_id, "actor": actor, "reason": reason})
-    return {"id": work_id, "technical_status": "ABERTA", "replayed": False}
+    """), {
+        "id": work_id, "actor": actor, "old": work["status"],
+        "new": restored_status, "reason": reason,
+    })
+    recalculate_work_order_sequences(conn, actor)
+    return {
+        "id": work_id,
+        "status": restored_status,
+        "technical_status": "ABERTA",
+        "replayed": False,
+    }
 
 def reschedule(conn, work_id, new_date, reason, actor):
     if not _date_value(new_date):

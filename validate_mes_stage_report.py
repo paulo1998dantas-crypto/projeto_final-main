@@ -129,7 +129,7 @@ def main():
         status = connection.execute(text(
             "select status from erp_work_orders where id=:id"
         ), {"id": work["id"]}).scalar_one()
-        assert status == "FINALIZADA"
+        assert status == "CONCLUIDA"
         print(json.dumps({
             "status": "PASS",
             "item": entry["item_number"],
