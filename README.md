@@ -57,6 +57,16 @@ somente o modo para `legacy`; não remova tabelas nem vínculos.
 As aplicações continuam com cookies próprios porque são serviços Render
 independentes; a credencial e os perfis, porém, são os mesmos.
 
+### Login central pelo Portal Operacional
+
+Com `ERP_PORTAL_SSO_ENABLED=1`, uma tentativa de abrir uma rota do MES sem
+sessão é encaminhada ao Portal Operacional e retorna à rota originalmente
+solicitada. O Portal emite um comprovante de curta duração e o MES valida de
+novo o usuário e suas permissões antes de gravar seu cookie local. Configure o
+mesmo `ERP_PORTAL_SSO_SECRET` no Portal, Cadastro, Estoque e Suprimentos; use
+`ERP_PORTAL_URL=https://ji-portal-operacional.onrender.com`. Enquanto a chave
+estiver em `0`, o login próprio do MES permanece como contingência.
+
 O endpoint interno
 `/api/erp/internal/work-order-options?q=...&limit=20`, protegido pelo token de
 backend, fornece O.S. ativas para seletores de chassi/O.S. em outros módulos.

@@ -29,6 +29,7 @@ import erp_service
 import erp_catalogs
 import erp_report
 import authz
+import portal_sso
 
 LOCAL_TZ = ZoneInfo("America/Sao_Paulo")
 
@@ -206,6 +207,34 @@ async def no_cache_headers(request: Request, call_next):
     response.headers["Expires"] = "0"
     return response
 
+
+@app.middleware("http")
+async def central_portal_login_gate(request: Request, call_next):
+    """Keep direct MES links behind the central Portal when the flag is on."""
+    if not portal_sso.enabled():
+        return await call_next(request)
+    path = request.url.path
+    public_paths = {"/login", "/logout", "/healthz", "/_sso/consume", "/favicon.ico"}
+    if (
+        path in public_paths
+        or path.startswith("/static/")
+        or path.startswith("/api/erp/internal/")
+    ):
+        return await call_next(request)
+    db = database.SessionLocal()
+    try:
+        current = get_current_user(request, db)
+    finally:
+        db.close()
+    if current:
+        return await call_next(request)
+    if path.startswith("/api/"):
+        return JSONResponse({"ok": False, "error": "Login obrigatorio."}, status_code=401)
+    target = path
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    return RedirectResponse(url=portal_sso.portal_login_url("MES", target), status_code=303)
+
 ETAPAS_PRODUCAO = [
     "VIDROS",
     "A/C",
@@ -362,13 +391,23 @@ def bootstrap_admin_if_configured():
         db.close()
 
 def get_current_user(request: Request, db: Session):
+    # Uma única tela pode passar pelo middleware, por uma dependência de rota e
+    # pela renderização. Reutilize somente nesta requisição o principal já
+    # validado: a próxima requisição continua consultando sessão/usuário e
+    # portanto revogações e mudanças de perfil seguem imediatas.
+    if hasattr(request.state, "mes_current_user"):
+        return request.state.mes_current_user
     if authz.shared_auth_enabled():
-        return authz.get_shared_current_user(request, database.engine)
+        usuario = authz.get_shared_current_user(request, database.engine)
+        request.state.mes_current_user = usuario
+        return usuario
     token = (request.cookies.get(SESSION_COOKIE) or "").strip()
     if not token:
+        request.state.mes_current_user = None
         return None
     sessao = db.query(models.SessaoUsuario).filter(models.SessaoUsuario.token == token).first()
     if not sessao:
+        request.state.mes_current_user = None
         return None
     expira_em = sessao.expira_em
     if expira_em and expira_em.tzinfo is None:
@@ -376,9 +415,12 @@ def get_current_user(request: Request, db: Session):
     if expira_em and expira_em < datetime.datetime.now(LOCAL_TZ):
         db.delete(sessao)
         db.commit()
+        request.state.mes_current_user = None
         return None
     usuario = db.query(models.Usuario).filter(models.Usuario.id == sessao.usuario_id).first()
-    return authz.principal_from_legacy(usuario) if usuario else None
+    principal = authz.principal_from_legacy(usuario) if usuario else None
+    request.state.mes_current_user = principal
+    return principal
 
 def get_user_name(request: Request, db: Session):
     usuario = get_current_user(request, db)
@@ -1944,12 +1986,19 @@ async def pg_importar(request: Request, db: Session = Depends(database.get_db)):
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request, db: Session = Depends(database.get_db)):
+    if portal_sso.enabled():
+        return RedirectResponse(
+            url=portal_sso.portal_login_url("MES", request.query_params.get("next") or "/?visao=geral"),
+            status_code=303,
+        )
     if require_login(request, db):
         return RedirectResponse(url="/", status_code=303)
     return templates.TemplateResponse(request, "login.html", {"request": request, "erro": ""})
 
 @app.post("/login")
 async def login_post(request: Request, nome: str = Form(...), senha: str = Form(...), db: Session = Depends(database.get_db)):
+    if portal_sso.enabled():
+        return RedirectResponse(url=portal_sso.portal_login_url("MES", "/?visao=geral"), status_code=303)
     nome_limpo = str(nome).strip()
     if authz.shared_auth_enabled():
         try:
@@ -1993,6 +2042,37 @@ async def login_post(request: Request, nome: str = Form(...), senha: str = Form(
     set_session_cookie(resp, token)
     return resp
 
+
+@app.get("/_sso/consume")
+async def portal_sso_consume(ticket: str, request: Request):
+    """Exchange the Portal's short assertion for the MES isolated session."""
+    if not portal_sso.enabled():
+        return HTMLResponse("SSO central desativado.", status_code=404)
+    if not authz.shared_auth_enabled():
+        return HTMLResponse("O MES precisa usar a autenticacao compartilhada para o login central.", status_code=503)
+    try:
+        claims = portal_sso.consume_ticket(ticket, "MES")
+        principal = authz.load_shared_principal(database.engine, claims["uid"])
+        if (
+            not principal
+            or principal.username.casefold() != claims["username"].casefold()
+            or principal.auth_version != claims["auth_version"]
+        ):
+            raise ValueError("Usuario sem sessao valida para este modulo.")
+        if not has_permission(principal, authz.MES_DASHBOARD_READ):
+            return HTMLResponse("Este usuario nao possui acesso ao MES.", status_code=403)
+        token = authz.create_shared_session(database.engine, principal)
+        response = RedirectResponse(
+            url=portal_sso.normalize_next(claims.get("next"), "/?visao=geral"),
+            status_code=303,
+        )
+        set_session_cookie(response, token)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
+    except (ValueError, RuntimeError):
+        return HTMLResponse("Nao foi possivel validar o acesso centralizado.", status_code=401)
+
 @app.post("/logout")
 async def logout(request: Request, db: Session = Depends(database.get_db)):
     if authz.shared_auth_enabled():
@@ -2000,14 +2080,20 @@ async def logout(request: Request, db: Session = Depends(database.get_db)):
             database.engine,
             request.cookies.get(authz.SHARED_SESSION_COOKIE),
         )
-        resp = RedirectResponse(url="/login", status_code=303)
+        resp = RedirectResponse(
+            url=portal_sso.portal_logout_url() if portal_sso.enabled() else "/login",
+            status_code=303,
+        )
         clear_session_cookie(resp)
         return resp
     token = (request.cookies.get(SESSION_COOKIE) or "").strip()
     if token:
         db.query(models.SessaoUsuario).filter(models.SessaoUsuario.token == token).delete()
         db.commit()
-    resp = RedirectResponse(url="/login", status_code=303)
+    resp = RedirectResponse(
+        url=portal_sso.portal_logout_url() if portal_sso.enabled() else "/login",
+        status_code=303,
+    )
     clear_session_cookie(resp)
     return resp
 

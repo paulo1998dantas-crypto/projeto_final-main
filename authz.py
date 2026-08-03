@@ -265,6 +265,26 @@ def authenticate_shared_user(engine, username, password):
         return _principal_from_shared_row(conn, row)
 
 
+def load_shared_principal(engine, user_id):
+    """Load an active principal after a Portal SSO assertion was verified."""
+    status = shared_schema_status(engine)
+    if not status["ready"]:
+        raise RuntimeError(
+            "Autenticacao compartilhada ainda nao esta preparada: "
+            + ", ".join(status["missing_tables"] + status["missing_columns"])
+        )
+    with engine.connect() as conn:
+        row = conn.execute(text("""
+            select id,username,password_hash,role,active,auth_version
+              from public.users
+             where id=:user_id
+             limit 1
+        """), {"user_id": int(user_id)}).mappings().first()
+        if not row or not bool(row["active"]):
+            return None
+        return _principal_from_shared_row(conn, row)
+
+
 def _token_hash(token):
     return hashlib.sha256(str(token).encode("utf-8")).hexdigest()
 
