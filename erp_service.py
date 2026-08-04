@@ -214,6 +214,179 @@ def _work_field_value(name, value):
         return _date_value(value)
     return str(value or "").strip()
 
+
+def _optional_documento_os_id(payload):
+    """Return the optional legacy O.S. document id without accepting guesses."""
+    raw = (payload or {}).get("documento_os_id")
+    if raw in (None, ""):
+        return None
+    if isinstance(raw, bool):
+        raise ValueError("documento_os_id deve ser um identificador numerico valido.")
+    normalized = str(raw).strip()
+    if not normalized.isdigit() or int(normalized) <= 0:
+        raise ValueError("documento_os_id deve ser um identificador numerico valido.")
+    return int(normalized)
+
+
+def _normalize_os_number(value):
+    token = re.sub(r"[^A-Z0-9]", "", _token(value))
+    for prefix in ("ORDEMDESERVICO", "OS", "JI"):
+        suffix = token[len(prefix):] if token.startswith(prefix) else ""
+        if suffix.isdigit():
+            return suffix
+    return token
+
+
+def _document_data(value):
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _document_chassis(data):
+    raw = data.get("chassi") or data.get("chassis") or data.get("chassi_completo") or ""
+    normalized = _normalize_chassis(raw)
+    if normalized in {"", "AG", "NA", "N/A", "0"}:
+        return ""
+    return normalized
+
+
+def _compatible_document_chassis(document_chassis, vehicle_chassis):
+    if not document_chassis:
+        return True
+    if document_chassis == vehicle_chassis:
+        return True
+    # Some preserved O.S. documents contain only the eight-character display
+    # suffix.  It is accepted only as a suffix, never as a general substring.
+    return (
+        len(document_chassis) == 8
+        and len(vehicle_chassis) >= 8
+        and vehicle_chassis.endswith(document_chassis)
+    )
+
+
+def _link_suprimentos_os_document(
+    conn, documento_os_id, work_id, numero_os, vehicle_entry_id, actor
+):
+    """Validate and bind one Suprimentos O.S. inside the caller transaction.
+
+    The caller owns the transaction.  Consequently a validation/link failure
+    also rolls back the work-order insert/update that preceded this function.
+    """
+    if documento_os_id is None:
+        return None
+
+    document = _one(conn.execute(text("""
+        select id,tipo,numero,status,dados,erp_work_order_id
+          from public.suprimentos_documentos
+         where id=:document_id
+         for update
+    """), {"document_id": documento_os_id}))
+    if not document:
+        raise ValueError("Documento de O.S. informado nao foi encontrado.")
+    if _token(document.get("tipo")) != "OS":
+        raise ValueError("O documento informado nao e do tipo O.S.")
+    if _token(document.get("status")) not in {"RASCUNHO", "EMITIDO"}:
+        raise ValueError(
+            "Somente documento de O.S. em rascunho ou emitido pode ser vinculado."
+        )
+    if _normalize_os_number(document.get("numero")) != _normalize_os_number(numero_os):
+        raise ValueError(
+            f"O numero do documento ({document.get('numero')}) nao corresponde a O.S. {numero_os}."
+        )
+
+    data = _document_data(document.get("dados"))
+    column_link = str(document.get("erp_work_order_id") or "").strip()
+    json_link = str(data.get("erp_work_order_id") or "").strip()
+    existing_links = {value for value in (column_link, json_link) if value}
+    if len(existing_links) > 1:
+        raise ValueError("O documento possui vinculos ERP divergentes e exige reconciliacao.")
+    current_link = next(iter(existing_links), "")
+    if current_link and current_link != str(work_id):
+        raise ValueError("Este documento de O.S. ja esta vinculado a outra O.S. operacional.")
+
+    vehicle = _one(conn.execute(text("""
+        select v.chassi
+          from erp_vehicle_entries e
+          join erp_vehicles v on v.id=e.vehicle_id
+         where e.id=:entry_id
+    """), {"entry_id": vehicle_entry_id}))
+    if not vehicle:
+        raise ValueError("Veiculo da O.S. operacional nao foi encontrado.")
+    document_chassis = _document_chassis(data)
+    vehicle_chassis = _normalize_chassis(vehicle.get("chassi"))
+    if not _compatible_document_chassis(document_chassis, vehicle_chassis):
+        raise ValueError("O chassi do documento nao corresponde ao veiculo da O.S. operacional.")
+
+    conflict = _one(conn.execute(text("""
+        select id,numero
+          from public.suprimentos_documentos
+         where id<>:document_id
+           and (
+                erp_work_order_id=cast(:work_id as uuid)
+                or dados->>'erp_work_order_id'=:work_id
+           )
+         limit 1
+         for update
+    """), {
+        "document_id": documento_os_id,
+        "work_id": str(work_id),
+    }))
+    if conflict:
+        raise ValueError(
+            "A O.S. operacional ja esta vinculada ao documento "
+            f"{conflict.get('numero') or conflict.get('id')}."
+        )
+
+    needs_update = column_link != str(work_id) or json_link != str(work_id)
+    if needs_update:
+        updated = conn.execute(text("""
+            update public.suprimentos_documentos
+               set erp_work_order_id=cast(:work_id as uuid),
+                   dados=jsonb_set(
+                       coalesce(dados,'{}'::jsonb),
+                       '{erp_work_order_id}',
+                       to_jsonb(cast(:work_id as text)),
+                       true
+                   ),
+                   atualizado_por=:actor,
+                   updated_at=now()
+             where id=:document_id
+               and (
+                    erp_work_order_id is null
+                    or erp_work_order_id=cast(:work_id as uuid)
+               )
+        """), {
+            "document_id": documento_os_id,
+            "work_id": str(work_id),
+            "actor": actor,
+        })
+        if updated.rowcount != 1:
+            raise ValueError("O documento foi vinculado por outro usuario. Atualize e tente novamente.")
+        conn.execute(text("""
+            insert into erp_audit_events(
+                entity_type,entity_id,action,actor,origin,after_data
+            ) values(
+                'WORK_ORDER',:work_id,'SUPRIMENTOS_DOCUMENT_LINKED',:actor,'SUPRIMENTOS',
+                jsonb_build_object(
+                    'documento_os_id',cast(:document_id as bigint),
+                    'documento_numero',:document_number
+                )
+            )
+        """), {
+            "work_id": work_id,
+            "actor": actor,
+            "document_id": documento_os_id,
+            "document_number": str(document.get("numero") or ""),
+        })
+    return documento_os_id
+
 def _stage_applicable(code, work):
     return not (
         (code == "A/C" and _token(work.get("ar_condicionado")) in {"", "NAO"})
@@ -489,11 +662,16 @@ def create_entry(conn, payload, actor):
     return {'id':entry_id,'vehicle_id':vehicle_id,'item_number':int(row['item_number'])}
 
 def create_work_order(conn, entry_id, payload, actor):
+    documento_os_id = _optional_documento_os_id(payload)
     entry=_one(conn.execute(text('select item_number,data_chegada from erp_vehicle_entries where id=:id for update'),{'id':entry_id}))
     if not entry: raise ValueError('Entrada de veiculo nao encontrada.')
     forecast_id=str(payload.get('forecast_id') or '').strip() or None
     current=_one(conn.execute(text('select id,numero_os from erp_work_orders where vehicle_entry_id=:id'),{'id':entry_id}))
     if current:
+        if documento_os_id is not None:
+            _link_suprimentos_os_document(
+                conn, documento_os_id, current['id'], current['numero_os'], entry_id, actor
+            )
         if forecast_id:
             linked_forecast=_one(conn.execute(text("""
                 select id,codigo from suprimentos_forecasts
@@ -501,11 +679,19 @@ def create_work_order(conn, entry_id, payload, actor):
             """), {'work_id': current['id']}))
             if not linked_forecast or str(linked_forecast['id']) != forecast_id:
                 raise ValueError('Esta entrada ja possui O.S.; o Forecast nao pode ser trocado apos a abertura.')
-            return {
+            result = {
                 'id':str(current['id']), 'numero_os':current['numero_os'],'replayed':True,
                 'forecast_id':str(linked_forecast['id']),'forecast_codigo':linked_forecast['codigo'],
             }
-        return {'id':str(current['id']),'numero_os':current['numero_os'],'replayed':True}
+            if documento_os_id is not None:
+                result['documento_os_id'] = documento_os_id
+            return result
+        result = {
+            'id':str(current['id']),'numero_os':current['numero_os'],'replayed':True,
+        }
+        if documento_os_id is not None:
+            result['documento_os_id'] = documento_os_id
+        return result
 
     forecast=None
     if forecast_id:
@@ -564,14 +750,22 @@ def create_work_order(conn, entry_id, payload, actor):
                 jsonb_build_object('vehicle_entry_id',:entry_id,'work_order_id',:work_id,'numero_os',:numero_os)
             )
         """), {'forecast_id':forecast_id,'entry_id':entry_id,'work_id':work_id,'numero_os':number,'actor':actor})
-    return {
+    if documento_os_id is not None:
+        _link_suprimentos_os_document(
+            conn, documento_os_id, work_id, number, entry_id, actor
+        )
+    result = {
         'id':work_id, 'numero_os':number, 'replayed':False,
         'stage_configuration_status':'PENDENTE',
         'forecast_id':forecast_id,
         'forecast_codigo':forecast['codigo'] if forecast else None,
     }
+    if documento_os_id is not None:
+        result['documento_os_id'] = documento_os_id
+    return result
 
 def update_work_order(conn, work_id, payload, actor):
+    documento_os_id = _optional_documento_os_id(payload)
     work = _one(conn.execute(text("""
         select w.*,e.data_chegada from erp_work_orders w
         join erp_vehicle_entries e on e.id=w.vehicle_entry_id
@@ -662,9 +856,21 @@ def update_work_order(conn, work_id, payload, actor):
         "id": work_id, "actor": actor, "version": work["version"],
         "action": "RASCUNHO_ATUALIZADO" if is_draft else "O_S_ATUALIZADA",
     })
+    if documento_os_id is not None:
+        _link_suprimentos_os_document(
+            conn, documento_os_id, work_id, work["numero_os"],
+            work["vehicle_entry_id"], actor,
+        )
     if not is_draft:
         recalculate_work_order_sequences(conn, actor)
-    return {"id": work_id, "numero_os": work["numero_os"], "data_comercial_prevista": fields["data_comercial_prevista"]}
+    result = {
+        "id": work_id,
+        "numero_os": work["numero_os"],
+        "data_comercial_prevista": fields["data_comercial_prevista"],
+    }
+    if documento_os_id is not None:
+        result["documento_os_id"] = documento_os_id
+    return result
 
 def activate_work_order(conn, work_id, actor):
     work=_one(conn.execute(text('select * from erp_work_orders where id=:id for update'),{'id':work_id}))
