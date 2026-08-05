@@ -1274,36 +1274,202 @@ def configure_and_activate(conn, work_id, payload, actor):
         "activated": True,
     }
 
-def update_stage(conn, work_id, code, payload, actor):
-    code=str(code).upper()
+
+class StageConflictError(ValueError):
+    """A stale stage command tried to overwrite a more recent pointing."""
+
+
+def _stage_status_from_input(value):
+    """Convert the UI codes and canonical labels into one database status."""
+    normalized = _token(value).replace(" ", "").replace("_", "")
+    aliases = {
+        "N": "PENDENTE",
+        "NAO": "PENDENTE",
+        "P": "EM_ANDAMENTO",
+        "PARCIAL": "EM_ANDAMENTO",
+        "S": "CONCLUÍDA",
+        "SIM": "CONCLUÍDA",
+        "N/A": "NÃO_APLICÁVEL",
+        "NA": "NÃO_APLICÁVEL",
+        "NAOAPLICAVEL": "NÃO_APLICÁVEL",
+        "PENDENTE": "PENDENTE",
+        "LIBERADA": "LIBERADA",
+        "EMANDAMENTO": "EM_ANDAMENTO",
+        "CONCLUIDA": "CONCLUÍDA",
+    }
+    return aliases.get(normalized)
+
+
+def _is_metadata_only_stage_update(payload):
+    """Keep old mobile autosave requests from ever changing a stage status.
+
+    Older pages sent ``registrar_historico=false`` together with the status that
+    happened to be rendered before the user tapped a status button.  Treating
+    those requests as fields-only is deliberately backward compatible and
+    protects phones that still have the old page open during a rollout.
+    """
+    return bool(payload.get("metadata_only")) or payload.get("registrar_historico") is False
+
+
+def _locked_work_and_stage(conn, work_id, code):
     work = _one(conn.execute(text("""
         select id,status,vehicle_entry_id
         from erp_work_orders
         where id=:work
         for update
     """), {"work": work_id}))
-    if not work: raise ValueError('O.S. nao encontrada.')
+    if not work:
+        raise ValueError("O.S. nao encontrada.")
     if work["status"] == "CONCLUIDA":
         raise ValueError("O.S. concluida tecnicamente deve ser reaberta antes de receber apontamentos.")
-    stage=_one(conn.execute(text('select * from erp_work_order_stages where work_order_id=:work and stage_code=:code for update'),{'work':work_id,'code':code}))
-    if not stage: raise ValueError('Etapa da O.S. nao encontrada.')
+    if work["status"] in {"CANCELADA", "ARQUIVADA"}:
+        raise ValueError("O.S. cancelada ou arquivada nao pode receber apontamentos.")
+    stage = _one(conn.execute(text("""
+        select * from erp_work_order_stages
+        where work_order_id=:work and stage_code=:code
+        for update
+    """), {"work": work_id, "code": code}))
+    if not stage:
+        raise ValueError("Etapa da O.S. nao encontrada.")
+    return work, stage
+
+
+def _metadata_value(payload, field, current):
+    """Use a field only when it was actually supplied by the caller.
+
+    Empty date controls mean "keep the current timestamp", matching the prior
+    ``coalesce`` behaviour and preventing a delayed browser event from clearing
+    dates entered by another save.
+    """
+    if field not in payload:
+        return current
+    value = payload.get(field)
+    if field in {"inicio", "termino"} and not value:
+        return current
+    if field in {"responsavel", "localizacao", "observacoes", "bloqueio_motivo"}:
+        return str(value or "")
+    return value
+
+
+def _stage_result(stage, work_status, *, replayed=False, metadata_only=False, changed=True):
+    return {
+        "replayed": replayed,
+        "metadata_only": metadata_only,
+        "changed": changed,
+        "status": stage["status"],
+        "input_code": stage_input_code(stage),
+        "work_order_status": work_status,
+    }
+
+
+def update_stage_metadata(conn, work_id, code, payload, actor):
+    """Persist stage fields without altering status, applicability or setup.
+
+    This is intentionally a distinct domain operation from a production
+    pointing.  It is safe to call from ``blur`` handlers on a mobile browser.
+    """
+    code = str(code).upper()
+    work, stage = _locked_work_and_stage(conn, work_id, code)
+    idempotency_key = str(payload.get("idempotency_key") or "").strip() or None
+    if idempotency_key:
+        replay = _one(conn.execute(text("""
+            select id from erp_work_order_stage_events where idempotency_key=:key
+        """), {"key": idempotency_key}))
+        if replay:
+            return _stage_result(
+                stage,
+                work["status"],
+                replayed=True,
+                metadata_only=True,
+                changed=False,
+            )
+
+    values = {
+        field: _metadata_value(payload, field, stage.get(field))
+        for field in ("responsavel", "localizacao", "inicio", "termino", "observacoes", "bloqueio_motivo")
+    }
+    conn.execute(text("""
+        update erp_work_order_stages
+        set responsavel=:responsavel,
+            localizacao=:localizacao,
+            inicio=:inicio,
+            termino=:termino,
+            observacoes=:observacoes,
+            bloqueio_motivo=:bloqueio_motivo
+        where id=:id
+    """), {"id": stage["id"], **values})
+    conn.execute(text("""
+        insert into erp_work_order_stage_events(
+            work_order_stage_id,action,status_anterior,novo_status,operador,
+            inicio,termino,localizacao,observacao,idempotency_key
+        ) values(
+            :stage,'METADADOS',:status,:status,:actor,
+            :inicio,:termino,:location,:note,:key
+        )
+    """), {
+        "stage": stage["id"],
+        "status": stage["status"],
+        "actor": actor,
+        "inicio": values["inicio"],
+        "termino": values["termino"],
+        "location": values["localizacao"],
+        "note": "Dados operacionais atualizados sem alterar o status da etapa.",
+        "key": idempotency_key,
+    })
+    return _stage_result(stage, work["status"], metadata_only=True)
+
+
+def update_stage(conn, work_id, code, payload, actor):
+    # Compatibility guard for pages served before the fields-only endpoint.
+    # A delayed old autosave must never be allowed to regress a fresh S/P/N/A
+    # production pointing.
+    if _is_metadata_only_stage_update(payload):
+        return update_stage_metadata(conn, work_id, code, payload, actor)
+
+    code = str(code).upper()
+    work, stage = _locked_work_and_stage(conn, work_id, code)
     idempotency_key = str(payload.get("idempotency_key") or "").strip() or None
     if idempotency_key:
         replay = _one(conn.execute(text("""
             select id,novo_status from erp_work_order_stage_events where idempotency_key=:key
         """), {"key": idempotency_key}))
         if replay:
-            return {"replayed": True, "status": replay["novo_status"]}
-    raw_status=str(payload.get('input_code') or payload.get('status') or '').upper()
-    normalized=''.join(c for c in unicodedata.normalize('NFKD', raw_status) if not unicodedata.combining(c))
-    aliases={
-        'N':'PENDENTE', 'P':'EM_ANDAMENTO', 'S':'CONCLUÍDA',
-        'N/A':'NÃO_APLICÁVEL', 'NA':'NÃO_APLICÁVEL',
-        'NAO_APLICAVEL':'NÃO_APLICÁVEL','CONCLUIDA':'CONCLUÍDA'
-    }
-    new=aliases.get(normalized, raw_status)
-    valid={'PENDENTE','LIBERADA','EM_ANDAMENTO','CONCLUÍDA','NÃO_APLICÁVEL'}
-    if new not in valid: raise ValueError('Status de etapa invalido.')
+            # The current row is authoritative even if a retry arrives after a
+            # later, valid change.  Never make the caller repaint an old state.
+            return _stage_result(stage, work["status"], replayed=True)
+
+    new = _stage_status_from_input(payload.get("input_code") or payload.get("status"))
+    if not new:
+        raise ValueError("Informe explicitamente o status da etapa.")
+
+    expected_raw = payload.get("expected_status")
+    if expected_raw not in (None, ""):
+        expected = _stage_status_from_input(expected_raw)
+        if not expected:
+            raise ValueError("Status esperado da etapa invalido.")
+        if expected != stage["status"]:
+            raise StageConflictError(
+                "A etapa foi alterada por outro apontamento. Atualize a tela antes de salvar."
+            )
+
+    # The technical history screen may correct its metadata after production
+    # is finalized, delivered or withdrawn.  It must never silently reopen a
+    # production stage while the work order remains closed, though.
+    if work["status"] in {"FINALIZADA", "ENTREGUE", "RETIRADA"}:
+        if new != stage["status"]:
+            raise StageConflictError(
+                "A O.S. esta encerrada. Reabra a O.S. explicitamente antes de alterar o status de uma etapa."
+            )
+        return update_stage_metadata(conn, work_id, code, payload, actor)
+
+    reopening = (
+        stage["status"] in {"CONCLUÍDA", "NÃO_APLICÁVEL"}
+        and new != stage["status"]
+    )
+    reopen_reason = str(payload.get("reopen_reason") or "").strip()
+    if reopening and not reopen_reason:
+        raise ValueError("Para reabrir uma etapa concluida ou nao aplicavel, informe o motivo.")
+
     # O apontamento é operacional: qualquer área pode iniciar ou concluir sua
     # própria etapa. As dependências permanecem apenas como orientação visual
     # no Kanban, sem bloquear o registro do operador.
@@ -1317,8 +1483,62 @@ def update_stage(conn, work_id, code, payload, actor):
         if new == "CONCLUÍDA" and not stage["termino"]
         else None
     )
-    conn.execute(text('update erp_work_order_stages set parametrizado=true,aplicavel=:applicable,status=:status,responsavel=:responsavel,localizacao=:localizacao,inicio=coalesce(:inicio,inicio),termino=coalesce(:termino,termino),observacoes=:notes,bloqueio_motivo=:blocked where id=:id'),{'applicable':new!='NÃO_APLICÁVEL','status':new,'responsavel':payload.get('responsavel'),'localizacao':payload.get('localizacao'),'inicio':started,'termino':finished,'notes':str(payload.get('observacoes') or ''),'blocked':str(payload.get('bloqueio_motivo') or ''),'id':stage['id']})
-    conn.execute(text('insert into erp_work_order_stage_events(work_order_stage_id,action,status_anterior,novo_status,operador,inicio,termino,localizacao,observacao,idempotency_key) values(:stage,:action,:old,:new,:actor,:inicio,:termino,:location,:note,:key)'),{'stage':stage['id'],'action':'APONTAMENTO','old':stage['status'],'new':new,'actor':actor,'inicio':started,'termino':finished,'location':payload.get('localizacao'),'note':str(payload.get('observacoes') or ''),'key':idempotency_key})
+    fields = {
+        field: _metadata_value(payload, field, stage.get(field))
+        for field in ("responsavel", "localizacao", "observacoes", "bloqueio_motivo")
+    }
+    # A reopened stage is no longer complete.  The event keeps the historic
+    # completion timestamp, while the current stage must not retain it merely
+    # because a browser posted the old disabled input value.
+    clear_finish = reopening
+    conn.execute(text("""
+        update erp_work_order_stages
+        set parametrizado=true,
+            aplicavel=:applicable,
+            status=:status,
+            responsavel=:responsavel,
+            localizacao=:localizacao,
+            inicio=coalesce(:inicio,inicio),
+            termino=case when :clear_finish then null else coalesce(:termino,termino) end,
+            observacoes=:notes,
+            bloqueio_motivo=:blocked
+        where id=:id
+    """), {
+        "applicable": new != "NÃO_APLICÁVEL",
+        "status": new,
+        "responsavel": fields["responsavel"],
+        "localizacao": fields["localizacao"],
+        "inicio": started,
+        "termino": finished,
+        "clear_finish": clear_finish,
+        "notes": fields["observacoes"],
+        "blocked": fields["bloqueio_motivo"],
+        "id": stage["id"],
+    })
+    event_note = str(payload.get("observacoes") or "")
+    if reopening:
+        event_note = f"Reabertura da etapa: {reopen_reason}" + (
+            f" | {event_note}" if event_note else ""
+        )
+    conn.execute(text("""
+        insert into erp_work_order_stage_events(
+            work_order_stage_id,action,status_anterior,novo_status,operador,
+            inicio,termino,localizacao,observacao,idempotency_key
+        ) values(
+            :stage,:action,:old,:new,:actor,:inicio,:termino,:location,:note,:key
+        )
+    """), {
+        "stage": stage["id"],
+        "action": "REABERTURA" if reopening else "APONTAMENTO",
+        "old": stage["status"],
+        "new": new,
+        "actor": actor,
+        "inicio": started,
+        "termino": finished,
+        "location": fields["localizacao"],
+        "note": event_note,
+        "key": idempotency_key,
+    })
     next_status = work["status"]
     completion_at = finished or stage.get("termino") or datetime.utcnow()
     if work["status"] in {"ATIVA", "EM_PRODUÇÃO"}:
@@ -1364,7 +1584,13 @@ def update_stage(conn, work_id, code, payload, actor):
             "note": transition_note,
         })
         recalculate_work_order_sequences(conn, actor)
-    return {"replayed": False, "status": new, "work_order_status": next_status}
+    updated_stage = {
+        **stage,
+        "status": new,
+        "parametrizado": True,
+        "aplicavel": new != "NÃO_APLICÁVEL",
+    }
+    return _stage_result(updated_stage, next_status)
 
 def update_work_order_location(conn, work_id, location, actor, idempotency_key=None):
     stage = _one(conn.execute(text("""

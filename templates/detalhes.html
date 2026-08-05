@@ -95,10 +95,10 @@
                 <div class="flex justify-between items-center">
                     <span class="font-bold text-slate-700 text-[11px] uppercase">{{ etapa }}</span>
                     <div class="flex gap-1">
-                        <button type="button" onclick="salvar('{{ etapa }}', 'N/A', this)" {% if not can_point %}disabled{% endif %} class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'N/A' %} bg-slate-600 text-white border-slate-800 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">N/A</button>
-                        <button type="button" onclick="salvar('{{ etapa }}', 'NÃO', this)" {% if not can_point %}disabled{% endif %} class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'NÃO' %} bg-red-500 text-white border-red-700 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">N</button>
-                        <button type="button" onclick="salvar('{{ etapa }}', 'PARCIAL', this)" {% if not can_point %}disabled{% endif %} class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'PARCIAL' %} bg-amber-500 text-white border-amber-700 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">P</button>
-                        <button type="button" onclick="salvar('{{ etapa }}', 'SIM', this)" {% if not can_point %}disabled{% endif %} class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'SIM' %} bg-green-500 text-white border-green-700 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">S</button>
+                        <button type="button" data-status-value="N/A" onclick="salvar('{{ etapa }}', 'N/A', this)" {% if not can_point %}disabled{% endif %} class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'N/A' %} bg-slate-600 text-white border-slate-800 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">N/A</button>
+                        <button type="button" data-status-value="NÃO" onclick="salvar('{{ etapa }}', 'NÃO', this)" {% if not can_point %}disabled{% endif %} class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'NÃO' %} bg-red-500 text-white border-red-700 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">N</button>
+                        <button type="button" data-status-value="PARCIAL" onclick="salvar('{{ etapa }}', 'PARCIAL', this)" {% if not can_point %}disabled{% endif %} class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'PARCIAL' %} bg-amber-500 text-white border-amber-700 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">P</button>
+                        <button type="button" data-status-value="SIM" onclick="salvar('{{ etapa }}', 'SIM', this)" {% if not can_point %}disabled{% endif %} class="w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 {% if status == 'SIM' %} bg-green-500 text-white border-green-700 {% else %} bg-slate-100 text-slate-400 border-slate-300 {% endif %}">S</button>
                     </div>
                 </div>
 
@@ -147,71 +147,151 @@
         window.feedbackTimer = setTimeout(() => box.classList.add('hidden'), 3200);
     }
 
-    function getPayload(row, statusOverride) {
+    function getStageInputs(row) {
         const inputs = row.querySelectorAll('input');
-        const responsavel = inputs[0].value || "";
-        const inicio = inputs[1].value || "";
-        const termino = inputs[2].value || "";
-        const status = statusOverride || row.dataset.status || "";
+        return {
+            responsavel: inputs[0].value || "",
+            inicio: inputs[1].value || "",
+            termino: inputs[2].value || ""
+        };
+    }
+
+    function getMetadataPayload(row) {
+        const fields = getStageInputs(row);
         return {
             chassi: {{ veiculo.chassi|tojson }},
             etapa: row.dataset.etapa,
-            status: status,
-            input_code: erpInputCode(status),
-            responsavel: responsavel,
-            inicio: inicio,
-            termino: termino,
+            responsavel: fields.responsavel,
+            inicio: fields.inicio,
+            termino: fields.termino,
             localizacao: row.dataset.location || "",
             observacoes: row.dataset.note || ""
         };
     }
 
+    function getStatusPayload(row, status) {
+        return {
+            chassi: {{ veiculo.chassi|tojson }},
+            etapa: row.dataset.etapa,
+            status: status,
+            input_code: erpInputCode(status),
+            expected_status: erpInputCode(row.dataset.status || "")
+        };
+    }
+
+    function metadataFingerprint(row) {
+        const values = getMetadataPayload(row);
+        return [
+            values.responsavel,
+            values.inicio,
+            values.termino,
+            values.localizacao,
+            values.observacoes
+        ].join("\u001f");
+    }
+
+    const stageQueues = new WeakMap();
+
+    function enqueueStage(row, task) {
+        const previous = stageQueues.get(row) || Promise.resolve();
+        const next = previous.catch(() => undefined).then(task);
+        stageQueues.set(row, next);
+        next.then(
+            () => { if (stageQueues.get(row) === next) stageQueues.delete(row); },
+            () => { if (stageQueues.get(row) === next) stageQueues.delete(row); }
+        );
+        return next;
+    }
+
+    function uiStatusFromCanonical(status) {
+        return {
+            "PENDENTE": "NÃO",
+            "EM_ANDAMENTO": "PARCIAL",
+            "CONCLUÍDA": "SIM",
+            "NÃO_APLICÁVEL": "N/A"
+        }[status] || status;
+    }
+
+    function setStageVisual(row, status) {
+        const styles = {
+            "SIM": "bg-green-500 text-white border-green-700",
+            "NÃO": "bg-red-500 text-white border-red-700",
+            "PARCIAL": "bg-amber-500 text-white border-amber-700",
+            "N/A": "bg-slate-600 text-white border-slate-800"
+        };
+        row.querySelectorAll('[data-status-value]').forEach(button => {
+            const active = button.dataset.statusValue === status;
+            button.className = `w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 ${active ? (styles[status] || "") : "bg-slate-100 text-slate-400 border-slate-300"}`;
+        });
+    }
+
     async function salvar(etapa, status, btn) {
         const row = getRow(btn);
-        const payload = getPayload(row, status);
-        payload.registrar_historico = true;
-        payload.idempotency_key = crypto.randomUUID();
-        const endpoint = ERP_MODE
-            ? `/api/erp/work-orders/${ERP_WORK_ORDER_ID}/stages/${encodeURIComponent(row.dataset.etapa)}`
-            : '/apontar';
-        btn.disabled = true;
-        try {
-            const res = await fetch(endpoint, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
-            if (!res.ok) {
-                const body = await res.json().catch(() => ({}));
-                throw new Error(body.error || body.detail || "Não foi possível salvar a etapa.");
+        return enqueueStage(row, async () => {
+            const currentStatus = row.dataset.status || "";
+            const currentCode = erpInputCode(currentStatus);
+            const nextCode = erpInputCode(status);
+            const payload = getStatusPayload(row, status);
+            payload.registrar_historico = true;
+            payload.idempotency_key = crypto.randomUUID();
+            if (["S", "N/A"].includes(currentCode) && nextCode !== currentCode) {
+                const reason = window.prompt("Informe o motivo para reabrir esta etapa:");
+                if (!reason || !reason.trim()) {
+                    feedback("A reabertura exige um motivo.", true);
+                    return;
+                }
+                payload.reopen_reason = reason.trim();
             }
-            row.dataset.status = status;
-            btn.parentElement.querySelectorAll('button').forEach(b => {
-                b.className = "w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 bg-slate-100 text-slate-400 border-slate-300";
-            });
-            if (status === 'SIM') btn.className = "w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 bg-green-500 text-white border-green-700";
-            else if (status === 'NÃO') btn.className = "w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 bg-red-500 text-white border-red-700";
-            else if (status === 'PARCIAL') btn.className = "w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 bg-amber-500 text-white border-amber-700";
-            else btn.className = "w-10 h-10 rounded-lg font-bold text-[9px] border-b-2 bg-slate-600 text-white border-slate-800";
-            feedback(`${etapa}: ${status} registrado.`);
-        } catch (error) {
-            feedback(error.message || "Não foi possível salvar a etapa.", true);
-        } finally {
-            btn.disabled = false;
-        }
+            const endpoint = ERP_MODE
+                ? `/api/erp/work-orders/${ERP_WORK_ORDER_ID}/stages/${encodeURIComponent(row.dataset.etapa)}`
+                : '/apontar';
+            const buttons = [...row.querySelectorAll('[data-status-value]')];
+            buttons.forEach(button => { button.disabled = true; });
+            try {
+                const res = await fetch(endpoint, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
+                const body = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    throw new Error(body.error || body.detail || "Não foi possível salvar a etapa.");
+                }
+                const canonical = body.stage_status || body.status || status;
+                const actualStatus = uiStatusFromCanonical(canonical);
+                row.dataset.status = actualStatus;
+                setStageVisual(row, actualStatus);
+                feedback(`${etapa}: ${actualStatus} registrado.`);
+            } catch (error) {
+                feedback(error.message || "Não foi possível salvar a etapa.", true);
+            } finally {
+                buttons.forEach(button => { button.disabled = false; });
+            }
+        });
     }
 
     async function salvarCampos(el) {
         const row = getRow(el);
-        const payload = getPayload(row);
-        payload.registrar_historico = false;
-        payload.idempotency_key = crypto.randomUUID();
-        const endpoint = ERP_MODE
-            ? `/api/erp/work-orders/${ERP_WORK_ORDER_ID}/stages/${encodeURIComponent(row.dataset.etapa)}`
-            : '/apontar';
-        const res = await fetch(endpoint, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
-        if (!res.ok) {
-            const body = await res.json().catch(() => ({}));
-            feedback(body.error || body.detail || "Não foi possível salvar os dados da etapa.", true);
-        } else {
+        if (row.dataset.metadataFingerprint === metadataFingerprint(row)) return;
+        return enqueueStage(row, async () => {
+            const fingerprint = metadataFingerprint(row);
+            if (row.dataset.metadataFingerprint === fingerprint) return;
+            const payload = getMetadataPayload(row);
+            payload.metadata_only = true;
+            payload.registrar_historico = false;
+            payload.idempotency_key = crypto.randomUUID();
+            const endpoint = ERP_MODE
+                ? `/api/erp/work-orders/${ERP_WORK_ORDER_ID}/stage-details/${encodeURIComponent(row.dataset.etapa)}`
+                : '/apontar';
+            const res = await fetch(endpoint, {
+                method: ERP_MODE ? 'PATCH' : 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            });
+            if (!res.ok) {
+                const body = await res.json().catch(() => ({}));
+                feedback(body.error || body.detail || "Não foi possível salvar os dados da etapa.", true);
+                return;
+            }
+            row.dataset.metadataFingerprint = fingerprint;
             feedback(`${row.dataset.etapa}: dados atualizados.`);
-        }
+        });
     }
 
     async function salvarLocalizacao(sel) {
@@ -238,6 +318,10 @@
         input.value = {{ user_name|tojson }};
         salvarCampos(input);
     }
+
+    document.querySelectorAll('.etapa-row').forEach(row => {
+        row.dataset.metadataFingerprint = metadataFingerprint(row);
+    });
     </script>
 </body>
 </html>

@@ -1694,30 +1694,101 @@ async def salvar(request: Request, data: dict = Body(...), db: Session = Depends
         return legacy_disabled_response()
     ch = str(data["chassi"]).strip()
     et = normalize_etapa(data["etapa"])
-    st = normalize_status(data.get("status", ""))
-    if not st:
-        st = "N/A"
     responsavel = str(data.get("responsavel", "")).strip()
     inicio = parse_local_dt(data.get("inicio"))
     termino = parse_local_dt(data.get("termino"))
 
     registrar_historico = bool(data.get("registrar_historico", True))
+    metadata_only = bool(data.get("metadata_only")) or data.get("registrar_historico") is False
 
-    # Atualiza ou cria o apontamento
-    db.query(models.Apontamento).filter(
+    existing = db.query(models.Apontamento).filter(
         func.trim(cast(models.Apontamento.chassi, String)) == ch,
         func.trim(cast(models.Apontamento.etapa, String)) == et
-    ).delete()
+    ).with_for_update().first()
 
-    db.add(models.Apontamento(
-        chassi=ch,
-        etapa=et,
-        status=st,
-        responsavel=responsavel,
-        inicio=inicio,
-        termino=termino,
-        localizacao=None
-    ))
+    # A mobile field autosave must not reuse a stale visual status.  Preserve
+    # legacy data as well, even though the shared ERP is the active path.
+    if metadata_only:
+        if existing:
+            existing.responsavel = responsavel
+            existing.inicio = inicio or existing.inicio
+            existing.termino = termino or existing.termino
+            if "localizacao" in data:
+                existing.localizacao = str(data.get("localizacao") or "").strip()
+            status_atual = existing.status
+        else:
+            # Preserve the former ability to save fields for a newly rendered
+            # legacy stage, without inventing a completed production status.
+            status_atual = "N/A"
+            db.add(models.Apontamento(
+                chassi=ch,
+                etapa=et,
+                status=status_atual,
+                responsavel=responsavel,
+                inicio=inicio,
+                termino=termino,
+                localizacao=str(data.get("localizacao") or "").strip() or None,
+            ))
+        db.commit()
+        return {"status": "ok", "metadata_only": True, "stage_status": status_atual}
+
+    raw_status = data.get("status") or data.get("input_code")
+    if raw_status in (None, ""):
+        return JSONResponse(
+            {"status": "erro", "detail": "Informe explicitamente o status da etapa."},
+            status_code=400,
+        )
+    st = normalize_status(raw_status)
+
+    # Falha fechada para uma tela legada aberta antes da alteração mais recente.
+    # Assim como no ERP compartilhado, ela deve ser atualizada antes de alterar
+    # um apontamento já existente.
+    expected_raw = data.get("expected_status")
+    if existing and expected_raw in (None, ""):
+        return JSONResponse({
+            "status": "erro",
+            "detail": "Esta tela esta desatualizada. Atualize a pagina antes de registrar o status da etapa.",
+        }, status_code=409)
+    if existing and expected_raw not in (None, ""):
+        expected = normalize_status(expected_raw)
+        if expected != existing.status:
+            return JSONResponse({
+                "status": "erro",
+                "detail": "A etapa foi alterada por outro apontamento. Atualize a tela antes de salvar.",
+            }, status_code=409)
+
+    reopening = bool(existing and existing.status in {"SIM", "N/A"} and st != existing.status)
+    reopen_reason = str(data.get("reopen_reason") or "").strip()
+    if reopening and not reopen_reason:
+        return JSONResponse({
+            "status": "erro",
+            "detail": "Para reabrir uma etapa concluida ou nao aplicavel, informe o motivo.",
+        }, status_code=400)
+
+    # Atualiza a linha existente em vez de apagá-la e recriá-la. Além de manter
+    # a rastreabilidade, isso impede um clique de status de apagar dados de
+    # responsável, data ou localização gravados pelo autosave.
+    if existing:
+        existing.status = st
+        if "responsavel" in data:
+            existing.responsavel = responsavel
+        if inicio:
+            existing.inicio = inicio
+        if termino:
+            existing.termino = termino
+        if "localizacao" in data:
+            existing.localizacao = str(data.get("localizacao") or "").strip() or None
+    else:
+        existing = models.Apontamento(
+            chassi=ch,
+            etapa=et,
+            status=st,
+            responsavel=responsavel,
+            inicio=inicio,
+            termino=termino,
+            localizacao=str(data.get("localizacao") or "").strip() or None,
+        )
+        db.add(existing)
 
     v = db.query(models.Veiculo).filter(
         func.trim(cast(models.Veiculo.chassi, String)) == ch
@@ -1730,14 +1801,14 @@ async def salvar(request: Request, data: dict = Body(...), db: Session = Depends
             modelo=v.modelo if v else "N/A",
             etapa=et,
             status=st,
-            responsavel=responsavel,
-            inicio=inicio,
-            termino=termino,
-            localizacao=None
+            responsavel=existing.responsavel,
+            inicio=existing.inicio,
+            termino=existing.termino,
+            localizacao=existing.localizacao
         ))
 
     db.commit()
-    return {"status": "ok"}
+    return {"status": "ok", "stage_status": st}
 
 @app.post("/veiculo_localizacao")
 async def atualizar_localizacao(request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
@@ -2299,10 +2370,47 @@ async def erp_stage(work_id: str, stage_code: str, request: Request, data: dict 
         and has_permission(user, authz.MES_STAGE_WRITE)
     ):
         return permission_denied(api=True)
+    if (
+        not erp_service._is_metadata_only_stage_update(data)
+        and data.get("expected_status") in (None, "")
+    ):
+        return JSONResponse({
+            "ok": False,
+            "error": "Esta tela esta desatualizada. Atualize a pagina antes de registrar o status da etapa.",
+        }, status_code=409)
     try:
         with database.engine.begin() as conn: result = erp_service.update_stage(conn, work_id, stage_code, data, user.nome)
         return {"ok": True, **result}
+    except erp_service.StageConflictError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
     except ValueError as exc: return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@app.patch("/api/erp/work-orders/{work_id}/stage-details/{stage_code:path}")
+async def erp_stage_details(
+    work_id: str,
+    stage_code: str,
+    request: Request,
+    data: dict = Body(...),
+    db: Session = Depends(database.get_db),
+):
+    """Autosave metadata without exposing the stage status to a stale form."""
+    if not erp_feature_enabled():
+        return erp_disabled_response()
+    user = require_login(request, db)
+    if not user:
+        return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not (
+        has_permission(user, authz.MES_WORK_ORDERS_MANAGE)
+        and has_permission(user, authz.MES_STAGE_WRITE)
+    ):
+        return permission_denied(api=True)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.update_stage_metadata(conn, work_id, stage_code, data, user.nome)
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 @app.post("/api/erp/work-orders/{work_id}/location")
 async def erp_location(
