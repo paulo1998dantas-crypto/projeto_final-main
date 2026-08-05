@@ -90,6 +90,7 @@
             <div class="bg-white p-4 rounded-xl border shadow-sm space-y-3 etapa-row"
                  data-etapa="{{ etapa }}"
                  data-status="{{ status }}"
+                 data-has-operational-pointing="{{ '1' if ap and ap.has_operational_pointing else '0' }}"
                  data-location="{{ ap.localizacao if ap and ap.localizacao else '' }}"
                  data-note="{{ ap.observacoes if ap and ap.observacoes else '' }}">
                 <div class="flex justify-between items-center">
@@ -232,7 +233,8 @@
             const currentCode = erpInputCode(currentStatus);
             const nextCode = erpInputCode(status);
             const statusChanged = currentCode !== "?" && nextCode !== currentCode;
-            if (statusChanged && !window.confirm(
+            const requiresConfirmation = statusChanged && row.dataset.hasOperationalPointing === "1";
+            if (requiresConfirmation && !window.confirm(
                 `A etapa ${etapa} já possui o apontamento ${currentCode}. Tem certeza que gostaria de alterar o apontamento para ${nextCode}?`
             )) {
                 feedback(`${etapa}: alteração cancelada.`);
@@ -241,7 +243,7 @@
             const payload = getStatusPayload(row, status);
             payload.registrar_historico = true;
             payload.idempotency_key = crypto.randomUUID();
-            if (statusChanged) payload.confirmed_status_change = true;
+            if (requiresConfirmation) payload.confirmed_status_change = true;
             if (["S", "N/A"].includes(currentCode) && nextCode !== currentCode) {
                 const reason = window.prompt("Informe o motivo para reabrir esta etapa:");
                 if (!reason || !reason.trim()) {
@@ -264,6 +266,7 @@
                 const canonical = body.stage_status || body.status || status;
                 const actualStatus = uiStatusFromCanonical(canonical);
                 row.dataset.status = actualStatus;
+                row.dataset.hasOperationalPointing = "1";
                 setStageVisual(row, actualStatus);
                 feedback(`${etapa}: ${actualStatus} registrado.`);
             } catch (error) {

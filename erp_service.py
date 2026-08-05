@@ -1108,7 +1108,16 @@ def work_order_detail(conn, work_id):
         # Compatibilidade idempotente para rascunhos criados antes da migração.
         _ensure_stage_rows(conn, work_id, work)
     stages = [dict(row._mapping) for row in conn.execute(text("""
-        select * from erp_work_order_stages where work_order_id=:id order by ordem
+        select s.*,
+               exists(
+                   select 1
+                   from erp_work_order_stage_events event
+                   where event.work_order_stage_id=s.id
+                     and event.action in ('APONTAMENTO','REABERTURA')
+               ) as has_operational_pointing
+        from erp_work_order_stages s
+        where s.work_order_id=:id
+        order by s.ordem
     """), {"id": work_id})]
     (
         work["inicio_ciclo_produtivo"],
@@ -1377,6 +1386,24 @@ def _unfinished_applicable_stage_codes(conn, work_id, completing_stage_id=None):
     ]
 
 
+def _has_operational_pointing(conn, stage_id):
+    """Return whether a stage has already been pointed after parametrization.
+
+    ``PARAMETRIZACAO`` records define the initial production plan and must not
+    make the first real N/P/S/N-A change ask for confirmation.  After the
+    first operational pointing (or re-opening), every status change is a
+    correction and therefore requires explicit confirmation from the user.
+    """
+    return bool(conn.execute(text("""
+        select exists(
+            select 1
+            from erp_work_order_stage_events
+            where work_order_stage_id=:stage
+              and action in ('APONTAMENTO','REABERTURA')
+        )
+    """), {"stage": stage_id}).scalar_one())
+
+
 def _metadata_value(payload, field, current):
     """Use a field only when it was actually supplied by the caller.
 
@@ -1507,8 +1534,8 @@ def update_stage(conn, work_id, code, payload, actor):
 
     status_changed = new != stage["status"]
     if (
-        stage_input_code(stage) != "?"
-        and status_changed
+        status_changed
+        and _has_operational_pointing(conn, stage["id"])
         and payload.get("confirmed_status_change") is not True
     ):
         raise ValueError(

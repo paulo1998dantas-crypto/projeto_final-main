@@ -67,6 +67,7 @@ class MesStageWriteSafetyTests(unittest.TestCase):
         source = inspect.getsource(erp_service.update_stage)
         self.assertIn("expected_status", source)
         self.assertIn("confirmed_status_change", source)
+        self.assertIn("_has_operational_pointing", source)
         self.assertIn("StageConflictError", source)
         self.assertIn("reopen_reason", source)
         self.assertIn("REABERTURA", source)
@@ -133,10 +134,13 @@ class MesStageWriteSafetyTests(unittest.TestCase):
             "inicio": old_finish,
             "termino": old_finish,
         }
-        with patch.object(
-            erp_service,
-            "_locked_work_and_stage",
-            return_value=(work, stage),
+        with (
+            patch.object(
+                erp_service,
+                "_locked_work_and_stage",
+                return_value=(work, stage),
+            ),
+            patch.object(erp_service, "_has_operational_pointing", return_value=True),
         ):
             erp_service.update_stage(
                 connection,
@@ -166,10 +170,13 @@ class MesStageWriteSafetyTests(unittest.TestCase):
             "inicio": None,
             "termino": None,
         }
-        with patch.object(
-            erp_service,
-            "_locked_work_and_stage",
-            return_value=(work, stage),
+        with (
+            patch.object(
+                erp_service,
+                "_locked_work_and_stage",
+                return_value=(work, stage),
+            ),
+            patch.object(erp_service, "_has_operational_pointing", return_value=True),
         ):
             with self.assertRaisesRegex(ValueError, "Confirme a alteracao"):
                 erp_service.update_stage(
@@ -181,6 +188,37 @@ class MesStageWriteSafetyTests(unittest.TestCase):
                 )
 
         connection.execute.assert_not_called()
+
+    def test_first_operational_pointing_after_parametrization_needs_no_confirmation(self):
+        """Initial N/P/S/N-A parametrization is not an operational pointing."""
+        connection = Mock()
+        work = {"status": "ATIVA", "vehicle_entry_id": "entry"}
+        stage = {
+            "id": "stage",
+            "status": erp_service._stage_status_from_input("N"),
+            "parametrizado": True,
+            "aplicavel": True,
+            "inicio": None,
+            "termino": None,
+        }
+        with (
+            patch.object(
+                erp_service,
+                "_locked_work_and_stage",
+                return_value=(work, stage),
+            ),
+            patch.object(erp_service, "_has_operational_pointing", return_value=False),
+            patch.object(erp_service, "recalculate_work_order_sequences"),
+        ):
+            erp_service.update_stage(
+                connection,
+                "work-order",
+                "VIDROS",
+                {"input_code": "S", "expected_status": "N"},
+                "OPERADOR",
+            )
+
+        self.assertTrue(connection.execute.called)
 
     def test_release_is_blocked_until_other_applicable_stages_are_done(self):
         connection = Mock()
@@ -204,6 +242,7 @@ class MesStageWriteSafetyTests(unittest.TestCase):
                 "_unfinished_applicable_stage_codes",
                 return_value=["EXPE", "ELÉTRICA"],
             ) as pending_stages,
+            patch.object(erp_service, "_has_operational_pointing", return_value=True),
         ):
             with self.assertRaisesRegex(ValueError, "EXPE, ELÉTRICA"):
                 erp_service.update_stage(
@@ -253,6 +292,9 @@ class MesStageWriteSafetyTests(unittest.TestCase):
         self.assertIn("/stage-details/", source)
         self.assertIn("status: status", source)
         self.assertIn("expected_status: erpInputCode(row.dataset.status", source)
+        self.assertIn("data-has-operational-pointing", source)
+        self.assertIn("hasOperationalPointing", source)
+        self.assertIn("requiresConfirmation", source)
         self.assertIn("Tem certeza que gostaria de alterar o apontamento", source)
         self.assertIn("payload.confirmed_status_change = true", source)
 
@@ -260,7 +302,9 @@ class MesStageWriteSafetyTests(unittest.TestCase):
         template = Path(__file__).with_name("templates") / "gestao_os.html"
         source = template.read_text(encoding="utf-8")
         self.assertIn("data-input-code=", source)
+        self.assertIn("data-has-operational-pointing", source)
         self.assertIn("expected_status:previousCode", source)
+        self.assertIn("requiresConfirmation", source)
         self.assertIn("reopen_reason", source)
         self.assertIn("Tem certeza que gostaria de alterar o apontamento", source)
         self.assertIn("payload.confirmed_status_change=true", source)
