@@ -85,6 +85,8 @@ def _delay_label(planned, finished, status):
 
 
 def _situation(row):
+    if row.get("report_source") == "VEHICLE_ENTRY":
+        return "AGUARDANDO O.S."
     return work_order_situation(
         row.get("status") or row.get("entry_status"),
         row.get("tipo_servico"),
@@ -123,35 +125,66 @@ def _query_report_data(conn):
             order by e.item_number
         """))
     ]
-    if not work_orders:
+    awaiting_entries = [
+        dict(row._mapping) for row in conn.execute(text("""
+            select
+                e.id,e.item_number,e.status as entry_status,e.data_chegada,
+                e.cliente_nome,e.observacoes as entry_notes,e.avarias,
+                v.chassi,v.marca,v.modelo,v.versao,v.mmv
+            from erp_vehicle_entries e
+            join erp_vehicles v on v.id=e.vehicle_id
+            left join erp_work_orders w on w.vehicle_entry_id=e.id
+            where w.id is null
+            order by e.item_number
+        """))
+    ]
+    for entry in awaiting_entries:
+        # A entrada não é uma O.S. e deve continuar sendo apenas uma fila do
+        # PCP. O marcador permite que a exportação a represente sem inventar
+        # número de O.S., programação ou apontamentos produtivos.
+        entry.update({
+            "report_source": "VEHICLE_ENTRY",
+            "status": "AGUARDANDO_O_S",
+            "stage_configuration_status": "PENDENTE",
+            "technical_status": "ABERTA",
+            "purchase_orders": "",
+        })
+
+    report_rows = sorted(
+        [*work_orders, *awaiting_entries],
+        key=lambda row: (row.get("item_number") is None, row.get("item_number") or 0),
+    )
+    if not report_rows:
         return [], {}, {}, {}
-    ids = [row["id"] for row in work_orders]
+
+    work_order_ids = [row["id"] for row in work_orders]
     stages = defaultdict(dict)
-    for result in conn.execute(text("""
-        select * from erp_work_order_stages
-        where work_order_id=any(:ids)
-        order by work_order_id,ordem
-    """), {"ids": ids}):
-        row = dict(result._mapping)
-        stages[row["work_order_id"]][row["stage_code"]] = row
     schedules = defaultdict(list)
-    for result in conn.execute(text("""
-        select * from erp_work_order_schedules
-        where work_order_id=any(:ids)
-        order by work_order_id,created_at,id
-    """), {"ids": ids}):
-        row = dict(result._mapping)
-        schedules[row["work_order_id"]].append(row)
     observations = defaultdict(list)
-    for result in conn.execute(text("""
-        select work_order_id,observacao
-        from erp_work_order_status_history
-        where work_order_id=any(:ids)
-          and nullif(trim(coalesce(observacao,'')),'') is not null
-        order by work_order_id,created_at
-    """), {"ids": ids}):
-        observations[result._mapping["work_order_id"]].append(result._mapping["observacao"])
-    return work_orders, stages, schedules, observations
+    if work_order_ids:
+        for result in conn.execute(text("""
+            select * from erp_work_order_stages
+            where work_order_id=any(:ids)
+            order by work_order_id,ordem
+        """), {"ids": work_order_ids}):
+            row = dict(result._mapping)
+            stages[row["work_order_id"]][row["stage_code"]] = row
+        for result in conn.execute(text("""
+            select * from erp_work_order_schedules
+            where work_order_id=any(:ids)
+            order by work_order_id,created_at,id
+        """), {"ids": work_order_ids}):
+            row = dict(result._mapping)
+            schedules[row["work_order_id"]].append(row)
+        for result in conn.execute(text("""
+            select work_order_id,observacao
+            from erp_work_order_status_history
+            where work_order_id=any(:ids)
+              and nullif(trim(coalesce(observacao,'')),'') is not null
+            order by work_order_id,created_at
+        """), {"ids": work_order_ids}):
+            observations[result._mapping["work_order_id"]].append(result._mapping["observacao"])
+    return report_rows, stages, schedules, observations
 
 
 def _report_row(row, stage_map, schedule_rows, status_notes, max_schedules):

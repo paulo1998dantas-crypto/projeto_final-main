@@ -1,7 +1,7 @@
 from datetime import date
 import unittest
 
-from erp_report import _report_row
+from erp_report import STAGE_HEADERS, _query_report_data, _report_row
 
 
 class MesReportSemanticsTests(unittest.TestCase):
@@ -72,6 +72,74 @@ class MesReportSemanticsTests(unittest.TestCase):
         work.update({"status": "FINALIZADA", "tipo_servico": "INSTALAÇÃO_DE_ACESSÓRIO"})
         row = _report_row(work, {}, [], [], 0)
         self.assertEqual(row["SITUAÇÃO"], "FINALIZADA OUTROS")
+
+    def test_vehicle_entry_without_work_order_is_exported_as_awaiting_os(self):
+        entry = {
+            "id": "entry-3112",
+            "report_source": "VEHICLE_ENTRY",
+            "status": "AGUARDANDO_O_S",
+            "entry_status": "AGUARDANDO_O_S",
+            "stage_configuration_status": "PENDENTE",
+            "technical_status": "ABERTA",
+            "item_number": 3112,
+            "data_chegada": date(2026, 8, 5),
+            "cliente_nome": "CLIENTE TESTE",
+            "entry_notes": "Entrada registrada; aguardando definição da O.S.",
+            "avarias": "NÃO",
+            "chassi": "9V8VPFC3XTA008976",
+            "marca": "MERCEDES-BENZ",
+            "modelo": "SPRINTER 417",
+            "versao": "FURGÃO",
+            "mmv": "",
+            "purchase_orders": "",
+        }
+
+        row = _report_row(entry, {}, [], [], 1)
+
+        self.assertEqual(row["ITEM"], "JI - 3112")
+        self.assertEqual(row["SITUAÇÃO"], "AGUARDANDO O.S.")
+        self.assertEqual(row["DATA A CONSIDERAR"], date(2026, 8, 5))
+        self.assertEqual(row["CHASSI"], "9V8VPFC3XTA008976")
+        self.assertEqual(row["DATA ENTREGA"], None)
+        self.assertTrue(all(row[header] == "?" for header in STAGE_HEADERS))
+
+    def test_report_query_includes_vehicle_entries_without_work_order(self):
+        class FakeRow:
+            def __init__(self, value):
+                self._mapping = value
+
+        class FakeConnection:
+            def __init__(self):
+                self.statements = []
+
+            def execute(self, statement, _params=None):
+                sql = str(statement)
+                self.statements.append(sql)
+                if "where w.id is null" in sql:
+                    return [FakeRow({
+                        "id": "entry-3112",
+                        "item_number": 3112,
+                        "entry_status": "AGUARDANDO_O_S",
+                        "data_chegada": date(2026, 8, 5),
+                        "cliente_nome": "CLIENTE TESTE",
+                        "entry_notes": "",
+                        "avarias": "NÃO",
+                        "chassi": "9V8VPFC3XTA008976",
+                        "marca": "MERCEDES-BENZ",
+                        "modelo": "SPRINTER 417",
+                        "versao": "FURGÃO",
+                        "mmv": "",
+                    })]
+                return []
+
+        rows, stages, schedules, observations = _query_report_data(FakeConnection())
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["report_source"], "VEHICLE_ENTRY")
+        self.assertEqual(rows[0]["status"], "AGUARDANDO_O_S")
+        self.assertEqual(dict(stages), {})
+        self.assertEqual(dict(schedules), {})
+        self.assertEqual(dict(observations), {})
 
 
 if __name__ == "__main__":
