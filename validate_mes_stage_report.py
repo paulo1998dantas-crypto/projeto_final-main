@@ -64,23 +64,30 @@ def main():
             actor,
         )
         assert len(partial["pending_stages"]) == 10
-        choices = {code: "N" for code, _, _ in STAGES}
-        choices.update({"VIDROS": "S", "A/C": "N/A", "DESMONT": "P"})
+        # LIBERAÇÃO is only the final production pointing.  All other
+        # applicable stages must already be concluded or not applicable.
+        choices = {code: "S" for code, _, _ in STAGES}
+        choices.update({"A/C": "N/A", "PREP": "N", "LIBERAÇÃO": "N"})
         completed = configure_stages(
             connection, work["id"], {"stages": choices, "complete": True}, actor,
         )
         assert completed["complete"] is True
         activate_work_order(connection, work["id"], actor)
 
-        # Qualquer etapa P/S inicia a produção; LIBERAÇÃO concluída fecha o ciclo.
+        # Qualquer etapa P/S inicia a produção; LIBERAÇÃO concluída fecha o
+        # ciclo somente depois de todas as etapas aplicáveis.
         started = update_stage(
             connection, work["id"], "PREP",
-            {"input_code": "P", "idempotency_key": str(uuid4())}, actor,
+            {"input_code": "P", "confirmed_status_change": True, "idempotency_key": str(uuid4())}, actor,
         )
         assert started["work_order_status"] == "EM_PRODUÇÃO"
+        update_stage(
+            connection, work["id"], "PREP",
+            {"input_code": "S", "confirmed_status_change": True, "idempotency_key": str(uuid4())}, actor,
+        )
         completed_cycle = update_stage(
             connection, work["id"], "LIBERAÇÃO",
-            {"input_code": "S", "idempotency_key": str(uuid4())}, actor,
+            {"input_code": "S", "confirmed_status_change": True, "idempotency_key": str(uuid4())}, actor,
         )
         assert completed_cycle["work_order_status"] == "FINALIZADA"
         cycle_detail = work_order_detail(connection, work["id"])

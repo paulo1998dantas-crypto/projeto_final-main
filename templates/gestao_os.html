@@ -80,7 +80,7 @@ dialog{width:min(1480px,98vw);max-height:96vh;border:0;border-radius:9px;padding
     <header class="section-head"><h3>Programação e encerramento</h3><span class="muted">A data inicial vem da abertura da O.S.; alterações aqui são reprogramações.</span></header>
     <div class="lifecycle">
       {% if current_user.can("mes.schedule.manage") %}<div><h4>Reprogramar entrega</h4><div class="form-row"><label>Nova data<input id="schedule-date" type="date"></label><label>Motivo<input id="schedule-reason" placeholder="Motivo obrigatório"></label><button class="btn primary" type="button" onclick="schedule()">Registrar</button></div></div>{% endif %}
-      {% if current_user.can("mes.finalize") %}<div><h4>Finalização, entrega ou retirada</h4><div class="form-row"><label>Status<select id="closing-status"><option value="FINALIZADA">Produção finalizada</option><option value="ENTREGUE">Entregue</option><option value="RETIRADA">Retirada</option></select></label><label>Data/hora<input id="closing-date" type="datetime-local"></label><label>Observação<input id="closing-note" placeholder="Condição final, entrega, responsável..."></label><button class="btn success" type="button" onclick="closeWork()">Registrar</button></div></div>{% endif %}
+      {% if current_user.can("mes.finalize") %}<div><h4>Finalização, entrega ou retirada</h4><p class="muted">Nenhum encerramento é gravado automaticamente: selecione a ação, confira a data/hora e clique em Registrar.</p><div class="form-row"><label>Status<select id="closing-status"><option value="">Selecione uma ação de encerramento...</option><option value="FINALIZADA">Produção finalizada</option><option value="ENTREGUE">Entregue</option><option value="RETIRADA">Retirada</option></select></label><label>Data/hora<input id="closing-date" type="datetime-local"></label><label>Observação<input id="closing-note" placeholder="Condição final, entrega, responsável..."></label><button class="btn success" type="button" onclick="closeWork()">Registrar</button></div></div>{% endif %}
     </div>
   </section>{% endif %}
   <section class="section">
@@ -237,6 +237,108 @@ async function closeWork(){
     document.getElementById('view').value=status==='FINALIZADA'?'FINISHED':'DELIVERED';render();
     message(`O.S. ${w.numero_os}: ${status.replaceAll('_',' ')}. Historico preservado.`);
   }catch(error){message(error.message,true)}
+}
+
+/*
+ * Canonical write guards for the technical O.S. screen.  They deliberately
+ * live after the compatibility functions above so every action button uses
+ * the same confirmed command contract as the mobile production card.
+ */
+function resetClosingForm(){
+  const status=document.getElementById('closing-status');
+  const dateControl=document.getElementById('closing-date');
+  const note=document.getElementById('closing-note');
+  if(status){
+    status.value='';
+    const placeholder=status.querySelector('option[value=""]');
+    if(placeholder)placeholder.textContent='Selecione uma ação de encerramento...';
+  }
+  if(dateControl)dateControl.value='';
+  if(note)note.value='';
+}
+
+function prepareClosingForm(){
+  const status=document.getElementById('closing-status');
+  const dateControl=document.getElementById('closing-date');
+  if(status&&status.value&&dateControl&&!dateControl.value){
+    dateControl.value=new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16);
+  }
+}
+
+const openingDetailWithClosingReset=openDetail;
+openDetail=async function(id){
+  await openingDetailWithClosingReset(id);
+  resetClosingForm();
+};
+
+const closingStatusControl=document.getElementById('closing-status');
+if(closingStatusControl)closingStatusControl.addEventListener('change',prepareClosingForm);
+
+async function saveStage(button){
+  const row=button.closest('tr'),work=state.detail.work_order;
+  const start=row.querySelector('.stage-start').value;
+  const finish=row.querySelector('.stage-finish').value;
+  const inputCode=row.querySelector('.stage-status').value;
+  const previousCode=row.dataset.inputCode||'?';
+  const statusChanged=previousCode!=='?'&&inputCode!==previousCode;
+  if(statusChanged&&!window.confirm(`A etapa ${row.dataset.stage} já possui o apontamento ${previousCode}. Tem certeza que gostaria de alterar o apontamento para ${inputCode}?`)){
+    message(`Etapa ${row.dataset.stage}: alteração cancelada.`);
+    return;
+  }
+  const payload={
+    input_code:inputCode,
+    expected_status:previousCode,
+    responsavel:row.querySelector('.stage-owner').value,
+    localizacao:row.querySelector('.stage-location').value,
+    inicio:start?new Date(start).toISOString():null,
+    termino:finish?new Date(finish).toISOString():null,
+    observacoes:row.querySelector('.stage-note').value,
+    idempotency_key:crypto.randomUUID()
+  };
+  if(statusChanged)payload.confirmed_status_change=true;
+  if(['S','N/A'].includes(previousCode)&&inputCode!==previousCode){
+    const reason=window.prompt('Informe o motivo para reabrir esta etapa:');
+    if(!reason||!reason.trim()){
+      message('A reabertura exige um motivo.',true);
+      return;
+    }
+    payload.reopen_reason=reason.trim();
+  }
+  button.disabled=true;
+  try{
+    await api(`/api/erp/work-orders/${work.id}/stages/${encodeURIComponent(row.dataset.stage)}`,{method:'POST',body:JSON.stringify(payload)});
+    await openDetail(work.id);
+    await loadOrders();
+    message(`Etapa ${row.dataset.stage} atualizada na O.S. e na Visão Geral.`);
+  }catch(error){
+    message(error.message,true);
+  }finally{
+    button.disabled=false;
+  }
+}
+
+async function closeWork(){
+  const w=state.detail.work_order;
+  const status=document.getElementById('closing-status').value;
+  if(!status){
+    message('Selecione a ação de encerramento antes de registrar.',true);
+    return;
+  }
+  const localEvent=document.getElementById('closing-date').value;
+  const data_evento=localEvent?new Date(localEvent).toISOString():null;
+  const observacoes=document.getElementById('closing-note').value;
+  const label={FINALIZADA:'finalizar a produção',ENTREGUE:'registrar a entrega',RETIRADA:'registrar a retirada'}[status];
+  if(!confirm(`Confirma ${label} da O.S. ${w.numero_os}?`))return;
+  try{
+    await api(`/api/erp/work-orders/${w.id}/finalize`,{method:'POST',body:JSON.stringify({status,data_evento,observacoes})});
+    detailDialog.close();
+    await loadOrders();
+    document.getElementById('view').value=status==='FINALIZADA'?'FINISHED':'DELIVERED';
+    render();
+    message(`O.S. ${w.numero_os}: ${status.replaceAll('_',' ')}. Histórico preservado.`);
+  }catch(error){
+    message(error.message,true);
+  }
 }
 
 loadOrders();

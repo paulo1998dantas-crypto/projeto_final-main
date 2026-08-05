@@ -231,9 +231,17 @@
             const currentStatus = row.dataset.status || "";
             const currentCode = erpInputCode(currentStatus);
             const nextCode = erpInputCode(status);
+            const statusChanged = currentCode !== "?" && nextCode !== currentCode;
+            if (statusChanged && !window.confirm(
+                `A etapa ${etapa} já possui o apontamento ${currentCode}. Tem certeza que gostaria de alterar o apontamento para ${nextCode}?`
+            )) {
+                feedback(`${etapa}: alteração cancelada.`);
+                return;
+            }
             const payload = getStatusPayload(row, status);
             payload.registrar_historico = true;
             payload.idempotency_key = crypto.randomUUID();
+            if (statusChanged) payload.confirmed_status_change = true;
             if (["S", "N/A"].includes(currentCode) && nextCode !== currentCode) {
                 const reason = window.prompt("Informe o motivo para reabrir esta etapa:");
                 if (!reason || !reason.trim()) {

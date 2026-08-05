@@ -1757,6 +1757,16 @@ async def salvar(request: Request, data: dict = Body(...), db: Session = Depends
                 "detail": "A etapa foi alterada por outro apontamento. Atualize a tela antes de salvar.",
             }, status_code=409)
 
+    if (
+        existing
+        and st != existing.status
+        and data.get("confirmed_status_change") is not True
+    ):
+        return JSONResponse({
+            "status": "erro",
+            "detail": "Confirme a alteracao do apontamento antes de salvar a etapa.",
+        }, status_code=400)
+
     reopening = bool(existing and existing.status in {"SIM", "N/A"} and st != existing.status)
     reopen_reason = str(data.get("reopen_reason") or "").strip()
     if reopening and not reopen_reason:

@@ -66,6 +66,7 @@ class MesStageWriteSafetyTests(unittest.TestCase):
     def test_status_writer_has_conflict_and_reopen_guards(self):
         source = inspect.getsource(erp_service.update_stage)
         self.assertIn("expected_status", source)
+        self.assertIn("confirmed_status_change", source)
         self.assertIn("StageConflictError", source)
         self.assertIn("reopen_reason", source)
         self.assertIn("REABERTURA", source)
@@ -127,6 +128,8 @@ class MesStageWriteSafetyTests(unittest.TestCase):
         stage = {
             "id": "stage",
             "status": erp_service._stage_status_from_input("S"),
+            "parametrizado": True,
+            "aplicavel": True,
             "inicio": old_finish,
             "termino": old_finish,
         }
@@ -142,6 +145,7 @@ class MesStageWriteSafetyTests(unittest.TestCase):
                 {
                     "input_code": "N",
                     "expected_status": "S",
+                    "confirmed_status_change": True,
                     "reopen_reason": "Correção de apontamento",
                     "termino": old_finish.isoformat(),
                 },
@@ -150,6 +154,95 @@ class MesStageWriteSafetyTests(unittest.TestCase):
 
         update_values = connection.execute.call_args_list[0].args[1]
         self.assertTrue(update_values["clear_finish"])
+
+    def test_existing_status_change_requires_explicit_confirmation(self):
+        connection = Mock()
+        work = {"status": "ATIVA", "vehicle_entry_id": "entry"}
+        stage = {
+            "id": "stage",
+            "status": erp_service._stage_status_from_input("N"),
+            "parametrizado": True,
+            "aplicavel": True,
+            "inicio": None,
+            "termino": None,
+        }
+        with patch.object(
+            erp_service,
+            "_locked_work_and_stage",
+            return_value=(work, stage),
+        ):
+            with self.assertRaisesRegex(ValueError, "Confirme a alteracao"):
+                erp_service.update_stage(
+                    connection,
+                    "work-order",
+                    "VIDROS",
+                    {"input_code": "S", "expected_status": "N"},
+                    "OPERADOR",
+                )
+
+        connection.execute.assert_not_called()
+
+    def test_release_is_blocked_until_other_applicable_stages_are_done(self):
+        connection = Mock()
+        work = {"status": "EM_PRODUÇÃO", "vehicle_entry_id": "entry"}
+        stage = {
+            "id": "release-stage",
+            "status": erp_service._stage_status_from_input("N"),
+            "parametrizado": True,
+            "aplicavel": True,
+            "inicio": None,
+            "termino": None,
+        }
+        with (
+            patch.object(
+                erp_service,
+                "_locked_work_and_stage",
+                return_value=(work, stage),
+            ),
+            patch.object(
+                erp_service,
+                "_unfinished_applicable_stage_codes",
+                return_value=["EXPE", "ELÉTRICA"],
+            ) as pending_stages,
+        ):
+            with self.assertRaisesRegex(ValueError, "EXPE, ELÉTRICA"):
+                erp_service.update_stage(
+                    connection,
+                    "work-order",
+                    "LIBERAÇÃO",
+                    {
+                        "input_code": "S",
+                        "expected_status": "N",
+                        "confirmed_status_change": True,
+                    },
+                    "OPERADOR",
+                )
+
+        pending_stages.assert_called_once_with(
+            connection,
+            "work-order",
+            completing_stage_id="release-stage",
+        )
+        connection.execute.assert_not_called()
+
+    def test_cycle_end_is_visible_only_after_the_work_order_is_closed(self):
+        start = datetime.datetime(2026, 8, 3, 8, 22)
+        release_finish = datetime.datetime(2026, 8, 5, 14, 38)
+        stages = [
+            {"stage_code": "DESMONT", "status": "CONCLUÍDA", "inicio": start, "termino": start},
+            {"stage_code": "LIBERAÇÃO", "status": "CONCLUÍDA", "inicio": release_finish, "termino": release_finish},
+        ]
+        active = {"status": "EM_PRODUÇÃO", "termino_producao": None}
+        closed = {"status": "FINALIZADA", "termino_producao": release_finish}
+
+        self.assertEqual(
+            erp_service.productive_cycle_window(active, stages),
+            (start, None),
+        )
+        self.assertEqual(
+            erp_service.productive_cycle_window(closed, stages),
+            (start, release_finish),
+        )
 
     def test_mobile_page_serializes_and_separates_its_requests(self):
         template = Path(__file__).with_name("templates") / "detalhes.html"
@@ -160,6 +253,8 @@ class MesStageWriteSafetyTests(unittest.TestCase):
         self.assertIn("/stage-details/", source)
         self.assertIn("status: status", source)
         self.assertIn("expected_status: erpInputCode(row.dataset.status", source)
+        self.assertIn("Tem certeza que gostaria de alterar o apontamento", source)
+        self.assertIn("payload.confirmed_status_change = true", source)
 
     def test_management_page_sends_expected_status(self):
         template = Path(__file__).with_name("templates") / "gestao_os.html"
@@ -167,10 +262,20 @@ class MesStageWriteSafetyTests(unittest.TestCase):
         self.assertIn("data-input-code=", source)
         self.assertIn("expected_status:previousCode", source)
         self.assertIn("reopen_reason", source)
+        self.assertIn("Tem certeza que gostaria de alterar o apontamento", source)
+        self.assertIn("payload.confirmed_status_change=true", source)
         self.assertGreaterEqual(
             source.count("data-input-code="),
             source.count("function renderStages()"),
         )
+
+    def test_closing_form_starts_without_an_unsaved_finalization(self):
+        template = Path(__file__).with_name("templates") / "gestao_os.html"
+        source = template.read_text(encoding="utf-8")
+        self.assertIn("Selecione uma ação de encerramento", source)
+        self.assertIn("Nenhum encerramento é gravado automaticamente", source)
+        self.assertIn("resetClosingForm()", source)
+        self.assertIn("Selecione a ação de encerramento antes de registrar", source)
 
     def test_http_route_fails_closed_when_a_status_page_is_stale(self):
         source = Path(__file__).with_name("main.py").read_text(encoding="utf-8")
@@ -228,7 +333,11 @@ class MesStageWriteSafetyTests(unittest.TestCase):
                 "work-order",
                 "VIDROS",
                 object(),
-                {"input_code": "S", "expected_status": "N"},
+                {
+                    "input_code": "S",
+                    "expected_status": "N",
+                    "confirmed_status_change": True,
+                },
                 object(),
             ))
 
@@ -238,7 +347,11 @@ class MesStageWriteSafetyTests(unittest.TestCase):
             connection,
             "work-order",
             "VIDROS",
-            {"input_code": "S", "expected_status": "N"},
+            {
+                "input_code": "S",
+                "expected_status": "N",
+                "confirmed_status_change": True,
+            },
             "OPERADOR",
         )
 
@@ -303,6 +416,7 @@ class MesStageWriteSafetyTests(unittest.TestCase):
                     "etapa": "DESMONT",
                     "status": "S",
                     "expected_status": "N",
+                    "confirmed_status_change": True,
                 },
                 session,
             ))
@@ -378,12 +492,66 @@ class MesStageWriteSafetyTests(unittest.TestCase):
         self.assertEqual(stage.responsavel, "DEPOIS")
         self.assertEqual(session.commits, 1)
 
+    def test_legacy_status_change_requires_confirmation_before_mutation(self):
+        import main
+
+        class FakeQuery:
+            def filter(self, *_args):
+                return self
+
+            def with_for_update(self):
+                return self
+
+            def first(self):
+                return stage
+
+        class FakeSession:
+            def __init__(self):
+                self.commits = 0
+
+            def query(self, _model):
+                return FakeQuery()
+
+            def commit(self):
+                self.commits += 1
+
+        user = type("User", (), {"nome": "OPERADOR"})()
+        stage = SimpleNamespace(
+            status=main.normalize_status("N"),
+            responsavel="",
+            inicio=None,
+            termino=None,
+            localizacao=None,
+        )
+        session = FakeSession()
+        with (
+            patch.object(main, "require_login", return_value=user),
+            patch.object(main, "has_permission", return_value=True),
+            patch.object(main, "legacy_operational_schema_available", return_value=True),
+        ):
+            response = asyncio.run(main.salvar(
+                object(),
+                {
+                    "chassi": "9V8VPFC3XTA008976",
+                    "etapa": "DESMONT",
+                    "status": "S",
+                    "expected_status": "N",
+                },
+                session,
+            ))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(b"Confirme a alteracao", response.body)
+        self.assertEqual(stage.status, main.normalize_status("N"))
+        self.assertEqual(session.commits, 0)
+
     def test_legacy_stage_route_has_the_same_write_guards(self):
         source = Path(__file__).with_name("main.py").read_text(encoding="utf-8")
         self.assertIn('data.get("status") or data.get("input_code")', source)
         self.assertIn(').with_for_update().first()', source)
         self.assertIn('"stage_status": st', source)
         self.assertIn('expected_raw = data.get("expected_status")', source)
+        self.assertIn('confirmed_status_change") is not True', source)
 
 
 if __name__ == "__main__":

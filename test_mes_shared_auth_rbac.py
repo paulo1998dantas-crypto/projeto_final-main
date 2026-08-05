@@ -146,6 +146,10 @@ class MesSharedAuthRbacTests(unittest.TestCase):
             main.login_page,
             main.login_post,
             main.logout,
+            # The Portal redirects here with a short-lived signed ticket.  It
+            # cannot require an MES session before it exchanges that ticket,
+            # so its dedicated test below verifies the equivalent controls.
+            main.portal_sso_consume,
         }
         for route in main.app.routes:
             endpoint = getattr(route, "endpoint", None)
@@ -161,6 +165,23 @@ class MesSharedAuthRbacTests(unittest.TestCase):
                 else:
                     self.assertIn("require_login(request, db)", source)
                     self.assertIn("has_permission(", source)
+
+    def test_portal_sso_consume_validates_ticket_before_creating_a_session(self):
+        """The public SSO hand-off is ticket-protected, not session-protected."""
+        source = inspect.getsource(main.portal_sso_consume)
+        for expected in (
+            'portal_sso.consume_ticket(ticket, "MES")',
+            "authz.load_shared_principal",
+            "principal.username",
+            "principal.auth_version",
+            "MES_DASHBOARD_READ",
+            "authz.create_shared_session",
+            "portal_sso.normalize_next",
+            '"Cache-Control"',
+            '"Referrer-Policy"',
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, source)
 
     def test_internal_active_options_remain_service_token_protected(self):
         source = inspect.getsource(main.erp_internal_work_order_options)

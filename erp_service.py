@@ -405,6 +405,29 @@ def stage_input_code(stage):
         "EM_ANDAMENTO": "P",
     }.get(_token(stage.get("status")), "N")
 
+
+def productive_cycle_window(work, stages):
+    """Return the real productive-cycle bounds for one work order.
+
+    A stage can have a historical finish timestamp without the vehicle being
+    finished.  The cycle end is therefore exposed only after the work order
+    has actually entered a final operational status.  This avoids presenting a
+    premature end of cycle when LIBERAÇÃO was pointed incorrectly or when a
+    manual closing form is merely open in the browser.
+    """
+    starts = [stage.get("inicio") for stage in stages if stage.get("inicio")]
+    start = min(starts) if starts else None
+    if _token(work.get("status")) not in {"FINALIZADA", "ENTREGUE", "RETIRADA"}:
+        return start, None
+    release = next(
+        (stage for stage in stages if _token(stage.get("stage_code")) == "LIBERACAO"),
+        None,
+    )
+    end = work.get("termino_producao")
+    if not end and release and _token(release.get("status")) == "CONCLUIDA":
+        end = release.get("termino")
+    return start, end
+
 def _ensure_stage_rows(conn, work_id, work):
     for code, order, _ in STAGES:
         applicable = _stage_applicable(code, work)
@@ -1087,14 +1110,10 @@ def work_order_detail(conn, work_id):
     stages = [dict(row._mapping) for row in conn.execute(text("""
         select * from erp_work_order_stages where work_order_id=:id order by ordem
     """), {"id": work_id})]
-    cycle_starts = [stage.get("inicio") for stage in stages if stage.get("inicio")]
-    release = next((stage for stage in stages if stage["stage_code"] == "LIBERAÇÃO"), None)
-    work["inicio_ciclo_produtivo"] = min(cycle_starts) if cycle_starts else None
-    work["fim_ciclo_produtivo"] = (
-        release.get("termino")
-        if release and _token(release.get("status")) == "CONCLUIDA"
-        else None
-    )
+    (
+        work["inicio_ciclo_produtivo"],
+        work["fim_ciclo_produtivo"],
+    ) = productive_cycle_window(work, stages)
     for stage in stages:
         stage["input_code"] = stage_input_code(stage)
     schedules = [dict(row._mapping) for row in conn.execute(text("""
@@ -1334,6 +1353,30 @@ def _locked_work_and_stage(conn, work_id, code):
     return work, stage
 
 
+def _unfinished_applicable_stage_codes(conn, work_id, completing_stage_id=None):
+    """Return applicable stages that still prevent automatic finalization.
+
+    The rows are locked under the same work-order transaction as the pointing.
+    This keeps two operators from independently completing the last steps and
+    accidentally finalizing an order based on an inconsistent snapshot.
+    """
+    rows = [dict(row._mapping) for row in conn.execute(text("""
+        select id,stage_code,status,aplicavel
+        from erp_work_order_stages
+        where work_order_id=:work
+        order by ordem
+        for update
+    """), {"work": work_id})]
+    completed = {"CONCLUIDA", "NAO_APLICAVEL"}
+    return [
+        row["stage_code"]
+        for row in rows
+        if row["id"] != completing_stage_id
+        and bool(row.get("aplicavel"))
+        and _token(row.get("status")) not in completed
+    ]
+
+
 def _metadata_value(payload, field, current):
     """Use a field only when it was actually supplied by the caller.
 
@@ -1462,6 +1505,16 @@ def update_stage(conn, work_id, code, payload, actor):
             )
         return update_stage_metadata(conn, work_id, code, payload, actor)
 
+    status_changed = new != stage["status"]
+    if (
+        stage_input_code(stage) != "?"
+        and status_changed
+        and payload.get("confirmed_status_change") is not True
+    ):
+        raise ValueError(
+            "Confirme a alteracao do apontamento antes de salvar a etapa."
+        )
+
     reopening = (
         stage["status"] in {"CONCLUÍDA", "NÃO_APLICÁVEL"}
         and new != stage["status"]
@@ -1469,6 +1522,23 @@ def update_stage(conn, work_id, code, payload, actor):
     reopen_reason = str(payload.get("reopen_reason") or "").strip()
     if reopening and not reopen_reason:
         raise ValueError("Para reabrir uma etapa concluida ou nao aplicavel, informe o motivo.")
+
+    if (
+        work["status"] in {"ATIVA", "EM_PRODUÇÃO"}
+        and code == "LIBERAÇÃO"
+        and new == "CONCLUÍDA"
+    ):
+        pending_codes = _unfinished_applicable_stage_codes(
+            conn,
+            work_id,
+            completing_stage_id=stage["id"],
+        )
+        if pending_codes:
+            raise ValueError(
+                "LIBERAÇÃO só pode ser concluída após as etapas aplicáveis: "
+                + ", ".join(pending_codes)
+                + "."
+            )
 
     # O apontamento é operacional: qualquer área pode iniciar ou concluir sua
     # própria etapa. As dependências permanecem apenas como orientação visual
@@ -1570,7 +1640,7 @@ def update_stage(conn, work_id, code, payload, actor):
         transition_note = (
             "Início automático da produção pelo apontamento da etapa " + code
             if next_status == "EM_PRODUÇÃO"
-            else "Produção finalizada automaticamente pela conclusão da etapa LIBERAÇÃO"
+            else "Produção finalizada automaticamente pela conclusão de LIBERAÇÃO, após todas as etapas aplicáveis."
         )
         conn.execute(text("""
             insert into erp_work_order_status_history(

@@ -62,15 +62,15 @@ def main():
         before = len(active_cards(conn))
         entry, work = open_and_activate(conn, chassis, actor)
         try:
-            update_stage(conn, work["id"], "DESMONT", {"status": "CONCLUÍDA", "idempotency_key": str(uuid4())}, actor)
+            update_stage(conn, work["id"], "DESMONT", {"status": "CONCLUÍDA", "confirmed_status_change": True, "idempotency_key": str(uuid4())}, actor)
             raise AssertionError("DESMONT foi liberada sem VIDROS e A/C.")
         except ValueError as exc:
             dependency_block = str(exc)
         for stage in ("VIDROS", "A/C"):
-            update_stage(conn, work["id"], stage, {"status": "CONCLUÍDA", "responsavel": actor, "idempotency_key": str(uuid4())}, actor)
+            update_stage(conn, work["id"], stage, {"status": "CONCLUÍDA", "responsavel": actor, "confirmed_status_change": True, "idempotency_key": str(uuid4())}, actor)
         stage_key = str(uuid4())
-        first_stage = update_stage(conn, work["id"], "DESMONT", {"status": "EM_ANDAMENTO", "responsavel": actor, "idempotency_key": stage_key}, actor)
-        replayed_stage = update_stage(conn, work["id"], "DESMONT", {"status": "EM_ANDAMENTO", "responsavel": actor, "idempotency_key": stage_key}, actor)
+        first_stage = update_stage(conn, work["id"], "DESMONT", {"status": "EM_ANDAMENTO", "responsavel": actor, "confirmed_status_change": True, "idempotency_key": stage_key}, actor)
+        replayed_stage = update_stage(conn, work["id"], "DESMONT", {"status": "EM_ANDAMENTO", "responsavel": actor, "confirmed_status_change": True, "idempotency_key": stage_key}, actor)
         reschedule(conn, work["id"], date(2026, 8, 15), "Teste de programação", actor)
         reschedule(conn, work["id"], date(2026, 8, 20), "Reprogramação de teste", actor)
         current_schedules = conn.execute(text("select count(*) from erp_work_order_schedules where work_order_id=:id and vigente"), {"id": work["id"]}).scalar_one()
