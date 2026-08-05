@@ -388,11 +388,18 @@ def _link_suprimentos_os_document(
     return documento_os_id
 
 def _stage_applicable(code, work):
+    not_applicable = {"", "NAO", "NA", "N/A", "SEM"}
     return not (
-        (code == "A/C" and _token(work.get("ar_condicionado")) in {"", "NAO"})
-        or (code == "BCO" and _token(work.get("conjunto_bancos")) in {"", "NAO", "SEM"})
-        or (code == "ACESSÓRIO" and _token(work.get("acessorio")) in {"", "NAO", "SEM"})
-        or (code == "PLOTAGEM" and _token(work.get("plotagem")) in {"", "NAO", "SEM"})
+        (
+            code == "A/C"
+            and (
+                _token(work.get("ar_condicionado")) in not_applicable
+                or _token(work.get("tipo_sistema_ar")) in not_applicable
+            )
+        )
+        or (code == "BCO" and _token(work.get("conjunto_bancos")) in not_applicable)
+        or (code == "ACESSÓRIO" and _token(work.get("acessorio")) in not_applicable)
+        or (code == "PLOTAGEM" and _token(work.get("plotagem")) in not_applicable)
     )
 
 def stage_input_code(stage):
@@ -911,7 +918,7 @@ def activate_work_order(conn, work_id, actor):
         )
     missing = [field for field in REQUIRED_WORK_ORDER_FIELDS if not str(work.get(field) or "").strip()]
     if (
-        _token(work.get("tipo_sistema_ar")) not in {"NAO", "AR ORIGINAL", "AG"}
+        _token(work.get("tipo_sistema_ar")) not in {"NAO", "AR ORIGINAL", "AG", "N/A"}
         and not str(work.get("ar_condicionado") or "").strip()
     ):
         missing.append("ar_condicionado")

@@ -4,12 +4,17 @@ Enquanto esses dados ainda não possuem manutenção no ModuloCadastro, o MES
 publica uma única cópia por API. Isso evita listas divergentes nos frontends.
 """
 
-VENDEDORES = ["JI", "JOÃO CARVALHO", "SERGIO BRUNETTI", "OUTROS"]
-MERCADOS = ["LICITAÇÃO", "VAREJO"]
-TIPOS_VEICULO = ["MICRO", "MISTO"]
-LINHAS = ["LB", "LAB", "LE", "LAE"]
+NOT_APPLICABLE = "N/A"
 
-AR_FORNECEDORES = ["GE", "CLIM"]
+# N/A é uma escolha explícita do usuário, distinta de um campo não
+# preenchido. Ela permite publicar uma O.S. sem inventar uma informação que
+# não se aplica àquela entrada (pós-venda, acessório, retorno etc.).
+VENDEDORES = ["JI", "JOÃO CARVALHO", "SERGIO BRUNETTI", "OUTROS", NOT_APPLICABLE]
+MERCADOS = ["LICITAÇÃO", "VAREJO", NOT_APPLICABLE]
+TIPOS_VEICULO = ["MICRO", "MISTO", NOT_APPLICABLE]
+LINHAS = ["LB", "LAB", "LE", "LAE", NOT_APPLICABLE]
+
+AR_FORNECEDORES = ["GE", "CLIM", NOT_APPLICABLE]
 AR_TIPOS = [
     "COMPLEMENTO",
     "CABINE/SALÃO",
@@ -23,8 +28,9 @@ AR_TIPOS = [
     "AR ORIGINAL",
     "NÃO",
     "COMPLEMENTO C/ COMANDO DIGITAL TRASEIRO",
+    NOT_APPLICABLE,
 ]
-SIM_NAO = ["SIM", "NÃO"]
+SIM_NAO = ["SIM", "NÃO", NOT_APPLICABLE]
 
 MARCAS = [
     "MERCEDES-BENZ", "FORD", "RENAULT", "PEUGEOT", "CITROËN", "FIAT", "IVECO",
@@ -65,6 +71,7 @@ VERSOES = [
 ]
 
 TRANSFORMACOES = [
+    (NOT_APPLICABLE, NOT_APPLICABLE),
     ("40340002", "JI CONFORT 517 14 M SELADO PLUS"),
     ("40340003", "JI CONFORT 517 14 M VISTA ESSENCIAL"),
     ("40340004", "JI CONFORT 517 14 M VISTA PLUS"),
