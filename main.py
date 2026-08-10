@@ -2277,6 +2277,61 @@ async def erp_vehicle_entry(request: Request, data: dict = Body(...), db: Sessio
         return {"ok": True, **result}
     except ValueError as exc: return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
+
+@app.get("/api/erp/vehicle-entries/{entry_id}/stages")
+async def erp_vehicle_entry_stages(
+    entry_id: str,
+    request: Request,
+    db: Session = Depends(database.get_db),
+):
+    if not erp_feature_enabled():
+        return erp_disabled_response()
+    user = require_login(request, db)
+    if not user:
+        return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_DASHBOARD_READ):
+        return permission_denied(api=True)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.vehicle_entry_stage_detail(conn, entry_id)
+        return {"ok": True, **result}
+    except erp_service.StageConflictError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@app.post("/api/erp/vehicle-entries/{entry_id}/stages/{stage_code:path}")
+async def erp_vehicle_entry_stage(
+    entry_id: str,
+    stage_code: str,
+    request: Request,
+    data: dict = Body(...),
+    db: Session = Depends(database.get_db),
+):
+    if not erp_feature_enabled():
+        return erp_disabled_response()
+    user = require_login(request, db)
+    if not user:
+        return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_STAGE_WRITE):
+        return permission_denied(api=True)
+    if data.get("expected_status") in (None, ""):
+        return JSONResponse({
+            "ok": False,
+            "error": "Esta tela esta desatualizada. Atualize a pagina antes de registrar o status da etapa.",
+        }, status_code=409)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.update_vehicle_entry_stage(
+                conn, entry_id, stage_code, data, user.nome
+            )
+        return {"ok": True, **result}
+    except erp_service.StageConflictError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
 @app.get("/gestao-os", response_class=HTMLResponse)
 async def erp_work_order_screen(request: Request, db: Session = Depends(database.get_db)):
     if not erp_feature_enabled(): return HTMLResponse("Integração ERP desativada pela feature flag.", status_code=404)
@@ -2375,10 +2430,11 @@ async def erp_stage(work_id: str, stage_code: str, request: Request, data: dict 
     if not erp_feature_enabled(): return erp_disabled_response()
     user = require_login(request, db)
     if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
-    if not (
-        has_permission(user, authz.MES_WORK_ORDERS_MANAGE)
-        and has_permission(user, authz.MES_STAGE_WRITE)
-    ):
+    # Apontamento é uma permissão operacional própria. Exigir também a gestão
+    # da O.S. bloqueava o perfil OPERADOR mesmo quando ele tinha permissão para
+    # registrar uma etapa. As operações de parametrização/ativação continuam
+    # protegidas por MES_WORK_ORDERS_MANAGE em suas rotas específicas.
+    if not has_permission(user, authz.MES_STAGE_WRITE):
         return permission_denied(api=True)
     if (
         not erp_service._is_metadata_only_stage_update(data)
@@ -2410,10 +2466,7 @@ async def erp_stage_details(
     user = require_login(request, db)
     if not user:
         return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
-    if not (
-        has_permission(user, authz.MES_WORK_ORDERS_MANAGE)
-        and has_permission(user, authz.MES_STAGE_WRITE)
-    ):
+    if not has_permission(user, authz.MES_STAGE_WRITE):
         return permission_denied(api=True)
     try:
         with database.engine.begin() as conn:
@@ -2437,10 +2490,7 @@ async def erp_location(
             {"ok": False, "error": "Login necessario."},
             status_code=401,
         )
-    if not (
-        has_permission(user, authz.MES_WORK_ORDERS_MANAGE)
-        and has_permission(user, authz.MES_STAGE_WRITE)
-    ):
+    if not has_permission(user, authz.MES_STAGE_WRITE):
         return permission_denied(api=True)
     try:
         with database.engine.begin() as conn:

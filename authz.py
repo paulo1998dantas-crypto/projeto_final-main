@@ -60,7 +60,13 @@ OPERATIONAL_MANAGEMENT_PERMISSIONS = frozenset({
 ROLE_DEFAULT_PERMISSIONS = {
     "ADMIN": ALL_MES_PERMISSIONS,
     "ADM": ALL_MES_PERMISSIONS,
-    "OPERADOR": VIEW_ONLY_PERMISSIONS,
+    # O operador acompanha o MES e registra somente a execução das etapas.
+    # Abertura/parametrização de O.S., sequenciamento, finalização e gestão de
+    # usuários continuam restritos aos perfis de gestão.
+    "OPERADOR": frozenset({
+        *VIEW_ONLY_PERMISSIONS,
+        MES_STAGE_WRITE,
+    }),
     "COMPRADOR": VIEW_ONLY_PERMISSIONS,
     "PCP": OPERATIONAL_MANAGEMENT_PERMISSIONS,
     "ENGENHARIA": VIEW_ONLY_PERMISSIONS,

@@ -452,6 +452,159 @@ def _ensure_stage_rows(conn, work_id, work):
             "planned": work.get("data_comercial_prevista"),
         })
 
+
+def _pre_os_stage_schema_ready(conn):
+    """Allow a safe additive rollout before every app instance is restarted."""
+    try:
+        result = conn.execute(text(
+            "select to_regclass('public.erp_vehicle_entry_stages') is not null "
+            "and to_regclass('public.erp_vehicle_entry_stage_events') is not null"
+        ))
+        return bool(result.scalar())
+    except (AttributeError, TypeError):
+        # Test doubles and an old database snapshot do not expose the new schema.
+        return False
+
+
+def _ensure_entry_stage_rows(conn, entry_id):
+    if not _pre_os_stage_schema_ready(conn):
+        return False
+    for code, order, _ in STAGES:
+        conn.execute(text("""
+            insert into erp_vehicle_entry_stages(
+                id,vehicle_entry_id,stage_code,aplicavel,status,ordem,parametrizado
+            ) values(
+                :id,:entry,:code,true,'PENDENTE',:order,false
+            )
+            on conflict(vehicle_entry_id,stage_code) do nothing
+        """), {
+            "id": _id(), "entry": entry_id, "code": code, "order": order,
+        })
+    return True
+
+
+def _promote_entry_stage_pointings(conn, entry_id, work_id, actor):
+    """Move preliminary ITEM pointings into the canonical O.S. transactionally.
+
+    The source rows and events remain immutable evidence.  Transfer references
+    make retries idempotent and the O.S. stage becomes the only writable state
+    after the work order has been opened.
+    """
+    if not _pre_os_stage_schema_ready(conn):
+        return 0
+    preliminary = [dict(row._mapping) for row in conn.execute(text("""
+        select *
+        from erp_vehicle_entry_stages
+        where vehicle_entry_id=:entry and parametrizado
+        order by ordem
+        for update
+    """), {"entry": entry_id})]
+    promoted = 0
+    for source in preliminary:
+        target = _one(conn.execute(text("""
+            select * from erp_work_order_stages
+            where work_order_id=:work and stage_code=:code
+            for update
+        """), {"work": work_id, "code": source["stage_code"]}))
+        if not target:
+            raise ValueError(
+                f"A etapa {source['stage_code']} não foi criada na O.S.; a abertura foi cancelada."
+            )
+        conn.execute(text("""
+            update erp_work_order_stages
+               set parametrizado=true,
+                   aplicavel=:applicable,
+                   status=:status,
+                   responsavel=:responsible,
+                   localizacao=:location,
+                   inicio=:started,
+                   termino=:finished,
+                   observacoes=:notes
+             where id=:id
+        """), {
+            "id": target["id"],
+            "applicable": source["aplicavel"],
+            "status": source["status"],
+            "responsible": source.get("responsavel"),
+            "location": source.get("localizacao"),
+            "started": source.get("inicio"),
+            "finished": source.get("termino"),
+            "notes": source.get("observacoes") or "",
+        })
+        events = [dict(row._mapping) for row in conn.execute(text("""
+            select * from erp_vehicle_entry_stage_events
+            where vehicle_entry_stage_id=:stage
+            order by created_at,id
+            for update
+        """), {"stage": source["id"]})]
+        last_target_event_id = None
+        for event in events:
+            transfer_key = f"PRE_OS:{event['id']}"
+            inserted = _one(conn.execute(text("""
+                insert into erp_work_order_stage_events(
+                    work_order_stage_id,action,status_anterior,novo_status,
+                    operador,inicio,termino,localizacao,observacao,
+                    idempotency_key,created_at
+                ) values(
+                    :stage,'APONTAMENTO_PRE_OS',:old,:new,:actor,
+                    :started,:finished,:location,:note,:key,:created_at
+                )
+                on conflict(idempotency_key) do nothing
+                returning id
+            """), {
+                "stage": target["id"], "old": event.get("status_anterior"),
+                "new": event["novo_status"], "actor": event["operador"],
+                "started": event.get("inicio"), "finished": event.get("termino"),
+                "location": event.get("localizacao"), "note": event.get("observacao") or "",
+                "key": transfer_key, "created_at": event["created_at"],
+            }))
+            if inserted:
+                last_target_event_id = inserted["id"]
+            else:
+                existing = _one(conn.execute(text("""
+                    select id from erp_work_order_stage_events
+                    where idempotency_key=:key
+                """), {"key": transfer_key}))
+                last_target_event_id = existing["id"] if existing else None
+            conn.execute(text("""
+                update erp_vehicle_entry_stage_events
+                   set transferred_to_event_id=:target,transferred_at=coalesce(transferred_at,now())
+                 where id=:id
+            """), {"target": last_target_event_id, "id": event["id"]})
+        conn.execute(text("""
+            update erp_vehicle_entry_stages
+               set transferred_to_work_order_stage_id=:target,
+                   transferred_at=coalesce(transferred_at,now()),
+                   transferred_by=coalesce(transferred_by,:actor),
+                   updated_at=now()
+             where id=:id
+        """), {"target": target["id"], "actor": actor, "id": source["id"]})
+        promoted += 1
+    if promoted:
+        pending = conn.execute(text("""
+            select count(*) from erp_work_order_stages
+            where work_order_id=:work and not parametrizado
+        """), {"work": work_id}).scalar_one()
+        conn.execute(text("""
+            update erp_work_orders
+               set stage_configuration_status=case when :pending=0 then 'CONCLUIDA' else 'PENDENTE' end,
+                   stage_configured_at=case when :pending=0 then now() else null end,
+                   stage_configured_by=case when :pending=0 then :actor else null end,
+                   updated_at=now()
+             where id=:work
+        """), {"work": work_id, "pending": pending, "actor": actor})
+        conn.execute(text("""
+            insert into erp_audit_events(
+                entity_type,entity_id,action,actor,origin,after_data
+            ) values(
+                'WORK_ORDER',:work,'APONTAMENTOS_PRE_OS_PROMOVIDOS',:actor,'MES',
+                jsonb_build_object('vehicle_entry_id',:entry,'etapas',:promoted)
+            )
+        """), {
+            "work": work_id, "entry": entry_id, "promoted": promoted, "actor": actor,
+        })
+    return promoted
+
 def _commercial_date(arrival, approval, line):
     dates = [value for value in (_date_value(arrival), _date_value(approval)) if value]
     if not dates:
@@ -689,6 +842,7 @@ def create_entry(conn, payload, actor):
                 {"id": vehicle_id, **changed},
             )
     entry_id=_id(); row=_one(conn.execute(text("insert into erp_vehicle_entries(id,vehicle_id,data_chegada,cliente_id,cliente_nome,origem,observacoes,avarias,criado_por,status) values(:id,:vehicle,:arrival,:client_id,:client,:origin,:notes,:damage,:actor,'AGUARDANDO_O_S') returning item_number"),{'id':entry_id,'vehicle':vehicle_id,'arrival':payload.get('data_chegada') or datetime.utcnow(),'client_id':payload.get('cliente_id'),'client':str(payload.get('cliente_nome') or ''),'origin':str(payload.get('origem') or 'MANUAL'),'notes':str(payload.get('observacoes') or ''),'damage':str(payload.get('avarias') or ''),'actor':actor}))
+    _ensure_entry_stage_rows(conn, entry_id)
     return {'id':entry_id,'vehicle_id':vehicle_id,'item_number':int(row['item_number'])}
 
 def create_work_order(conn, entry_id, payload, actor):
@@ -698,6 +852,8 @@ def create_work_order(conn, entry_id, payload, actor):
     forecast_id=str(payload.get('forecast_id') or '').strip() or None
     current=_one(conn.execute(text('select id,numero_os from erp_work_orders where vehicle_entry_id=:id'),{'id':entry_id}))
     if current:
+        _ensure_stage_rows(conn, current['id'], {})
+        _promote_entry_stage_pointings(conn, entry_id, current['id'], actor)
         if documento_os_id is not None:
             _link_suprimentos_os_document(
                 conn, documento_os_id, current['id'], current['numero_os'], entry_id, actor
@@ -748,6 +904,7 @@ def create_work_order(conn, entry_id, payload, actor):
     conn.execute(text("""insert into erp_work_orders(id,vehicle_entry_id,numero_os,tipo_servico,proposta_numero,data_aprovacao,vendedor,mercado,cliente_nome,municipio,uf,tipo_veiculo,linha,transformacao_codigo,transformacao,codigo_banco,conjunto_bancos,acessibilidade,lotacao,ar_condicionado,tipo_sistema_ar,ar_quente,acessorio,plotagem,data_comercial_prevista,criado_por) values(:id,:entry,:number,:tipo_servico,:proposta_numero,:data_aprovacao,:vendedor,:mercado,:cliente_nome,:municipio,:uf,:tipo_veiculo,:linha,:transformacao_codigo,:transformacao,:codigo_banco,:conjunto_bancos,:acessibilidade,:lotacao,:ar_condicionado,:tipo_sistema_ar,:ar_quente,:acessorio,:plotagem,:data_comercial_prevista,:actor)"""),{'id':work_id,'entry':entry_id,'number':number,'actor':actor,**fields})
     conn.execute(text("insert into erp_work_order_status_history(work_order_id,novo_status,usuario,observacao) values(:id,'RASCUNHO',:actor,'O.S. aberta')"),{'id':work_id,'actor':actor})
     _ensure_stage_rows(conn, work_id, fields)
+    promoted_stages = _promote_entry_stage_pointings(conn, entry_id, work_id, actor)
     if fields["data_comercial_prevista"]:
         conn.execute(text("""
             insert into erp_work_order_schedules(
@@ -786,7 +943,8 @@ def create_work_order(conn, entry_id, payload, actor):
         )
     result = {
         'id':work_id, 'numero_os':number, 'replayed':False,
-        'stage_configuration_status':'PENDENTE',
+        'stage_configuration_status':'CONCLUIDA' if promoted_stages == len(STAGES) else 'PENDENTE',
+        'promoted_pre_os_stages':promoted_stages,
         'forecast_id':forecast_id,
         'forecast_codigo':forecast['codigo'] if forecast else None,
     }
@@ -950,11 +1108,28 @@ def activate_work_order(conn, work_id, actor):
         invalid.append("transformacao")
     if invalid:
         raise ValueError("Valores fora das listas controladas: " + ", ".join(invalid) + ".")
-    conn.execute(text("update erp_work_orders set status='ATIVA',ativado_por=:actor,ativado_at=now(),updated_at=now(),version=version+1 where id=:id"),{'id':work_id,'actor':actor})
-    conn.execute(text("update erp_vehicle_entries set status='ATIVA' where id=:id"), {"id": work["vehicle_entry_id"]})
-    conn.execute(text("insert into erp_work_order_status_history(work_order_id,status_anterior,novo_status,usuario,observacao) values(:id,:old,'ATIVA',:actor,'Etapas publicadas no MES')"),{'id':work_id,'old':work['status'],'actor':actor})
+    has_started = bool(conn.execute(text("""
+        select exists(
+            select 1
+            from erp_work_order_stages stage
+            where stage.work_order_id=:id
+              and stage.status in ('EM_ANDAMENTO','CONCLUÍDA')
+              and exists(
+                  select 1 from erp_work_order_stage_events event
+                  where event.work_order_stage_id=stage.id
+                    and event.action='APONTAMENTO_PRE_OS'
+              )
+        )
+    """), {"id": work_id}).scalar_one())
+    next_status = "EM_PRODUÇÃO" if has_started else "ATIVA"
+    conn.execute(text("update erp_work_orders set status=:status,ativado_por=:actor,ativado_at=now(),updated_at=now(),version=version+1 where id=:id"),{'id':work_id,'actor':actor,'status':next_status})
+    conn.execute(text("update erp_vehicle_entries set status=:status where id=:id"), {"id": work["vehicle_entry_id"], "status": next_status})
+    conn.execute(text("insert into erp_work_order_status_history(work_order_id,status_anterior,novo_status,usuario,observacao) values(:id,:old,:new,:actor,:note)"),{
+        'id':work_id,'old':work['status'],'new':next_status,'actor':actor,
+        'note': 'Etapas publicadas no MES; produção já iniciada antes da abertura da O.S.' if has_started else 'Etapas publicadas no MES',
+    })
     recalculate_work_order_sequences(conn, actor)
-    return {'id':work_id,'replayed':False}
+    return {'id':work_id,'replayed':False,'status':next_status}
 
 def active_cards(conn):
     rows=conn.execute(text("""
@@ -1074,6 +1249,22 @@ def list_work_orders(conn, search="", status="", limit=1000):
         limit :limit
     """), params)
     orders = [dict(row._mapping) for row in rows]
+    preliminary_by_entry = {}
+    if orders and _pre_os_stage_schema_ready(conn):
+        entry_ids = [str(order["entry_id"]) for order in orders if not order.get("work_order_id")]
+        if entry_ids:
+            preliminary_by_entry = {
+                str(row["vehicle_entry_id"]): dict(row)
+                for row in conn.execute(text("""
+                    select vehicle_entry_id,
+                           count(*) filter(where parametrizado) as etapas_apontadas,
+                           count(*) filter(where status='CONCLUÍDA') as etapas_concluidas,
+                           count(*) filter(where status='EM_ANDAMENTO') as etapas_parciais
+                    from erp_vehicle_entry_stages
+                    where vehicle_entry_id=any(cast(:entry_ids as uuid[]))
+                    group by vehicle_entry_id
+                """), {"entry_ids": entry_ids}).mappings()
+            }
     for order in orders:
         order["status_operacional"] = operational_work_order_status(
             order.get("status") or order.get("entry_status")
@@ -1087,7 +1278,184 @@ def list_work_orders(conn, search="", status="", limit=1000):
             order.get("tipo_servico"),
             order.get("stage_configuration_status"),
         )
+        if not order.get("work_order_id"):
+            preliminary = preliminary_by_entry.get(str(order["entry_id"]), {})
+            order["etapas_pre_os_apontadas"] = int(preliminary.get("etapas_apontadas") or 0)
+            order["etapas_pre_os_concluidas"] = int(preliminary.get("etapas_concluidas") or 0)
+            order["etapas_pre_os_parciais"] = int(preliminary.get("etapas_parciais") or 0)
     return orders
+
+
+def vehicle_entry_stage_detail(conn, entry_id):
+    entry = _one(conn.execute(text("""
+        select e.*,v.chassi,v.marca,v.modelo,v.versao,v.mmv,
+               w.id as work_order_id,w.numero_os
+        from erp_vehicle_entries e
+        join erp_vehicles v on v.id=e.vehicle_id
+        left join erp_work_orders w on w.vehicle_entry_id=e.id
+        where e.id=:id
+    """), {"id": entry_id}))
+    if not entry:
+        raise ValueError("Entrada de veículo não encontrada.")
+    if entry.get("work_order_id"):
+        raise StageConflictError(
+            f"A O.S. {entry.get('numero_os')} já foi aberta. Atualize a tela e aponte pela O.S."
+        )
+    if not _ensure_entry_stage_rows(conn, entry_id):
+        raise ValueError("A estrutura de apontamento antes da O.S. ainda não foi instalada.")
+    stages = [dict(row._mapping) for row in conn.execute(text("""
+        select s.*,
+               exists(
+                   select 1 from erp_vehicle_entry_stage_events event
+                   where event.vehicle_entry_stage_id=s.id
+               ) as has_operational_pointing
+        from erp_vehicle_entry_stages s
+        where s.vehicle_entry_id=:entry
+        order by s.ordem
+    """), {"entry": entry_id})]
+    for stage in stages:
+        stage["input_code"] = stage_input_code(stage)
+    events = [dict(row._mapping) for row in conn.execute(text("""
+        select event.*,stage.stage_code
+        from erp_vehicle_entry_stage_events event
+        join erp_vehicle_entry_stages stage on stage.id=event.vehicle_entry_stage_id
+        where stage.vehicle_entry_id=:entry
+        order by event.created_at desc,event.id desc
+        limit 500
+    """), {"entry": entry_id})]
+    return {
+        "mode": "ENTRY",
+        "entry": entry,
+        "stages": stages,
+        "stage_events": events,
+        "status_history": [],
+        "schedules": [],
+    }
+
+
+def _has_entry_operational_pointing(conn, stage_id):
+    return bool(conn.execute(text("""
+        select exists(
+            select 1 from erp_vehicle_entry_stage_events
+            where vehicle_entry_stage_id=:stage
+        )
+    """), {"stage": stage_id}).scalar_one())
+
+
+def update_vehicle_entry_stage(conn, entry_id, code, payload, actor):
+    """Record real production against an ITEM that does not have an O.S. yet."""
+    code = str(code).upper()
+    entry = _one(conn.execute(text("""
+        select id,status from erp_vehicle_entries where id=:entry for update
+    """), {"entry": entry_id}))
+    if not entry:
+        raise ValueError("Entrada de veículo não encontrada.")
+    work = _one(conn.execute(text("""
+        select id,numero_os from erp_work_orders where vehicle_entry_id=:entry
+    """), {"entry": entry_id}))
+    if work:
+        raise StageConflictError(
+            f"A O.S. {work.get('numero_os')} foi aberta enquanto esta tela estava em uso. "
+            "Atualize a tela antes de apontar."
+        )
+    if not _ensure_entry_stage_rows(conn, entry_id):
+        raise ValueError("A estrutura de apontamento antes da O.S. ainda não foi instalada.")
+    stage = _one(conn.execute(text("""
+        select * from erp_vehicle_entry_stages
+        where vehicle_entry_id=:entry and stage_code=:code
+        for update
+    """), {"entry": entry_id, "code": code}))
+    if not stage:
+        raise ValueError("Etapa da entrada não encontrada.")
+
+    idempotency_key = str(payload.get("idempotency_key") or "").strip() or None
+    if idempotency_key:
+        replay = _one(conn.execute(text("""
+            select id from erp_vehicle_entry_stage_events where idempotency_key=:key
+        """), {"key": idempotency_key}))
+        if replay:
+            return {
+                "replayed": True, "status": stage["status"],
+                "input_code": stage_input_code(stage), "entry_status": entry["status"],
+            }
+
+    new = _stage_status_from_input(payload.get("input_code") or payload.get("status"))
+    if not new:
+        raise ValueError("Informe P, N, S ou N/A para a etapa preliminar.")
+    previous_code = stage_input_code(stage)
+    expected_code = str(payload.get("expected_status") or "").strip().upper()
+    if not expected_code:
+        raise StageConflictError(
+            "Esta tela está desatualizada. Atualize antes de registrar o apontamento."
+        )
+    if expected_code != previous_code:
+        raise StageConflictError(
+            "A etapa foi alterada por outro apontamento. Atualize a tela antes de salvar."
+        )
+    status_changed = previous_code != str(payload.get("input_code") or "").strip().upper()
+    has_pointing = _has_entry_operational_pointing(conn, stage["id"])
+    if status_changed and has_pointing and payload.get("confirmed_status_change") is not True:
+        raise ValueError("Confirme a alteração do apontamento antes de salvar a etapa.")
+    reopening = previous_code in {"S", "N/A"} and new != stage["status"]
+    reopen_reason = str(payload.get("reopen_reason") or "").strip()
+    if reopening and not reopen_reason:
+        raise ValueError("Para reabrir uma etapa concluída ou não aplicável, informe o motivo.")
+
+    now = datetime.utcnow()
+    started = payload.get("inicio") or (
+        now if new in {"EM_ANDAMENTO", "CONCLUÍDA"} and not stage.get("inicio") else stage.get("inicio")
+    )
+    finished = payload.get("termino") or (
+        now if new == "CONCLUÍDA" and not stage.get("termino") else stage.get("termino")
+    )
+    if reopening:
+        finished = None
+    values = {
+        "responsible": str(payload.get("responsavel") or stage.get("responsavel") or ""),
+        "location": str(payload.get("localizacao") or stage.get("localizacao") or ""),
+        "notes": str(payload.get("observacoes") or stage.get("observacoes") or ""),
+    }
+    conn.execute(text("""
+        update erp_vehicle_entry_stages
+           set parametrizado=true,
+               aplicavel=:applicable,
+               status=:status,
+               responsavel=:responsible,
+               localizacao=:location,
+               inicio=:started,
+               termino=:finished,
+               observacoes=:notes,
+               version=version+1,
+               updated_at=now()
+         where id=:id
+    """), {
+        "id": stage["id"], "applicable": new != "NÃO_APLICÁVEL", "status": new,
+        "started": started, "finished": finished, **values,
+    })
+    event_note = values["notes"]
+    if reopening:
+        event_note = f"Reabertura da etapa: {reopen_reason}" + (
+            f" | {event_note}" if event_note else ""
+        )
+    conn.execute(text("""
+        insert into erp_vehicle_entry_stage_events(
+            id,vehicle_entry_stage_id,action,status_anterior,novo_status,
+            operador,inicio,termino,localizacao,observacao,idempotency_key
+        ) values(
+            :id,:stage,:action,:old,:new,:actor,:started,:finished,:location,:note,:key
+        )
+    """), {
+        "id": _id(), "stage": stage["id"],
+        "action": "REABERTURA_PRE_OS" if reopening else "APONTAMENTO_PRE_OS",
+        "old": stage["status"] if stage.get("parametrizado") else None,
+        "new": new, "actor": actor, "started": started, "finished": finished,
+        "location": values["location"], "note": event_note, "key": idempotency_key,
+    })
+    return {
+        "replayed": False, "status": new,
+        "input_code": {"EM_ANDAMENTO": "P", "CONCLUÍDA": "S", "NÃO_APLICÁVEL": "N/A"}.get(new, "N"),
+        "entry_status": entry["status"], "has_operational_pointing": True,
+    }
 
 def work_order_detail(conn, work_id):
     work = _one(conn.execute(text("""
@@ -1120,7 +1488,7 @@ def work_order_detail(conn, work_id):
                    select 1
                    from erp_work_order_stage_events event
                    where event.work_order_stage_id=s.id
-                     and event.action in ('APONTAMENTO','REABERTURA')
+                     and event.action in ('APONTAMENTO','REABERTURA','APONTAMENTO_PRE_OS')
                ) as has_operational_pointing
         from erp_work_order_stages s
         where s.work_order_id=:id
@@ -1193,6 +1561,15 @@ def configure_stages(conn, work_id, payload, actor):
         """), {"work": work_id, "code": code}))
         if not stage:
             raise ValueError(f"Etapa {code} não encontrada.")
+        if _has_operational_pointing(conn, stage["id"]):
+            current_input = stage_input_code(stage)
+            if input_code != current_input:
+                raise ValueError(
+                    f"A etapa {code} já foi apontada como {current_input} antes da O.S. "
+                    "e não pode ser redefinida pela parametrização. Corrija-a pelo apontamento."
+                )
+            # O trabalho real já parametrizou a etapa; preserve datas e histórico.
+            continue
         if applicable is None:
             applicable = _stage_applicable(code, work)
         started = datetime.utcnow() if status == "EM_ANDAMENTO" else None
@@ -1244,6 +1621,11 @@ def configure_stages(conn, work_id, payload, actor):
         status_by_code = {row["stage_code"]: row["status"] for row in rows}
         for code, _, dependencies in STAGES:
             if status_by_code.get(code) not in {"EM_ANDAMENTO", "CONCLUÍDA"}:
+                continue
+            stage_row = next(row for row in rows if row["stage_code"] == code)
+            if _has_operational_pointing(conn, stage_row["id"]):
+                # Trabalho já executado antes da O.S. não pode ser invalidado
+                # por uma regra de precedência aplicada posteriormente.
                 continue
             missing = [
                 dep for dep in dependencies
@@ -1406,7 +1788,7 @@ def _has_operational_pointing(conn, stage_id):
             select 1
             from erp_work_order_stage_events
             where work_order_stage_id=:stage
-              and action in ('APONTAMENTO','REABERTURA')
+              and action in ('APONTAMENTO','REABERTURA','APONTAMENTO_PRE_OS')
         )
     """), {"stage": stage_id}).scalar_one())
 

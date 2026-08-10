@@ -11,7 +11,7 @@
 .metrics{display:grid;grid-template-columns:repeat(6,minmax(120px,1fr));gap:8px;margin-bottom:10px}.metric{padding:10px 12px;border:1px solid var(--line);border-radius:7px;background:#fff}.metric span{display:block;color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase}.metric strong{display:block;margin-top:4px;font-size:21px}
 .panel{border:1px solid var(--line);border-radius:8px;background:#fff;overflow:hidden}.toolbar{display:flex;align-items:end;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);background:#f8fafc;flex-wrap:wrap}
 label{display:flex;flex-direction:column;gap:3px;color:#526174;font-size:11px;font-weight:750}input,select,textarea{width:100%;min-height:34px;padding:6px 8px;border:1px solid #cbd5e1;border-radius:5px;background:#fff;font:inherit}.search{min-width:340px;flex:1}
-.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(285px,1fr));gap:9px;padding:11px;max-height:650px;overflow:auto}.card{border:1px solid var(--line);border-left:4px solid var(--cyan);border-radius:7px;background:#fff;padding:11px;cursor:pointer}.card:hover{border-color:#93c5fd;box-shadow:0 3px 12px #0f172a12}.card.entry{border-left-color:#f59e0b;cursor:default}.card h3{margin:0 0 4px;font-size:15px}.card .line{display:flex;justify-content:space-between;gap:8px;margin-top:5px}.muted{color:var(--muted)}.badge{display:inline-flex;padding:3px 7px;border-radius:999px;background:#dbeafe;color:#1d4ed8;font-size:10px;font-weight:850}.badge.ATIVA,.badge.EM_PRODUÇÃO{background:#dcfce7;color:#166534}.badge.FINALIZADA,.badge.ENTREGUE,.badge.RETIRADA{background:#ede9fe;color:#6d28d9}.progress{height:7px;border-radius:999px;background:#e2e8f0;overflow:hidden;margin-top:8px}.progress span{display:block;height:100%;background:var(--green)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(285px,1fr));gap:9px;padding:11px;max-height:650px;overflow:auto}.card{border:1px solid var(--line);border-left:4px solid var(--cyan);border-radius:7px;background:#fff;padding:11px;cursor:pointer}.card:hover{border-color:#93c5fd;box-shadow:0 3px 12px #0f172a12}.card.entry{border-left-color:#f59e0b;cursor:pointer}.card h3{margin:0 0 4px;font-size:15px}.card .line{display:flex;justify-content:space-between;gap:8px;margin-top:5px}.muted{color:var(--muted)}.badge{display:inline-flex;padding:3px 7px;border-radius:999px;background:#dbeafe;color:#1d4ed8;font-size:10px;font-weight:850}.badge.ATIVA,.badge.EM_PRODUÇÃO{background:#dcfce7;color:#166534}.badge.FINALIZADA,.badge.ENTREGUE,.badge.RETIRADA{background:#ede9fe;color:#6d28d9}.progress{height:7px;border-radius:999px;background:#e2e8f0;overflow:hidden;margin-top:8px}.progress span{display:block;height:100%;background:var(--green)}
 .message{margin:0 0 10px;padding:9px 11px;border-radius:5px;background:#eaf7f3;color:#075d57}.message.error{background:#fff0f0;color:#b42318}.empty{padding:35px;text-align:center;color:var(--muted)}
 dialog{width:min(1480px,98vw);max-height:96vh;border:0;border-radius:9px;padding:0;box-shadow:0 24px 80px #0f172a66}dialog::backdrop{background:#0f172aaa}.modal-head{display:flex;justify-content:space-between;align-items:center;padding:12px 15px;background:var(--navy);color:#fff}.modal-head h2{margin:0;font-size:18px}.modal-head small{color:#cbd5e1}.modal-body{padding:12px 14px;overflow:auto;max-height:calc(96vh - 61px)}
 .entry-dialog{width:min(1050px,96vw)}.entry-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px}.span2{grid-column:span 2}.entry-foot{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 14px;border-top:1px solid var(--line);background:#f8fafc}
@@ -76,7 +76,7 @@ dialog{width:min(1480px,98vw);max-height:96vh;border:0;border-radius:9px;padding
     </header>
     <div class="table-wrap"><table class="stage-table"><thead id="stage-head"></thead><tbody id="stage-rows"></tbody></table></div>
   </section>
-  {% if current_user.can("mes.work_orders.manage") %}<section class="section">
+  {% if current_user.can("mes.work_orders.manage") %}<section id="lifecycle-section" class="section">
     <header class="section-head"><h3>Programação e encerramento</h3><span class="muted">A data inicial vem da abertura da O.S.; alterações aqui são reprogramações.</span></header>
     <div class="lifecycle">
       {% if current_user.can("mes.schedule.manage") %}<div><h4>Reprogramar entrega</h4><div class="form-row"><label>Nova data<input id="schedule-date" type="date"></label><label>Motivo<input id="schedule-reason" placeholder="Motivo obrigatório"></label><button class="btn primary" type="button" onclick="schedule()">Registrar</button></div></div>{% endif %}
@@ -125,7 +125,7 @@ datum('Situação',statusLabel),datum('Tipo de serviço',w.tipo_servico_grupo||w
 datum('Cliente',w.cliente_nome,true),datum('Município / UF',[w.municipio,w.uf].filter(Boolean).join(' / ')),datum('Veículo',[w.marca,w.modelo,w.versao].filter(Boolean).join(' '),true),datum('Chassi completo',w.chassi,true),
 datum('Linha',w.linha),datum('Transformação',[w.transformacao_codigo,w.transformacao].filter(Boolean).join(' — '),true),datum('Bancos',[w.codigo_banco,w.conjunto_bancos].filter(Boolean).join(' · '),true),datum('Acessibilidade',w.acessibilidade),datum('Lotação',w.lotacao),
 datum('Fornecedor do ar',w.ar_condicionado),datum('Tipo de ar',w.tipo_sistema_ar,true),datum('Ar quente?',w.ar_quente),datum('Acessório',w.acessorio),datum('Plotagem',w.plotagem),datum('Data de entrega vigente',date(w.data_comercial_prevista)),datum('Início do ciclo',datetime(w.inicio_ciclo_produtivo)),datum('Fim do ciclo',datetime(w.fim_ciclo_produtivo||w.termino_producao)),datum('Entrega / retirada',datetime(w.data_entrega)),datum('Avarias de entrada',w.avarias,true),datum('Informações de entrada',w.entry_notes,true)
-].join('');renderStages();renderHistory();const closingDate=document.getElementById('closing-date'),scheduleDate=document.getElementById('schedule-date'),closingStatus=document.getElementById('closing-status');const serviceSuffix=['PÓS-VENDAS','OUTROS'].includes(w.tipo_servico_grupo)?` ${w.tipo_servico_grupo}`:'';if(closingStatus){[...closingStatus.options].forEach(option=>{const base={FINALIZADA:'Produção finalizada',ENTREGUE:'Entregue',RETIRADA:'Retirada'}[option.value]||option.value;option.textContent=base+serviceSuffix})}if(closingDate)closingDate.value=new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16);if(scheduleDate)scheduleDate.value=isoDate(w.data_comercial_prevista);detailDialog.showModal()}catch(error){message(error.message,true)}}
+].join('');renderStages();renderHistory();const closingDate=document.getElementById('closing-date'),scheduleDate=document.getElementById('schedule-date'),closingStatus=document.getElementById('closing-status');const serviceSuffix=['PÓS-VENDAS','OUTROS'].includes(w.tipo_servico_grupo)?` ${w.tipo_servico_grupo}`:'';if(closingStatus){[...closingStatus.options].forEach(option=>{const base={FINALIZADA:'Produção finalizada',ENTREGUE:'Entregue',RETIRADA:'Retirada'}[option.value]||option.value;option.textContent=base+serviceSuffix})}if(closingDate)closingDate.value=new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16);if(scheduleDate)scheduleDate.value=isoDate(w.data_comercial_prevista);if(!detailDialog.open)detailDialog.showModal()}catch(error){message(error.message,true)}}
 const stageInputs=[['?','? — Parametrizar'],['P','P — Parcial'],['N','N — Pendente'],['S','S — Concluída'],['N/A','N/A — Não aplicável']];
 function renderStages(){const work=state.detail.work_order,closed=['FINALIZADA','ENTREGUE','RETIRADA','CANCELADA','ARQUIVADA'].includes(work.status),hardLocked=['CANCELADA','ARQUIVADA'].includes(work.status),configuring=['RASCUNHO','AGUARDANDO_O_S'].includes(work.status);document.getElementById('configuration-actions').hidden=!configuring;document.getElementById('stage-help').textContent=configuring?'Defina todas as etapas. Enquanto houver “?”, a O.S. permanece AG. PARAMETRIZAÇÃO.':closed?'Histórico técnico: as datas de início e fim podem ser corrigidas sem reabrir a O.S.':'';document.getElementById('stage-rows').innerHTML=(state.detail.stages||[]).map(s=>`<tr data-stage="${esc(s.stage_code)}" data-input-code="${esc(s.input_code||'?')}" data-has-operational-pointing="${s.has_operational_pointing?'1':'0'}"><td><span class="stage-code">${esc(s.stage_code)}</span><br><span class="badge ${esc(s.status)}">${esc(s.input_code||'?')} · ${esc(s.status.replaceAll('_',' '))}</span></td><td><select class="stage-status" ${closed?'disabled':''}>${stageInputs.map(([value,label])=>`<option value="${value}" ${value===(s.input_code||'?')?'selected':''}>${label}</option>`).join('')}</select></td><td><input class="stage-owner" value="${esc(s.responsavel||'')}" ${closed||configuring?'disabled':''}></td><td><input class="stage-location" value="${esc(s.localizacao||'')}" ${closed||configuring?'disabled':''}></td><td><input class="stage-start" type="datetime-local" value="${esc(inputDatetime(s.inicio))}" ${hardLocked?'disabled':''}></td><td><input class="stage-finish" type="datetime-local" value="${esc(inputDatetime(s.termino))}" ${hardLocked?'disabled':''}></td><td><input class="stage-note notes" value="${esc(s.observacoes||'')}" ${closed||configuring?'disabled':''}></td><td>${configuring?'—':`<button class="btn primary" ${hardLocked?'disabled':''} type="button" onclick="saveStage(this)">Salvar</button>`}</td></tr>`).join('')}
 async function saveStageConfiguration(activate){const work=state.detail.work_order,stages={};document.querySelectorAll('#stage-rows tr').forEach(row=>stages[row.dataset.stage]=row.querySelector('.stage-status').value);try{await api(`/api/erp/work-orders/${work.id}/stage-configuration`,{method:'PUT',body:JSON.stringify({stages,complete:activate,activate})});await loadOrders();await openDetail(work.id);message(activate?`O.S. ${work.numero_os} parametrizada e ativada no quadro produtivo.`:'Parametrização salva. A O.S. continuará em espera enquanto houver “?”.')}catch(error){message(error.message,true)}}
@@ -134,6 +134,7 @@ async function schedule(){const w=state.detail.work_order,payload={nova_data:doc
 async function closeWork(){const w=state.detail.work_order,status=document.getElementById('closing-status').value,localEvent=document.getElementById('closing-date').value,data_evento=localEvent?new Date(localEvent).toISOString():null,observacoes=document.getElementById('closing-note').value;const label={FINALIZADA:'finalizar a produção',ENTREGUE:'registrar a entrega',RETIRADA:'registrar a retirada'}[status];if(!confirm(`Confirma ${label} da O.S. ${w.numero_os}?`))return;try{await api(`/api/erp/work-orders/${w.id}/finalize`,{method:'POST',body:JSON.stringify({status,data_evento,observacoes})});detailDialog.close();await loadOrders();document.getElementById('view').value='HISTORY';render();message(`O.S. ${w.numero_os}: ${status.replaceAll('_',' ')}. Histórico preservado.`)}catch(error){message(error.message,true)}}
 function renderHistory(){const d=state.detail;document.getElementById('status-history').innerHTML=(d.status_history||[]).map(x=>eventHtml(`${x.status_anterior||'INÍCIO'} → ${x.novo_status}`,`${datetime(x.created_at)} · ${x.usuario}`,x.observacao||x.motivo)).join('')||'<div class="event muted">Sem alterações.</div>';document.getElementById('schedule-history').innerHTML=(d.schedules||[]).map(x=>eventHtml(`${x.data_anterior?date(x.data_anterior):'DATA INICIAL'} → ${date(x.nova_data)}`,`${datetime(x.created_at)} · ${x.usuario} · ${x.vigente?'DATA VIGENTE':'DATA ALTERADA'}`,x.motivo)).join('')||'<div class="event muted">Sem programação.</div>';document.getElementById('stage-history').innerHTML=(d.stage_events||[]).map(x=>eventHtml(`${x.stage_code}: ${x.status_anterior||'—'} → ${x.novo_status}`,`${datetime(x.created_at)} · ${x.operador}`,x.observacao)).join('')||'<div class="event muted">Sem apontamentos.</div>'}
 const canManage={{ current_user.can("mes.work_orders.manage")|tojson }};
+const canStageWrite={{ current_user.can("mes.stage.write")|tojson }};
 const operationalStatus=value=>norm(value).replace(/[_\s]+/g,' ').trim();
 const rowOperationalStatus=row=>operationalStatus(row?.status_operacional||row?.status||row?.entry_status);
 const isClosedWork=work=>['FINALIZADA','ENTREGUE','RETIRADA','CANCELADA','ARQUIVADA'].includes(work.status);
@@ -172,7 +173,7 @@ function render(){
   });
   document.getElementById('empty').hidden=rows.length>0;
   document.getElementById('cards').innerHTML=rows.map(x=>{
-    if(!x.work_order_id)return `<article class="card entry"><div class="line"><h3>ITEM ${esc(x.item_number)}</h3><span class="badge">AGUARDANDO O.S.</span></div><strong>${esc(x.chassi)}</strong><div class="muted">${esc(x.entry_client||'Cliente nao informado')}</div><div class="line"><span>${esc([x.marca,x.modelo,x.versao].filter(Boolean).join(' ')||'Veiculo nao detalhado')}</span><span>${date(x.data_chegada)}</span></div><p class="muted">Disponivel para abertura da O.S. em Suprimentos.</p></article>`;
+    if(!x.work_order_id){const pointed=Number(x.etapas_pre_os_apontadas||0),done=Number(x.etapas_pre_os_concluidas||0);return `<article class="card entry" onclick="openEntryDetail('${x.entry_id}')"><div class="line"><h3>ITEM ${esc(x.item_number)}</h3><span class="badge">AGUARDANDO O.S.</span></div><strong>${esc(String(x.chassi||'').slice(-8))}</strong><div class="muted">${esc(x.entry_client||'Cliente nao informado')}</div><div class="line"><span>${esc([x.marca,x.modelo,x.versao].filter(Boolean).join(' ')||'Veiculo nao detalhado')}</span><span>${date(x.data_chegada)}</span></div><div class="progress"><span style="width:${Math.round(done*100/12)}%"></span></div><div class="line muted"><span>${pointed}/12 etapas apontadas antes da O.S.</span><span>Abrir card</span></div></article>`;}
     const total=Number(x.etapas_aplicaveis||0),done=Number(x.etapas_concluidas||0),pct=total?Math.round(done*100/total):0;
     const vehicle=[x.marca,x.modelo,x.versao].filter(Boolean).join(' ')||'Veiculo nao detalhado';
     return `<article class="card" onclick="openDetail('${x.work_order_id}')"><div class="line"><h3>ITEM ${esc(x.item_number)} · O.S. ${esc(x.numero_os)}</h3><span class="badge ${esc(x.status)}">${esc(displayStatus(x))}</span></div><strong>${esc(String(x.chassi||'').slice(-8))}</strong><div>${esc(vehicle)}</div><div class="muted">${esc(x.cliente_nome||x.entry_client||'Cliente nao informado')}</div><div class="line"><span>${esc(x.tipo_servico_grupo||'TRANSFORMAÇÃO')} · ${esc(x.linha||'—')}</span><span>${date(x.data_comercial_prevista)}</span></div><div class="progress"><span style="width:${pct}%"></span></div><div class="line muted"><span>${done}/${total} etapas concluidas</span></div></article>`;
@@ -188,25 +189,36 @@ function stageResult(stage){
 }
 
 function renderStages(){
-  const work=state.detail.work_order;
+  const entryMode=state.detail?.mode==='ENTRY';
+  const work=state.detail.work_order||{status:'AGUARDANDO_O_S'};
   const stages=state.detail.stages||[];
-  const closed=isClosedWork(work);
+  const closed=!entryMode&&isClosedWork(work);
   const hardLocked=['CANCELADA','ARQUIVADA'].includes(work.status);
-  const configuring=['RASCUNHO','AGUARDANDO_O_S'].includes(work.status);
+  const configuring=!entryMode&&['RASCUNHO','AGUARDANDO_O_S'].includes(work.status);
   const header=document.getElementById('stage-head');
   const help=document.getElementById('stage-help');
   const configurationActions=document.getElementById('configuration-actions');
-  if(!canManage){
+  if(!canStageWrite){
     if(configurationActions)configurationActions.hidden=true;
     header.innerHTML='<tr><th>Etapa</th><th>Feito?</th><th>Responsavel</th><th>Inicio</th><th>Fim</th><th>Observacoes</th></tr>';
     help.textContent='Consulta resumida das etapas e do historico completo de alteracoes.';
     document.getElementById('stage-rows').innerHTML=stages.map(s=>`<tr><td><span class="stage-code">${esc(s.stage_code)}</span></td><td><span class="badge ${esc(s.status)}">${esc(stageResult(s))}</span></td><td>${esc(s.responsavel||'—')}</td><td>${esc(datetime(s.inicio))}</td><td>${esc(datetime(s.termino))}</td><td>${esc(s.observacoes||'—')}</td></tr>`).join('');
     return;
   }
-  if(configurationActions)configurationActions.hidden=!configuring;
+  if(configurationActions)configurationActions.hidden=!canManage||!configuring;
   header.innerHTML='<tr><th>Etapa</th><th>Status</th><th>Responsavel</th><th>Localizacao</th><th>Inicio</th><th>Termino</th><th>Observacoes</th><th></th></tr>';
-  help.textContent=configuring?'Defina todas as etapas antes de ativar o card.':closed?'Historico tecnico: datas podem ser corrigidas sem reabrir a O.S.':'';
-  document.getElementById('stage-rows').innerHTML=stages.map(s=>`<tr data-stage="${esc(s.stage_code)}" data-input-code="${esc(s.input_code||'?')}"><td><span class="stage-code">${esc(s.stage_code)}</span><br><span class="badge ${esc(s.status)}">${esc(s.input_code||'?')} · ${esc(s.status.replaceAll('_',' '))}</span></td><td><select class="stage-status" ${closed?'disabled':''}>${stageInputs.map(([value,label])=>`<option value="${value}" ${value===(s.input_code||'?')?'selected':''}>${label}</option>`).join('')}</select></td><td><input class="stage-owner" value="${esc(s.responsavel||'')}" ${closed||configuring?'disabled':''}></td><td><input class="stage-location" value="${esc(s.localizacao||'')}" ${closed||configuring?'disabled':''}></td><td><input class="stage-start" type="datetime-local" value="${esc(inputDatetime(s.inicio))}" ${hardLocked?'disabled':''}></td><td><input class="stage-finish" type="datetime-local" value="${esc(inputDatetime(s.termino))}" ${hardLocked?'disabled':''}></td><td><input class="stage-note notes" value="${esc(s.observacoes||'')}" ${closed||configuring?'disabled':''}></td><td>${configuring?'—':`<button class="btn primary" ${hardLocked?'disabled':''} type="button" onclick="saveStage(this)">Salvar</button>`}</td></tr>`).join('');
+  help.textContent=entryMode
+    ?'Apontamento preliminar por ITEM. Ao abrir a O.S., estes registros serão incorporados automaticamente e não precisarão ser parametrizados novamente.'
+    :configuring
+      ?'Defina somente as etapas ainda marcadas com ?. Etapas já apontadas antes da O.S. estão preservadas.'
+      :closed?'Historico tecnico: datas podem ser corrigidas sem reabrir a O.S.':'';
+  document.getElementById('stage-rows').innerHTML=stages.map(s=>{
+    const hasPointing=Boolean(s.has_operational_pointing);
+    const fieldsLocked=closed||(configuring&&!hasPointing);
+    const actionAllowed=entryMode||!configuring||hasPointing;
+    const origin=hasPointing&&configuring?'<br><small class="muted">Apontada antes da O.S.</small>':'';
+    return `<tr data-stage="${esc(s.stage_code)}" data-input-code="${esc(s.input_code||'?')}" data-has-operational-pointing="${hasPointing?'1':'0'}"><td><span class="stage-code">${esc(s.stage_code)}</span>${origin}<br><span class="badge ${esc(s.status)}">${esc(s.input_code||'?')} · ${esc(s.status.replaceAll('_',' '))}</span></td><td><select class="stage-status" ${closed?'disabled':''}>${stageInputs.map(([value,label])=>`<option value="${value}" ${value===(s.input_code||'?')?'selected':''}>${label}</option>`).join('')}</select></td><td><input class="stage-owner" value="${esc(s.responsavel||'')}" ${fieldsLocked?'disabled':''}></td><td><input class="stage-location" value="${esc(s.localizacao||'')}" ${fieldsLocked?'disabled':''}></td><td><input class="stage-start" type="datetime-local" value="${esc(inputDatetime(s.inicio))}" ${hardLocked?'disabled':''}></td><td><input class="stage-finish" type="datetime-local" value="${esc(inputDatetime(s.termino))}" ${hardLocked?'disabled':''}></td><td><input class="stage-note notes" value="${esc(s.observacoes||'')}" ${fieldsLocked?'disabled':''}></td><td>${actionAllowed?`<button class="btn primary" ${hardLocked?'disabled':''} type="button" onclick="saveStage(this)">${hasPointing?'Corrigir':'Salvar'}</button>`:'—'}</td></tr>`;
+  }).join('');
 }
 
 async function loadOrders(){
@@ -268,18 +280,55 @@ function prepareClosingForm(){
 const openingDetailWithClosingReset=openDetail;
 openDetail=async function(id){
   await openingDetailWithClosingReset(id);
+  state.detail.mode='WORK_ORDER';
+  const lifecycle=document.getElementById('lifecycle-section');
+  if(lifecycle)lifecycle.hidden=false;
   resetClosingForm();
 };
+
+async function openEntryDetail(entryId){
+  try{
+    const data=await api(`/api/erp/vehicle-entries/${entryId}/stages`);
+    state.detail=data;
+    const entry=data.entry;
+    document.getElementById('detail-title').textContent=`ITEM ${entry.item_number} · apontamento antes da O.S.`;
+    document.getElementById('detail-subtitle').textContent=`${entry.chassi} · ${entry.cliente_nome||'Cliente não informado'} · AGUARDANDO O.S.`;
+    document.getElementById('summary').innerHTML=[
+      datum('Situação','AGUARDANDO O.S.'),
+      datum('Tipo preliminar',entry.tipo_preliminar||'TRANSFORMAÇÃO'),
+      datum('Entrada',datetime(entry.data_chegada)),
+      datum('Cliente',entry.cliente_nome,true),
+      datum('Veículo',[entry.marca,entry.modelo,entry.versao].filter(Boolean).join(' '),true),
+      datum('Chassi completo',entry.chassi,true),
+      datum('Avarias de entrada',entry.avarias||'NÃO'),
+      datum('Informações de entrada',entry.observacoes,true)
+    ].join('');
+    const lifecycle=document.getElementById('lifecycle-section');
+    if(lifecycle)lifecycle.hidden=true;
+    renderStages();
+    renderHistory();
+    if(!detailDialog.open)detailDialog.showModal();
+  }catch(error){
+    message(error.message,true);
+  }
+}
 
 const closingStatusControl=document.getElementById('closing-status');
 if(closingStatusControl)closingStatusControl.addEventListener('change',prepareClosingForm);
 
 async function saveStage(button){
-  const row=button.closest('tr'),work=state.detail.work_order;
+  const row=button.closest('tr');
+  const entryMode=state.detail?.mode==='ENTRY';
+  const work=state.detail.work_order;
+  const entry=state.detail.entry;
   const start=row.querySelector('.stage-start').value;
   const finish=row.querySelector('.stage-finish').value;
   const inputCode=row.querySelector('.stage-status').value;
   const previousCode=row.dataset.inputCode||'?';
+  if(inputCode==='?'){
+    message(`Etapa ${row.dataset.stage}: escolha P, N, S ou N/A antes de salvar.`,true);
+    return;
+  }
   const statusChanged=previousCode!=='?'&&inputCode!==previousCode;
   const requiresConfirmation=statusChanged&&row.dataset.hasOperationalPointing==='1';
   if(requiresConfirmation&&!window.confirm(`A etapa ${row.dataset.stage} já possui o apontamento ${previousCode}. Tem certeza que gostaria de alterar o apontamento para ${inputCode}?`)){
@@ -307,10 +356,16 @@ async function saveStage(button){
   }
   button.disabled=true;
   try{
-    await api(`/api/erp/work-orders/${work.id}/stages/${encodeURIComponent(row.dataset.stage)}`,{method:'POST',body:JSON.stringify(payload)});
-    await openDetail(work.id);
+    const endpoint=entryMode
+      ?`/api/erp/vehicle-entries/${entry.id}/stages/${encodeURIComponent(row.dataset.stage)}`
+      :`/api/erp/work-orders/${work.id}/stages/${encodeURIComponent(row.dataset.stage)}`;
+    await api(endpoint,{method:'POST',body:JSON.stringify(payload)});
+    if(entryMode)await openEntryDetail(entry.id);
+    else await openDetail(work.id);
     await loadOrders();
-    message(`Etapa ${row.dataset.stage} atualizada na O.S. e na Visão Geral.`);
+    message(entryMode
+      ?`Etapa ${row.dataset.stage} apontada no ITEM. Ela será preservada quando a O.S. for aberta.`
+      :`Etapa ${row.dataset.stage} atualizada na O.S. e na Visão Geral.`);
   }catch(error){
     message(error.message,true);
   }finally{

@@ -365,7 +365,13 @@ class MesStageWriteSafetyTests(unittest.TestCase):
         with (
             patch.object(main, "erp_feature_enabled", return_value=True),
             patch.object(main, "require_login", return_value=user),
-            patch.object(main, "has_permission", return_value=True),
+            # O operador recebe somente mes.stage.write; ele não precisa da
+            # permissão de PCP para registrar uma etapa produtiva.
+            patch.object(
+                main,
+                "has_permission",
+                side_effect=lambda _user, permission: permission == main.authz.MES_STAGE_WRITE,
+            ),
             patch.object(main.database.engine, "begin", return_value=FakeTransaction()),
             patch.object(
                 main.erp_service,

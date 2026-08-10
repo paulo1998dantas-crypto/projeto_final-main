@@ -55,7 +55,14 @@ class MesSharedAuthRbacTests(unittest.TestCase):
         self.assertIsNone(authz.get_shared_current_user(request, _FailingBeginEngine()))
 
     def test_explicit_role_matrix(self):
-        for role in ("OPERADOR", "COMPRADOR"):
+        operador = authz._default_permissions({"OPERADOR"})
+        self.assertIn(authz.MES_DASHBOARD_READ, operador)
+        self.assertIn(authz.MES_EXPORTS_READ, operador)
+        self.assertIn(authz.MES_STAGE_WRITE, operador)
+        self.assertNotIn(authz.MES_WORK_ORDERS_MANAGE, operador)
+        self.assertNotIn(authz.MES_FINALIZE, operador)
+
+        for role in ("COMPRADOR",):
             permissions = authz._default_permissions({role})
             self.assertIn(authz.MES_DASHBOARD_READ, permissions)
             self.assertIn(authz.MES_EXPORTS_READ, permissions)
@@ -213,6 +220,17 @@ class MesSharedAuthRbacTests(unittest.TestCase):
             html.count("{% if not can_point %}disabled{% endif %}"),
             8,
         )
+
+    def test_stage_routes_do_not_require_work_order_management(self):
+        """OPERADOR aponta etapas sem receber poderes de PCP/Admin."""
+        for endpoint in (main.erp_stage, main.erp_stage_details, main.erp_location):
+            with self.subTest(endpoint=endpoint.__name__):
+                source = inspect.getsource(endpoint)
+                self.assertIn("MES_STAGE_WRITE", source)
+                self.assertNotIn(
+                    "has_permission(user, authz.MES_WORK_ORDERS_MANAGE)",
+                    source,
+                )
 
     def test_active_options_are_compact_filtered_and_limited(self):
         connection = _Connection([{
