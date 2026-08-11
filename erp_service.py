@@ -1096,7 +1096,7 @@ def update_work_order(conn, work_id, payload, actor):
         conn.execute(text("""
             update erp_work_order_stages
                set data_planejada=:date,
-                   semana_planejada=to_char(:date::date,'IW')
+                   semana_planejada=to_char(cast(:date as date),'IW')
              where work_order_id=:id
         """), {"id": work_id, "date": fields["data_comercial_prevista"]})
     if not is_draft:
@@ -2414,7 +2414,7 @@ def reschedule(conn, work_id, new_date, reason, actor):
     if _sequence_schema_ready(conn):
         conn.execute(text("""
             update erp_work_order_stages
-               set data_planejada=:date,semana_planejada=to_char(:date::date,'IW')
+               set data_planejada=:date,semana_planejada=to_char(cast(:date as date),'IW')
              where work_order_id=:id
         """), {"id": work_id, "date": _date_value(new_date)})
     recalculate_work_order_sequences(conn, actor)
