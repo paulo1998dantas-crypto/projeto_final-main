@@ -1,4 +1,5 @@
 import unittest
+import json
 from unittest.mock import patch
 
 import erp_service
@@ -140,6 +141,39 @@ class VehicleChassisTests(unittest.TestCase):
         self.assertEqual(len(inserts), 1)
         self.assertTrue(inserts[0]["chassi_completo"])
         self.assertIsNone(inserts[0]["legacy_chassi_reduzido"])
+
+    def test_updates_vehicle_entry_and_records_audit(self):
+        current = {
+            "id": "entry-1", "item_number": 3111, "vehicle_id": "vehicle-1",
+            "chassi": "9V8VPFC30TA001776", "marca": "PEUGEOT", "modelo": "EXPERT",
+            "versao": "FURGÃO", "mmv": "", "data_chegada": "2026-07-24T10:00:00",
+            "cliente_nome": "CLIENTE", "observacoes": "", "avarias": "NAO",
+            "status": "AGUARDANDO_O_S",
+        }
+
+        class UpdateConnection:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, statement, params=None):
+                sql = " ".join(str(statement).split()).lower()
+                self.calls.append((sql, params or {}))
+                if "from erp_vehicle_entries e" in sql:
+                    return FakeResult([current])
+                return FakeResult()
+
+        conn = UpdateConnection()
+        result = erp_service.update_vehicle_entry(
+            conn, "entry-1", {"versao": "VITRÊ", "avarias": "NÃO"}, "PCP",
+        )
+
+        self.assertFalse(result["replayed"])
+        self.assertEqual("VITRÊ", result["versao"])
+        vehicle_update = next(params for sql, params in conn.calls if sql.startswith("update erp_vehicles"))
+        self.assertEqual("VITRÊ", vehicle_update["versao"])
+        audit = next(params for sql, params in conn.calls if sql.startswith("insert into erp_audit_events"))
+        self.assertEqual("FURGÃO", json.loads(audit["before_data"])["versao"])
+        self.assertEqual("VITRÊ", json.loads(audit["after_data"])["versao"])
 
 
 if __name__ == "__main__":

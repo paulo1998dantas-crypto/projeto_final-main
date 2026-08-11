@@ -130,12 +130,10 @@ TRANSFORMACOES = [
     ("40340057", "JI D-CLASS TB VITRE E/S/J"),
 ]
 
-REQUIRED_WORK_ORDER_FIELDS = [
-    "tipo_servico", "proposta_numero", "data_aprovacao", "vendedor", "mercado",
-    "cliente_nome", "municipio", "uf", "tipo_veiculo", "linha",
-    "transformacao_codigo", "transformacao", "tipo_sistema_ar", "ar_quente",
-    "data_comercial_prevista",
-]
+# Only the service type is structural.  The operational O.S. can be opened and
+# activated with the remaining commercial data blank or explicitly marked N/A;
+# the stage parametrization remains the activation safety gate.
+REQUIRED_WORK_ORDER_FIELDS = ["tipo_servico"]
 
 
 def payload():

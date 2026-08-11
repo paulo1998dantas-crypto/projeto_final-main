@@ -845,6 +845,101 @@ def create_entry(conn, payload, actor):
     _ensure_entry_stage_rows(conn, entry_id)
     return {'id':entry_id,'vehicle_id':vehicle_id,'item_number':int(row['item_number'])}
 
+
+def update_vehicle_entry(conn, entry_id, payload, actor):
+    """Correct the arrival record and the physical vehicle without losing history."""
+    current = _one(conn.execute(text("""
+        select e.*,v.chassi,v.marca,v.modelo,v.versao,v.mmv
+          from erp_vehicle_entries e
+          join erp_vehicles v on v.id=e.vehicle_id
+         where e.id=:id
+         for update
+    """), {"id": entry_id}))
+    if not current:
+        raise ValueError("Entrada de veiculo nao encontrada.")
+
+    before = {
+        key: current.get(key)
+        for key in (
+            "item_number", "vehicle_id", "chassi", "marca", "modelo", "versao", "mmv",
+            "data_chegada", "cliente_nome", "observacoes", "avarias", "status",
+        )
+    }
+    vehicle_values = {
+        key: str(payload.get(key) if key in payload else current.get(key) or "").strip()
+        for key in ("marca", "modelo", "versao", "mmv")
+    }
+    new_chassis = _normalize_chassis(payload.get("chassi", current.get("chassi")))
+    if not _is_complete_vin(new_chassis):
+        raise ValueError("Informe o chassi completo com 17 caracteres.")
+    if new_chassis != current.get("chassi"):
+        conn.execute(
+            text("select pg_advisory_xact_lock(hashtext(:key))"),
+            {"key": f"erp_vehicle_vin:{new_chassis}"},
+        )
+        duplicate = _one(conn.execute(text("""
+            select id from erp_vehicles
+             where chassi=:chassi and id<>:vehicle_id
+             for update
+        """), {"chassi": new_chassis, "vehicle_id": current["vehicle_id"]}))
+        if duplicate:
+            raise ValueError("O chassi informado ja pertence a outro veiculo.")
+
+    arrival = payload.get("data_chegada", current.get("data_chegada"))
+    if arrival in (None, ""):
+        raise ValueError("A data e hora de chegada sao obrigatorias.")
+    entry_values = {
+        "data_chegada": arrival,
+        "cliente_nome": str(payload.get("cliente_nome") if "cliente_nome" in payload else current.get("cliente_nome") or "").strip(),
+        "observacoes": str(payload.get("observacoes") if "observacoes" in payload else current.get("observacoes") or "").strip(),
+        "avarias": str(payload.get("avarias") if "avarias" in payload else current.get("avarias") or "NAO").strip().upper(),
+    }
+    if _token(entry_values["avarias"]) not in {"SIM", "NAO", "N/A"}:
+        raise ValueError("Avarias deve ser SIM, NAO ou N/A.")
+
+    after = {
+        **before,
+        **vehicle_values,
+        **entry_values,
+        "chassi": new_chassis,
+    }
+    comparable_before = {key: str(value or "") for key, value in before.items()}
+    comparable_after = {key: str(value or "") for key, value in after.items()}
+    if comparable_before == comparable_after:
+        return {"id": str(entry_id), "item_number": int(current["item_number"]), "replayed": True}
+
+    conn.execute(text("""
+        update erp_vehicles
+           set chassi=:chassi,marca=:marca,modelo=:modelo,versao=:versao,mmv=:mmv,
+               chassi_completo=true,legacy_chassi_reduzido=null
+         where id=:vehicle_id
+    """), {"vehicle_id": current["vehicle_id"], "chassi": new_chassis, **vehicle_values})
+    conn.execute(text("""
+        update erp_vehicle_entries
+           set data_chegada=:data_chegada,cliente_nome=:cliente_nome,
+               observacoes=:observacoes,avarias=:avarias
+         where id=:id
+    """), {"id": entry_id, **entry_values})
+    conn.execute(text("""
+        insert into erp_audit_events(
+            entity_type,entity_id,action,actor,origin,before_data,after_data,reason
+        ) values(
+            'VEHICLE_ENTRY',:id,'ENTRADA_VEICULO_ATUALIZADA',:actor,'MES',
+            cast(:before_data as jsonb),cast(:after_data as jsonb),:reason
+        )
+    """), {
+        "id": entry_id,
+        "actor": actor,
+        "before_data": json.dumps(before, default=str, ensure_ascii=False),
+        "after_data": json.dumps(after, default=str, ensure_ascii=False),
+        "reason": str(payload.get("motivo") or "Correcao dos dados informados na entrada do veiculo."),
+    })
+    return {
+        "id": str(entry_id), "vehicle_id": str(current["vehicle_id"]),
+        "item_number": int(current["item_number"]), "replayed": False,
+        **after,
+    }
+
 def create_work_order(conn, entry_id, payload, actor):
     documento_os_id = _optional_documento_os_id(payload)
     entry=_one(conn.execute(text('select item_number,data_chegada from erp_vehicle_entries where id=:id for update'),{'id':entry_id}))
@@ -1075,8 +1170,10 @@ def activate_work_order(conn, work_id, actor):
             f"A O.S. aguarda parametrização das etapas no MES ({pending_stages} etapa(s) com ?)."
         )
     missing = [field for field in REQUIRED_WORK_ORDER_FIELDS if not str(work.get(field) or "").strip()]
+    air_type = _token(work.get("tipo_sistema_ar"))
     if (
-        _token(work.get("tipo_sistema_ar")) not in {"NAO", "AR ORIGINAL", "AG", "N/A"}
+        air_type
+        and air_type not in {"NAO", "AR ORIGINAL", "AG", "N/A"}
         and not str(work.get("ar_condicionado") or "").strip()
     ):
         missing.append("ar_condicionado")
@@ -1092,7 +1189,8 @@ def activate_work_order(conn, work_id, actor):
     }
     invalid = [
         field for field, options in controlled.items()
-        if _token(work.get(field)) not in {_token(option) for option in options}
+        if str(work.get(field) or "").strip()
+        and _token(work.get(field)) not in {_token(option) for option in options}
     ]
     if (
         str(work.get("ar_condicionado") or "").strip()
@@ -1100,12 +1198,15 @@ def activate_work_order(conn, work_id, actor):
     ):
         invalid.append("ar_condicionado")
     transformations = {str(code): description for code, description in TRANSFORMACOES}
-    if (
-        str(work.get("transformacao_codigo") or "") not in transformations
-        or _token(transformations.get(str(work.get("transformacao_codigo") or ""), ""))
-           != _token(work.get("transformacao"))
-    ):
-        invalid.append("transformacao")
+    transformation_code = str(work.get("transformacao_codigo") or "").strip()
+    transformation_description = str(work.get("transformacao") or "").strip()
+    if transformation_code or transformation_description:
+        if (
+            transformation_code not in transformations
+            or _token(transformations.get(transformation_code, ""))
+               != _token(transformation_description)
+        ):
+            invalid.append("transformacao")
     if invalid:
         raise ValueError("Valores fora das listas controladas: " + ", ".join(invalid) + ".")
     has_started = bool(conn.execute(text("""
@@ -1459,7 +1560,8 @@ def update_vehicle_entry_stage(conn, entry_id, code, payload, actor):
 
 def work_order_detail(conn, work_id):
     work = _one(conn.execute(text("""
-        select w.*,e.item_number,e.data_chegada,e.status as entry_status,e.observacoes as entry_notes,
+        select w.*,e.item_number,e.data_chegada,e.status as entry_status,
+               e.cliente_nome as entry_client,e.observacoes as entry_notes,
                e.avarias,v.chassi,v.marca,v.modelo,v.versao,v.mmv,
                f.id as forecast_id,f.codigo as forecast_codigo,f.status as forecast_status
                ,seq.sequencia,seq.semana_planejada,seq.prioridade_manual

@@ -2278,6 +2278,29 @@ async def erp_vehicle_entry(request: Request, data: dict = Body(...), db: Sessio
     except ValueError as exc: return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
+@app.put("/api/erp/vehicle-entries/{entry_id}")
+async def erp_update_vehicle_entry(
+    entry_id: str,
+    request: Request,
+    data: dict = Body(...),
+    db: Session = Depends(database.get_db),
+):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    user = require_login(request, db)
+    if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not (
+        has_permission(user, authz.MES_WORK_ORDERS_MANAGE)
+        and has_permission(user, authz.MES_VEHICLE_ENTRIES_CREATE)
+    ):
+        return permission_denied(api=True)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.update_vehicle_entry(conn, entry_id, data, user.nome)
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
 @app.get("/api/erp/vehicle-entries/{entry_id}/stages")
 async def erp_vehicle_entry_stages(
     entry_id: str,
@@ -2685,6 +2708,19 @@ async def erp_internal_vehicle_entry(request: Request, data: dict = Body(...)):
     try:
         with database.engine.begin() as conn:
             result = erp_service.create_entry(conn, data, actor)
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@app.put("/api/erp/internal/vehicle-entries/{entry_id}")
+async def erp_internal_update_vehicle_entry(entry_id: str, request: Request, data: dict = Body(...)):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    actor = erp_backend_actor(request)
+    if not actor: return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.update_vehicle_entry(conn, entry_id, data, actor)
         return {"ok": True, **result}
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
