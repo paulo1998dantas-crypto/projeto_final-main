@@ -996,8 +996,13 @@ def create_work_order(conn, entry_id, payload, actor):
         for key, value in payload.items()
         if key in fields
     })
-    conn.execute(text("""insert into erp_work_orders(id,vehicle_entry_id,numero_os,tipo_servico,proposta_numero,data_aprovacao,vendedor,mercado,cliente_nome,municipio,uf,tipo_veiculo,linha,transformacao_codigo,transformacao,codigo_banco,conjunto_bancos,acessibilidade,lotacao,ar_condicionado,tipo_sistema_ar,ar_quente,acessorio,plotagem,data_comercial_prevista,criado_por) values(:id,:entry,:number,:tipo_servico,:proposta_numero,:data_aprovacao,:vendedor,:mercado,:cliente_nome,:municipio,:uf,:tipo_veiculo,:linha,:transformacao_codigo,:transformacao,:codigo_banco,:conjunto_bancos,:acessibilidade,:lotacao,:ar_condicionado,:tipo_sistema_ar,:ar_quente,:acessorio,:plotagem,:data_comercial_prevista,:actor)"""),{'id':work_id,'entry':entry_id,'number':number,'actor':actor,**fields})
-    conn.execute(text("insert into erp_work_order_status_history(work_order_id,novo_status,usuario,observacao) values(:id,'RASCUNHO',:actor,'O.S. aberta')"),{'id':work_id,'actor':actor})
+    # Opening the O.S. is already its business emission.  MES stage
+    # parametrization is a later, independent step and remains represented by
+    # stage_configuration_status=PENDENTE until the PCP configures all stages.
+    # AGUARDANDO_O_S is the existing pre-activation state accepted throughout
+    # the transition, so this change avoids introducing a second lifecycle.
+    conn.execute(text("""insert into erp_work_orders(id,vehicle_entry_id,numero_os,tipo_servico,proposta_numero,data_aprovacao,vendedor,mercado,cliente_nome,municipio,uf,tipo_veiculo,linha,transformacao_codigo,transformacao,codigo_banco,conjunto_bancos,acessibilidade,lotacao,ar_condicionado,tipo_sistema_ar,ar_quente,acessorio,plotagem,data_comercial_prevista,criado_por,status) values(:id,:entry,:number,:tipo_servico,:proposta_numero,:data_aprovacao,:vendedor,:mercado,:cliente_nome,:municipio,:uf,:tipo_veiculo,:linha,:transformacao_codigo,:transformacao,:codigo_banco,:conjunto_bancos,:acessibilidade,:lotacao,:ar_condicionado,:tipo_sistema_ar,:ar_quente,:acessorio,:plotagem,:data_comercial_prevista,:actor,'AGUARDANDO_O_S')"""),{'id':work_id,'entry':entry_id,'number':number,'actor':actor,**fields})
+    conn.execute(text("insert into erp_work_order_status_history(work_order_id,novo_status,usuario,observacao) values(:id,'AGUARDANDO_O_S',:actor,'O.S. emitida; parametrizacao MES pendente')"),{'id':work_id,'actor':actor})
     _ensure_stage_rows(conn, work_id, fields)
     promoted_stages = _promote_entry_stage_pointings(conn, entry_id, work_id, actor)
     if fields["data_comercial_prevista"]:
@@ -1038,6 +1043,7 @@ def create_work_order(conn, entry_id, payload, actor):
         )
     result = {
         'id':work_id, 'numero_os':number, 'replayed':False,
+        'status':'AGUARDANDO_O_S',
         'stage_configuration_status':'CONCLUIDA' if promoted_stages == len(STAGES) else 'PENDENTE',
         'promoted_pre_os_stages':promoted_stages,
         'forecast_id':forecast_id,

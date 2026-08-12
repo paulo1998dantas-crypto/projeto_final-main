@@ -65,6 +65,17 @@ class ForecastAllocationTests(unittest.TestCase):
         self.assertEqual(allocation[0]["entry_id"], "entry-real-vehicle")
         self.assertEqual(allocation[0]["work_id"], "work-1")
         self.assertFalse(any("chassi" in sql for sql, _ in conn.calls if "suprimentos_forecasts" in sql))
+        work_order_insert = next(
+            sql for sql, _ in conn.calls if sql.startswith("insert into erp_work_orders")
+        )
+        self.assertIn("status", work_order_insert)
+        self.assertIn("'aguardando_o_s'", work_order_insert)
+        history_insert = next(
+            sql for sql, _ in conn.calls
+            if sql.startswith("insert into erp_work_order_status_history")
+        )
+        self.assertIn("'aguardando_o_s'", history_insert)
+        self.assertEqual(result["status"], "AGUARDANDO_O_S")
 
     @patch("erp_service._ensure_stage_rows")
     def test_rejects_non_active_forecast_before_creating_work_order(self, _stages):
