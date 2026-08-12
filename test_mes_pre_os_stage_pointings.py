@@ -99,6 +99,17 @@ class MesPreOsStagePointingTests(unittest.TestCase):
         self.assertIn("já foi apontada", source)
         self.assertIn("preserve datas e histórico", source)
 
+    def test_incomplete_active_configuration_can_be_recovered(self):
+        source = inspect.getsource(erp_service.configure_stages)
+        self.assertIn("recoverable_active_configuration", source)
+        self.assertIn('work["status"] in {"ATIVA", "EM_PRODUÇÃO"}', source)
+        self.assertIn('stage_configuration_status") != "CONCLUIDA"', source)
+
+        template = Path(__file__).with_name("templates") / "gestao_os.html"
+        html = template.read_text(encoding="utf-8")
+        self.assertIn("configurationPending", html)
+        self.assertIn("stages.some(s=>!s.parametrizado)", html)
+
     def test_management_card_exposes_pre_os_endpoint_and_preserves_pointing(self):
         template = Path(__file__).with_name("templates") / "gestao_os.html"
         source = template.read_text(encoding="utf-8")

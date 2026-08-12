@@ -1630,7 +1630,12 @@ def configure_stages(conn, work_id, payload, actor):
     """), {"id": work_id}))
     if not work:
         raise ValueError("O.S. não encontrada.")
-    if work["status"] not in {"RASCUNHO", "AGUARDANDO_O_S"}:
+    initial_configuration = work["status"] in {"RASCUNHO", "AGUARDANDO_O_S"}
+    recoverable_active_configuration = (
+        work["status"] in {"ATIVA", "EM_PRODUÇÃO"}
+        and work.get("stage_configuration_status") != "CONCLUIDA"
+    )
+    if not (initial_configuration or recoverable_active_configuration):
         raise ValueError("A parametrização inicial só pode ser alterada antes da ativação.")
     _ensure_stage_rows(conn, work_id, work)
 
