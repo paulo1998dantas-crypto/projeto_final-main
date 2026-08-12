@@ -11,7 +11,7 @@
 .metrics{display:grid;grid-template-columns:repeat(6,minmax(120px,1fr));gap:8px;margin-bottom:10px}.metric{padding:10px 12px;border:1px solid var(--line);border-radius:7px;background:#fff}.metric span{display:block;color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase}.metric strong{display:block;margin-top:4px;font-size:21px}
 .panel{border:1px solid var(--line);border-radius:8px;background:#fff;overflow:hidden}.toolbar{display:flex;align-items:end;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);background:#f8fafc;flex-wrap:wrap}
 label{display:flex;flex-direction:column;gap:3px;color:#526174;font-size:11px;font-weight:750}input,select,textarea{width:100%;min-height:34px;padding:6px 8px;border:1px solid #cbd5e1;border-radius:5px;background:#fff;font:inherit}.search{min-width:340px;flex:1}
-.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(285px,1fr));gap:9px;padding:11px;max-height:650px;overflow:auto}.card{border:1px solid var(--line);border-left:4px solid var(--cyan);border-radius:7px;background:#fff;padding:11px;cursor:pointer}.card:hover{border-color:#93c5fd;box-shadow:0 3px 12px #0f172a12}.card.entry{border-left-color:#f59e0b;cursor:pointer}.card h3{margin:0 0 4px;font-size:15px}.card .line{display:flex;justify-content:space-between;gap:8px;margin-top:5px}.muted{color:var(--muted)}.badge{display:inline-flex;padding:3px 7px;border-radius:999px;background:#dbeafe;color:#1d4ed8;font-size:10px;font-weight:850}.badge.ATIVA,.badge.EM_PRODUÇÃO{background:#dcfce7;color:#166534}.badge.FINALIZADA,.badge.ENTREGUE,.badge.RETIRADA{background:#ede9fe;color:#6d28d9}.progress{height:7px;border-radius:999px;background:#e2e8f0;overflow:hidden;margin-top:8px}.progress span{display:block;height:100%;background:var(--green)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(285px,1fr));gap:9px;padding:11px;max-height:650px;overflow:auto}.card{border:1px solid var(--line);border-left:4px solid var(--cyan);border-radius:7px;background:#fff;padding:11px;cursor:pointer}.card:hover{border-color:#93c5fd;box-shadow:0 3px 12px #0f172a12}.card.entry{border-left-color:#f59e0b;cursor:pointer}.card h3{margin:0 0 4px;font-size:15px}.card .line{display:flex;justify-content:space-between;gap:8px;margin-top:5px}.muted{color:var(--muted)}.badge{display:inline-flex;padding:3px 7px;border-radius:999px;background:#dbeafe;color:#1d4ed8;font-size:10px;font-weight:850}.badge.ATIVA,.badge.EM_PRODUÇÃO{background:#dcfce7;color:#166534}.badge.FINALIZADA,.badge.ENTREGUE,.badge.RETIRADA{background:#ede9fe;color:#6d28d9}.badge.CANCELADA{background:#fee2e2;color:#b91c1c}.progress{height:7px;border-radius:999px;background:#e2e8f0;overflow:hidden;margin-top:8px}.progress span{display:block;height:100%;background:var(--green)}
 .message{margin:0 0 10px;padding:9px 11px;border-radius:5px;background:#eaf7f3;color:#075d57}.message.error{background:#fff0f0;color:#b42318}.empty{padding:35px;text-align:center;color:var(--muted)}
 dialog{width:min(1480px,98vw);max-height:96vh;border:0;border-radius:9px;padding:0;box-shadow:0 24px 80px #0f172a66}dialog::backdrop{background:#0f172aaa}.modal-head{display:flex;justify-content:space-between;align-items:center;padding:12px 15px;background:var(--navy);color:#fff}.modal-head h2{margin:0;font-size:18px}.modal-head small{color:#cbd5e1}.modal-body{padding:12px 14px;overflow:auto;max-height:calc(96vh - 61px)}
 .entry-dialog{width:min(1050px,96vw)}.entry-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px}.span2{grid-column:span 2}.entry-foot{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 14px;border-top:1px solid var(--line);background:#f8fafc}
@@ -39,7 +39,7 @@ dialog{width:min(1480px,98vw);max-height:96vh;border:0;border-radius:9px;padding
 <section class="panel">
   <div class="toolbar">
     <label class="search">Buscar<input id="search" type="search" placeholder="ITEM, O.S., chassi, cliente, linha ou transformação" oninput="render()"></label>
-    <label>Visão<select id="view" onchange="render()"><option value="WIP">Em processo (WIP: pátio + produção)</option><option value="ENTRIES">Entradas aguardando O.S.</option><option value="FINISHED">Finalizadas — todas</option><option value="DELIVERED">Entregues — todas</option><option value="DELIVERED_TRANSFORMATION">Entregues — transformação</option><option value="DELIVERED_POST_SALE">Entregues — pós-vendas</option><option value="DELIVERED_OTHER">Entregues — outros</option><option value="ALL">Todos os veículos</option></select></label>
+    <label>Visão<select id="view" onchange="render()"><option value="WIP">Em processo (WIP: pátio + produção)</option><option value="ENTRIES">Entradas aguardando O.S.</option><option value="FINISHED">Finalizadas — todas</option><option value="DELIVERED">Entregues — todas</option><option value="DELIVERED_TRANSFORMATION">Entregues — transformação</option><option value="DELIVERED_POST_SALE">Entregues — pós-vendas</option><option value="DELIVERED_OTHER">Entregues — outros</option><option value="CANCELLED">Canceladas — todas</option><option value="ALL">Todos os veículos</option></select></label>
     <button class="btn" type="button" onclick="document.getElementById('search').value='';render()">Limpar</button>
   </div>
   <div id="cards" class="cards"></div><div id="empty" class="empty" hidden>Nenhum registro encontrado nesta visão.</div>
@@ -81,7 +81,7 @@ dialog{width:min(1480px,98vw);max-height:96vh;border:0;border-radius:9px;padding
     <header class="section-head"><h3>Programação e encerramento</h3><span class="muted">A data inicial vem da abertura da O.S.; alterações aqui são reprogramações.</span></header>
     <div class="lifecycle">
       {% if current_user.can("mes.schedule.manage") %}<div><h4>Reprogramar entrega</h4><div id="schedule-message" class="message" hidden></div><div class="form-row"><label>Nova data<input id="schedule-date" type="date" required></label><label>Motivo<input id="schedule-reason" placeholder="Motivo obrigatório" required></label><button id="schedule-submit" class="btn primary" type="button" onclick="schedule()">Registrar</button></div></div>{% endif %}
-      {% if current_user.can("mes.finalize") %}<div><h4>Finalização, entrega ou retirada</h4><p class="muted">Nenhum encerramento é gravado automaticamente: selecione a ação, confira a data/hora e clique em Registrar.</p><div class="form-row"><label>Status<select id="closing-status"><option value="">Selecione uma ação de encerramento...</option><option value="FINALIZADA">Produção finalizada</option><option value="ENTREGUE">Entregue</option><option value="RETIRADA">Retirada</option></select></label><label>Data/hora<input id="closing-date" type="datetime-local"></label><label>Observação<input id="closing-note" placeholder="Condição final, entrega, responsável..."></label><button class="btn success" type="button" onclick="closeWork()">Registrar</button></div></div>{% endif %}
+      {% if current_user.can("mes.finalize") %}<div><h4>Finalização, entrega, retirada ou cancelamento</h4><p class="muted">Nenhum encerramento é gravado automaticamente: selecione a ação, confira a data/hora e clique em Registrar. O cancelamento exige motivo e preserva todo o histórico.</p><div class="form-row"><label>Status<select id="closing-status"><option value="">Selecione uma ação de encerramento...</option><option value="FINALIZADA">Produção finalizada</option><option value="ENTREGUE">Entregue</option><option value="RETIRADA">Retirada</option><option value="CANCELADA">O.S. cancelada</option></select></label><label>Data/hora<input id="closing-date" type="datetime-local"></label><label>Observação<input id="closing-note" placeholder="Condição final, entrega, responsável ou motivo do cancelamento..."></label><button class="btn success" type="button" onclick="closeWork()">Registrar</button></div></div>{% endif %}
     </div>
   </section>{% endif %}
   <section class="section">
@@ -170,7 +170,8 @@ function render(){
       view==='DELIVERED'?delivered(x):
       view==='DELIVERED_TRANSFORMATION'?delivered(x)&&typeGroup(x)==='TRANSFORMACAO':
       view==='DELIVERED_POST_SALE'?delivered(x)&&typeGroup(x)==='POS-VENDAS':
-      view==='DELIVERED_OTHER'?delivered(x)&&typeGroup(x)==='OUTROS':true;
+      view==='DELIVERED_OTHER'?delivered(x)&&typeGroup(x)==='OUTROS':
+      view==='CANCELLED'?x.work_order_id&&status==='CANCELADA':true;
     const searchable=[x.item_number,x.numero_os,x.chassi,x.cliente_nome,x.entry_client,x.linha,x.transformacao,x.tipo_servico,x.situacao].join(' ');
     return selected&&(!query||norm(searchable).includes(query));
   });
@@ -389,13 +390,18 @@ async function closeWork(){
   const localEvent=document.getElementById('closing-date').value;
   const data_evento=localEvent?new Date(localEvent).toISOString():null;
   const observacoes=document.getElementById('closing-note').value;
-  const label={FINALIZADA:'finalizar a produção',ENTREGUE:'registrar a entrega',RETIRADA:'registrar a retirada'}[status];
+  if(status==='CANCELADA'&&!observacoes.trim()){
+    message('Informe o motivo do cancelamento antes de registrar.',true);
+    document.getElementById('closing-note').focus();
+    return;
+  }
+  const label={FINALIZADA:'finalizar a produção',ENTREGUE:'registrar a entrega',RETIRADA:'registrar a retirada',CANCELADA:'cancelar a O.S.'}[status];
   if(!confirm(`Confirma ${label} da O.S. ${w.numero_os}?`))return;
   try{
     await api(`/api/erp/work-orders/${w.id}/finalize`,{method:'POST',body:JSON.stringify({status,data_evento,observacoes})});
     detailDialog.close();
     await loadOrders();
-    document.getElementById('view').value=status==='FINALIZADA'?'FINISHED':'DELIVERED';
+    document.getElementById('view').value=status==='FINALIZADA'?'FINISHED':status==='CANCELADA'?'CANCELLED':'DELIVERED';
     render();
     message(`O.S. ${w.numero_os}: ${status.replaceAll('_',' ')}. Histórico preservado.`);
   }catch(error){

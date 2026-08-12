@@ -424,13 +424,17 @@ def productive_cycle_window(work, stages):
     """
     starts = [stage.get("inicio") for stage in stages if stage.get("inicio")]
     start = min(starts) if starts else None
-    if _token(work.get("status")) not in {"FINALIZADA", "ENTREGUE", "RETIRADA"}:
+    status = _token(work.get("status"))
+    if status not in {"FINALIZADA", "ENTREGUE", "RETIRADA", "CANCELADA"}:
         return start, None
     release = next(
         (stage for stage in stages if _token(stage.get("stage_code")) == "LIBERACAO"),
         None,
     )
-    end = work.get("termino_producao")
+    # Cancellation is terminal but must not be mistaken for production completion.
+    end = work.get("termino_producao") or (
+        work.get("finalizado_at") if status == "CANCELADA" else None
+    )
     if not end and release and _token(release.get("status")) == "CONCLUIDA":
         end = release.get("termino")
     return start, end
@@ -2248,8 +2252,11 @@ def finalize(conn, work_id, actor, delivered=False, notes='', target_status=None
     work=_one(conn.execute(text('select status,vehicle_entry_id from erp_work_orders where id=:id for update'),{'id':work_id}))
     if not work: raise ValueError('O.S. nao encontrada.')
     status = str(target_status or ('ENTREGUE' if delivered else 'FINALIZADA')).strip().upper()
-    if status not in {'FINALIZADA', 'ENTREGUE', 'RETIRADA'}:
+    if status not in {'FINALIZADA', 'ENTREGUE', 'RETIRADA', 'CANCELADA'}:
         raise ValueError('Status de encerramento inválido.')
+    notes = str(notes or '').strip()
+    if status == 'CANCELADA' and not notes:
+        raise ValueError('Informe o motivo do cancelamento da O.S.')
     if work['status'] in {'CANCELADA', 'ARQUIVADA', 'CONCLUIDA'}:
         raise ValueError('O.S. cancelada ou arquivada não pode ser encerrada.')
     event_time = event_at or datetime.utcnow()

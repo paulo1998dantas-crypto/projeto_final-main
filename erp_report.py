@@ -67,10 +67,12 @@ def _days_between(start, end):
 
 
 def _delay_label(planned, finished, status):
+    if str(status or "").strip().upper() == "CANCELADA":
+        return "CANCELADA"
     planned_date = _as_date(planned)
     if not planned_date:
         return ""
-    terminal = status in {"FINALIZADA", "ENTREGUE", "RETIRADA", "CONCLUIDA", "ARQUIVADA"}
+    terminal = status in {"FINALIZADA", "ENTREGUE", "RETIRADA", "CANCELADA", "CONCLUIDA", "ARQUIVADA"}
     comparison = _as_date(finished) if terminal and finished else date.today()
     if not comparison:
         return ""
@@ -197,7 +199,7 @@ def _report_row(row, stage_map, schedule_rows, status_notes, max_schedules):
             stage_notes.append(f"[{code}] {stage['observacoes']}")
 
     data_considerar = _date_to_consider(row.get("data_chegada"), row.get("data_aprovacao"))
-    end_reference = row.get("termino_producao") or row.get("data_entrega")
+    end_reference = row.get("termino_producao") or row.get("data_entrega") or row.get("finalizado_at")
     general_notes = [
         value for value in [row.get("entry_notes"), *status_notes]
         if str(value or "").strip()

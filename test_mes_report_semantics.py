@@ -1,7 +1,7 @@
 from datetime import date
 import unittest
 
-from erp_report import STAGE_HEADERS, _query_report_data, _report_row
+from erp_report import STAGE_HEADERS, _delay_label, _query_report_data, _report_row
 
 
 class MesReportSemanticsTests(unittest.TestCase):
@@ -72,6 +72,12 @@ class MesReportSemanticsTests(unittest.TestCase):
         work.update({"status": "FINALIZADA", "tipo_servico": "INSTALAÇÃO_DE_ACESSÓRIO"})
         row = _report_row(work, {}, [], [], 0)
         self.assertEqual(row["SITUAÇÃO"], "FINALIZADA OUTROS")
+
+    def test_cancelled_order_is_not_reported_as_delayed(self):
+        self.assertEqual(
+            _delay_label(date(2026, 8, 20), date(2026, 8, 10), "CANCELADA"),
+            "CANCELADA",
+        )
 
     def test_vehicle_entry_without_work_order_is_exported_as_awaiting_os(self):
         entry = {
