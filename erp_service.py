@@ -2257,7 +2257,11 @@ def finalize(conn, work_id, actor, delivered=False, notes='', target_status=None
     notes = str(notes or '').strip()
     if status == 'CANCELADA' and not notes:
         raise ValueError('Informe o motivo do cancelamento da O.S.')
-    if work['status'] in {'CANCELADA', 'ARQUIVADA', 'CONCLUIDA'}:
+    # A conclusão técnica impede novos compromissos operacionais, mas não pode
+    # impedir a correção administrativa do ciclo.  O cancelamento posterior
+    # preserva a conclusão técnica no histórico e registra uma nova transição
+    # terminal auditável.  Apenas ordens já canceladas/arquivadas são imutáveis.
+    if work['status'] in {'CANCELADA', 'ARQUIVADA'}:
         raise ValueError('O.S. cancelada ou arquivada não pode ser encerrada.')
     event_time = event_at or datetime.utcnow()
     conn.execute(text("""
