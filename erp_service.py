@@ -1768,7 +1768,7 @@ def work_order_detail(conn, work_id):
     """), {"id": work_id})]
     revisions = [dict(row._mapping) for row in conn.execute(text("""
         select id,revision_number,status,is_current,supersedes_work_order_id,
-               criado_por,created_at,updated_at,cancelled_at
+               criado_por,created_at,updated_at
         from erp_work_orders
         where vehicle_entry_id=:entry
         order by revision_number desc,created_at desc

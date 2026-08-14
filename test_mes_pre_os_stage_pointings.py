@@ -110,6 +110,11 @@ class MesPreOsStagePointingTests(unittest.TestCase):
         self.assertIn("configurationPending", html)
         self.assertIn("stages.some(s=>!s.parametrizado)", html)
 
+    def test_detail_does_not_require_a_nonexistent_cancelled_at_column(self):
+        """The shared production schema has no erp_work_orders.cancelled_at column."""
+        source = inspect.getsource(erp_service.work_order_detail)
+        self.assertNotIn("cancelled_at", source)
+
     def test_management_card_exposes_pre_os_endpoint_and_preserves_pointing(self):
         template = Path(__file__).with_name("templates") / "gestao_os.html"
         source = template.read_text(encoding="utf-8")
