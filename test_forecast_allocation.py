@@ -29,7 +29,7 @@ class ForecastConnection:
         self.calls.append((sql, params))
         if "from erp_vehicle_entries where id=:id for update" in sql:
             return FakeResult({"item_number": 3113, "data_chegada": None})
-        if "select id,numero_os from erp_work_orders" in sql:
+        if "from erp_work_orders" in sql and "vehicle_entry_id=:id" in sql:
             return FakeResult()
         if "from suprimentos_forecasts where id=:id for update" in sql:
             return FakeResult({

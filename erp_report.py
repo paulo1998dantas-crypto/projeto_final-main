@@ -124,6 +124,7 @@ def _query_report_data(conn):
                 join erp_purchase_orders p on p.id=l.purchase_order_id
                 where l.work_order_id=w.id
             ) po on true
+            where w.is_current=true
             order by e.item_number
         """))
     ]
@@ -135,7 +136,9 @@ def _query_report_data(conn):
                 v.chassi,v.marca,v.modelo,v.versao,v.mmv
             from erp_vehicle_entries e
             join erp_vehicles v on v.id=e.vehicle_id
-            left join erp_work_orders w on w.vehicle_entry_id=e.id
+            left join erp_work_orders w
+              on w.vehicle_entry_id=e.id
+             and w.is_current=true
             where w.id is null
             order by e.item_number
         """))

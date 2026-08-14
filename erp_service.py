@@ -711,6 +711,7 @@ def recalculate_work_order_sequences(conn, actor="SISTEMA"):
           join erp_vehicle_entries e on e.id=w.vehicle_entry_id
           left join erp_work_order_sequences seq on seq.work_order_id=w.id
          where w.status in ('ATIVA','EM_PRODUÇÃO')
+           and w.is_current=true
          for update of w
     """))]
     rows.sort(key=cmp_to_key(lambda left, right: _compare_sequence_rows(
@@ -748,7 +749,8 @@ def recalculate_work_order_sequences(conn, actor="SISTEMA"):
            set ativo=false,updated_at=now(),updated_by=:actor
          where ativo=true
            and work_order_id not in (
-               select id from erp_work_orders where status in ('ATIVA','EM_PRODUÇÃO')
+                select id from erp_work_orders
+                where status in ('ATIVA','EM_PRODUÇÃO') and is_current=true
            )
     """), {"actor": actor})
     return {"recalculated": True, "count": len(rows), "profile": profile["nome"]}
@@ -768,6 +770,7 @@ def sequence_overview(conn):
           join erp_vehicle_entries e on e.id=w.vehicle_entry_id
           join erp_vehicles v on v.id=e.vehicle_id
          where seq.ativo=true and w.status in ('ATIVA','EM_PRODUÇÃO')
+           and w.is_current=true
          order by seq.sequencia nulls last,e.item_number
     """))]
     return {"schema_ready": True, "profile": profile, "orders": rows}
@@ -965,7 +968,7 @@ def withdraw_vehicle_entry(conn, entry_id, actor, reason="", event_at=None):
     work = _one(conn.execute(text("""
         select id,numero_os
         from erp_work_orders
-        where vehicle_entry_id=:entry
+        where vehicle_entry_id=:entry and is_current=true
         for update
     """), {"entry": entry_id}))
     if work:
@@ -1014,34 +1017,61 @@ def create_work_order(conn, entry_id, payload, actor):
     if str(entry.get('status') or '').strip().upper() == 'RETIRADA':
         raise ValueError('Veiculo retirado sem O.S. Nao e possivel abrir uma O.S. nesta entrada; registre uma nova entrada no retorno do veiculo.')
     forecast_id=str(payload.get('forecast_id') or '').strip() or None
-    current=_one(conn.execute(text('select id,numero_os from erp_work_orders where vehicle_entry_id=:id'),{'id':entry_id}))
+    current=_one(conn.execute(text("""
+        select id,numero_os,status,revision_number,is_current,supersedes_work_order_id
+        from erp_work_orders
+        where vehicle_entry_id=:id and is_current=true
+        for update
+    """),{'id':entry_id}))
+    create_replacement = payload.get('create_replacement') is True
+    expected_previous_id = str(payload.get('supersedes_work_order_id') or '').strip()
     if current:
-        _ensure_stage_rows(conn, current['id'], {})
-        _promote_entry_stage_pointings(conn, entry_id, current['id'], actor)
-        if documento_os_id is not None:
-            _link_suprimentos_os_document(
-                conn, documento_os_id, current['id'], current['numero_os'], entry_id, actor
-            )
-        if forecast_id:
-            linked_forecast=_one(conn.execute(text("""
-                select id,codigo from suprimentos_forecasts
-                where work_order_id=:work_id
-            """), {'work_id': current['id']}))
-            if not linked_forecast or str(linked_forecast['id']) != forecast_id:
-                raise ValueError('Esta entrada ja possui O.S.; o Forecast nao pode ser trocado apos a abertura.')
+        if create_replacement:
+            if str(current.get('status') or '').strip().upper() != 'CANCELADA':
+                # A retry after the replacement was committed reaches its new
+                # current row. Return it instead of creating a duplicate.
+                if (
+                    expected_previous_id
+                    and str(current.get('supersedes_work_order_id') or '') == expected_previous_id
+                ):
+                    result = {
+                        'id':str(current['id']), 'numero_os':current['numero_os'],
+                        'revision_number':int(current.get('revision_number') or 1),
+                        'replayed':True,
+                    }
+                    return result
+                raise ValueError('Somente uma O.S. cancelada pode receber uma nova revisao no mesmo ITEM.')
+            if expected_previous_id and str(current.get('id')) != expected_previous_id:
+                raise ValueError('A O.S. cancelada foi alterada por outro usuario. Atualize a tela.')
+        else:
+            _ensure_stage_rows(conn, current['id'], {})
+            _promote_entry_stage_pointings(conn, entry_id, current['id'], actor)
+            if documento_os_id is not None:
+                _link_suprimentos_os_document(
+                    conn, documento_os_id, current['id'], current['numero_os'], entry_id, actor
+                )
+            if forecast_id:
+                linked_forecast=_one(conn.execute(text("""
+                    select id,codigo from suprimentos_forecasts
+                    where work_order_id=:work_id
+                """), {'work_id': current['id']}))
+                if not linked_forecast or str(linked_forecast['id']) != forecast_id:
+                    raise ValueError('Esta entrada ja possui O.S.; o Forecast nao pode ser trocado apos a abertura.')
+                result = {
+                    'id':str(current['id']), 'numero_os':current['numero_os'],'replayed':True,
+                    'forecast_id':str(linked_forecast['id']),'forecast_codigo':linked_forecast['codigo'],
+                    'revision_number':int(current.get('revision_number') or 1),
+                }
+                if documento_os_id is not None:
+                    result['documento_os_id'] = documento_os_id
+                return result
             result = {
-                'id':str(current['id']), 'numero_os':current['numero_os'],'replayed':True,
-                'forecast_id':str(linked_forecast['id']),'forecast_codigo':linked_forecast['codigo'],
+                'id':str(current['id']),'numero_os':current['numero_os'],'replayed':True,
+                'revision_number':int(current.get('revision_number') or 1),
             }
             if documento_os_id is not None:
                 result['documento_os_id'] = documento_os_id
             return result
-        result = {
-            'id':str(current['id']),'numero_os':current['numero_os'],'replayed':True,
-        }
-        if documento_os_id is not None:
-            result['documento_os_id'] = documento_os_id
-        return result
 
     forecast=None
     if forecast_id:
@@ -1058,7 +1088,9 @@ def create_work_order(conn, entry_id, payload, actor):
         if forecast['vehicle_entry_id'] or forecast['work_order_id']:
             raise ValueError('O Forecast selecionado ja esta vinculado a outra entrada ou O.S.')
 
-    work_id=_id(); number=str(payload.get('numero_os') or entry['item_number'])
+    work_id=_id(); number=str(entry['item_number'])
+    previous_work_id = current['id'] if current and create_replacement else None
+    revision_number = int(current.get('revision_number') or 1) + 1 if previous_work_id else 1
     fields={'tipo_servico':'TRANSFORMAÇÃO','proposta_numero':'','data_aprovacao':None,'vendedor':'','mercado':'','cliente_nome':'','municipio':'','uf':'','tipo_veiculo':'','linha':'','transformacao':'','transformacao_codigo':'','codigo_banco':'','conjunto_bancos':'','acessibilidade':'','lotacao':'','ar_condicionado':'','tipo_sistema_ar':'','ar_quente':'','acessorio':'','plotagem':'','data_comercial_prevista':None}
     fields.update({
         key: _work_field_value(key, value)
@@ -1070,10 +1102,25 @@ def create_work_order(conn, entry_id, payload, actor):
     # stage_configuration_status=PENDENTE until the PCP configures all stages.
     # AGUARDANDO_O_S is the existing pre-activation state accepted throughout
     # the transition, so this change avoids introducing a second lifecycle.
-    conn.execute(text("""insert into erp_work_orders(id,vehicle_entry_id,numero_os,tipo_servico,proposta_numero,data_aprovacao,vendedor,mercado,cliente_nome,municipio,uf,tipo_veiculo,linha,transformacao_codigo,transformacao,codigo_banco,conjunto_bancos,acessibilidade,lotacao,ar_condicionado,tipo_sistema_ar,ar_quente,acessorio,plotagem,data_comercial_prevista,criado_por,status) values(:id,:entry,:number,:tipo_servico,:proposta_numero,:data_aprovacao,:vendedor,:mercado,:cliente_nome,:municipio,:uf,:tipo_veiculo,:linha,:transformacao_codigo,:transformacao,:codigo_banco,:conjunto_bancos,:acessibilidade,:lotacao,:ar_condicionado,:tipo_sistema_ar,:ar_quente,:acessorio,:plotagem,:data_comercial_prevista,:actor,'AGUARDANDO_O_S')"""),{'id':work_id,'entry':entry_id,'number':number,'actor':actor,**fields})
-    conn.execute(text("insert into erp_work_order_status_history(work_order_id,novo_status,usuario,observacao) values(:id,'AGUARDANDO_O_S',:actor,'O.S. emitida; parametrizacao MES pendente')"),{'id':work_id,'actor':actor})
+    if previous_work_id:
+        demoted = conn.execute(text("""
+            update erp_work_orders
+               set is_current=false,updated_at=now()
+             where id=:previous and is_current=true and status='CANCELADA'
+        """), {'previous': previous_work_id})
+        if demoted.rowcount != 1:
+            raise ValueError('A O.S. cancelada foi alterada por outro usuario. Atualize a tela.')
+    conn.execute(text("""insert into erp_work_orders(id,vehicle_entry_id,numero_os,tipo_servico,proposta_numero,data_aprovacao,vendedor,mercado,cliente_nome,municipio,uf,tipo_veiculo,linha,transformacao_codigo,transformacao,codigo_banco,conjunto_bancos,acessibilidade,lotacao,ar_condicionado,tipo_sistema_ar,ar_quente,acessorio,plotagem,data_comercial_prevista,criado_por,status,revision_number,is_current,supersedes_work_order_id) values(:id,:entry,:number,:tipo_servico,:proposta_numero,:data_aprovacao,:vendedor,:mercado,:cliente_nome,:municipio,:uf,:tipo_veiculo,:linha,:transformacao_codigo,:transformacao,:codigo_banco,:conjunto_bancos,:acessibilidade,:lotacao,:ar_condicionado,:tipo_sistema_ar,:ar_quente,:acessorio,:plotagem,:data_comercial_prevista,:actor,'AGUARDANDO_O_S',:revision,true,:previous)"""),{'id':work_id,'entry':entry_id,'number':number,'actor':actor,'revision':revision_number,'previous':previous_work_id,**fields})
+    history_note = (
+        f'O.S. emitida como revisao {revision_number}; substitui a O.S. cancelada {number} sem apagar o historico.'
+        if previous_work_id else 'O.S. emitida; parametrizacao MES pendente'
+    )
+    conn.execute(text("insert into erp_work_order_status_history(work_order_id,novo_status,usuario,observacao) values(:id,'AGUARDANDO_O_S',:actor,:note)"),{'id':work_id,'actor':actor,'note':history_note})
     _ensure_stage_rows(conn, work_id, fields)
-    promoted_stages = _promote_entry_stage_pointings(conn, entry_id, work_id, actor)
+    # Preliminary pointings belong to the first operational demand.  A new
+    # revision after cancellation starts clean; the cancelled revision keeps
+    # its own stages and events as immutable history.
+    promoted_stages = 0 if previous_work_id else _promote_entry_stage_pointings(conn, entry_id, work_id, actor)
     if fields["data_comercial_prevista"]:
         conn.execute(text("""
             insert into erp_work_order_schedules(
@@ -1081,6 +1128,20 @@ def create_work_order(conn, entry_id, payload, actor):
             ) values(:id,null,:date,'PROGRAMAÇÃO INICIAL',:actor,true)
         """), {"id": work_id, "date": fields["data_comercial_prevista"], "actor": actor})
     conn.execute(text("update erp_vehicle_entries set status='O_S_ABERTA' where id=:id"), {"id": entry_id})
+    if previous_work_id:
+        conn.execute(text("""
+            insert into erp_audit_events(
+                entity_type,entity_id,action,actor,origin,before_data,after_data,reason
+            ) values(
+                'WORK_ORDER',:work,'NOVA_REVISAO_APOS_CANCELAMENTO',:actor,'GESTAO_OS',
+                jsonb_build_object('work_order_id',cast(:previous as text),'numero_os',:number,'status','CANCELADA'),
+                jsonb_build_object('work_order_id',cast(:work as text),'numero_os',:number,'revision_number',:revision),
+                'Nova demanda vinculada ao mesmo ITEM e veiculo; historico cancelado preservado.'
+            )
+        """), {
+            'work': work_id, 'previous': previous_work_id, 'number': number,
+            'revision': revision_number, 'actor': actor,
+        })
     if forecast:
         allocation=conn.execute(text("""
             update suprimentos_forecasts
@@ -1113,6 +1174,8 @@ def create_work_order(conn, entry_id, payload, actor):
     result = {
         'id':work_id, 'numero_os':number, 'replayed':False,
         'status':'AGUARDANDO_O_S',
+        'revision_number':revision_number,
+        'supersedes_work_order_id':str(previous_work_id) if previous_work_id else None,
         'stage_configuration_status':'CONCLUIDA' if promoted_stages == len(STAGES) else 'PENDENTE',
         'promoted_pre_os_stages':promoted_stages,
         'forecast_id':forecast_id,
@@ -1321,6 +1384,7 @@ def active_cards(conn):
         left join erp_work_order_sequences seq on seq.work_order_id=w.id and seq.ativo=true
         left join erp_work_order_stages s on s.work_order_id=w.id
         where w.status in ('ATIVA','EM_PRODUÇÃO')
+          and w.is_current=true
         group by w.id,e.item_number,v.chassi,v.marca,v.modelo,v.versao,
                  seq.sequencia,seq.semana_planejada,seq.prioridade_manual
         order by seq.sequencia nulls last,w.data_comercial_prevista nulls last,e.item_number
@@ -1351,6 +1415,7 @@ def active_work_order_options(conn, search="", limit=20):
           join erp_vehicle_entries e on e.id=w.vehicle_entry_id
           join erp_vehicles v on v.id=e.vehicle_id
          where w.status in ('ATIVA','EM_PRODUÇÃO')
+           and w.is_current=true
            and coalesce(w.technical_status,'ABERTA')='ABERTA'
            and (
                 :search=''
@@ -1394,6 +1459,7 @@ def list_work_orders(conn, search="", status="", limit=1000):
                w.tipo_veiculo,w.linha,w.transformacao_codigo,w.transformacao,w.codigo_banco,w.conjunto_bancos,
                w.acessibilidade,w.lotacao,w.ar_condicionado,w.tipo_sistema_ar,w.ar_quente,
                w.acessorio,w.plotagem,w.data_comercial_prevista,w.status,w.version,
+               w.revision_number,w.is_current,w.supersedes_work_order_id,
                w.stage_configuration_status,w.stage_configured_at,w.stage_configured_by,
                w.technical_status,w.technical_closed_at,w.technical_closed_by,
                w.technical_close_reason,
@@ -1406,7 +1472,7 @@ def list_work_orders(conn, search="", status="", limit=1000):
                count(s.id) filter(where not s.parametrizado) as etapas_nao_parametrizadas
         from erp_vehicle_entries e
         join erp_vehicles v on v.id=e.vehicle_id
-        left join erp_work_orders w on w.vehicle_entry_id=e.id
+        left join erp_work_orders w on w.vehicle_entry_id=e.id and w.is_current=true
         left join suprimentos_forecasts f on f.work_order_id=w.id
         left join erp_work_order_sequences seq on seq.work_order_id=w.id and seq.ativo=true
         left join erp_work_order_stages s on s.work_order_id=w.id
@@ -1442,6 +1508,11 @@ def list_work_orders(conn, search="", status="", limit=1000):
                 """), {"entry_ids": entry_ids}).mappings()
             }
     for order in orders:
+        order["can_create_replacement"] = bool(
+            order.get("work_order_id")
+            and order.get("is_current")
+            and str(order.get("status") or "").strip().upper() == "CANCELADA"
+        )
         order["status_operacional"] = operational_work_order_status(
             order.get("status") or order.get("entry_status")
         )
@@ -1468,7 +1539,7 @@ def vehicle_entry_stage_detail(conn, entry_id):
                w.id as work_order_id,w.numero_os
         from erp_vehicle_entries e
         join erp_vehicles v on v.id=e.vehicle_id
-        left join erp_work_orders w on w.vehicle_entry_id=e.id
+        left join erp_work_orders w on w.vehicle_entry_id=e.id and w.is_current=true
         where e.id=:id
     """), {"id": entry_id}))
     if not entry:
@@ -1539,7 +1610,7 @@ def update_vehicle_entry_stage(conn, entry_id, code, payload, actor):
     if not entry:
         raise ValueError("Entrada de veículo não encontrada.")
     work = _one(conn.execute(text("""
-        select id,numero_os from erp_work_orders where vehicle_entry_id=:entry
+        select id,numero_os from erp_work_orders where vehicle_entry_id=:entry and is_current=true
     """), {"entry": entry_id}))
     if work:
         raise StageConflictError(
@@ -1695,6 +1766,13 @@ def work_order_detail(conn, work_id):
     history = [dict(row._mapping) for row in conn.execute(text("""
         select * from erp_work_order_status_history where work_order_id=:id order by created_at desc
     """), {"id": work_id})]
+    revisions = [dict(row._mapping) for row in conn.execute(text("""
+        select id,revision_number,status,is_current,supersedes_work_order_id,
+               criado_por,created_at,updated_at,cancelled_at
+        from erp_work_orders
+        where vehicle_entry_id=:entry
+        order by revision_number desc,created_at desc
+    """), {"entry": work["vehicle_entry_id"]})]
     stage_events = [dict(row._mapping) for row in conn.execute(text("""
         select e.*,s.stage_code
         from erp_work_order_stage_events e
@@ -1708,6 +1786,7 @@ def work_order_detail(conn, work_id):
         "stages": stages,
         "schedules": schedules,
         "status_history": history,
+        "revisions": revisions,
         "stage_events": stage_events,
     }
 

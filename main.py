@@ -641,6 +641,7 @@ def listar_semanas_producao(db: Session):
             datas_erp = conn.execute(text("""
                 select data_comercial_prevista from erp_work_orders
                 where data_comercial_prevista is not null
+                  and is_current=true
             """)).scalars().all()
         semanas.update(
             str((value.date() if isinstance(value, datetime.datetime) else value).isocalendar().week)
@@ -929,6 +930,7 @@ def carregar_erp_dashboard(
             join erp_vehicle_entries e on e.id=w.vehicle_entry_id
             join erp_vehicles v on v.id=e.vehicle_id
             {sequence_join}
+            where w.is_current=true
         """)).mappings().all()
         stage_rows = conn.execute(text("""
             select s.work_order_id,s.stage_code,s.status,s.aplicavel,s.localizacao,s.ordem
@@ -1402,6 +1404,7 @@ async def detalhes(
                 join erp_vehicles v on v.id=e.vehicle_id
                 where trim(v.chassi)=:chassi
                   and w.status in ('ATIVA','EM_PRODUÇÃO')
+                  and w.is_current=true
                 order by e.item_number desc
                 limit 1
             """), {"chassi": c_limpo}).scalar()
