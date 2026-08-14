@@ -88,7 +88,7 @@ def _delay_label(planned, finished, status):
 
 def _situation(row):
     if row.get("report_source") == "VEHICLE_ENTRY":
-        return "AGUARDANDO O.S."
+        return "RETIRADA" if str(row.get("entry_status") or "").upper() == "RETIRADA" else "AGUARDANDO O.S."
     return work_order_situation(
         row.get("status") or row.get("entry_status"),
         row.get("tipo_servico"),
@@ -146,7 +146,7 @@ def _query_report_data(conn):
         # número de O.S., programação ou apontamentos produtivos.
         entry.update({
             "report_source": "VEHICLE_ENTRY",
-            "status": "AGUARDANDO_O_S",
+            "status": entry.get("entry_status") or "AGUARDANDO_O_S",
             "stage_configuration_status": "PENDENTE",
             "technical_status": "ABERTA",
             "purchase_orders": "",

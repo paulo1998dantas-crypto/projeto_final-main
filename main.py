@@ -2301,6 +2301,38 @@ async def erp_update_vehicle_entry(
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
+@app.post("/api/erp/vehicle-entries/{entry_id}/withdraw")
+async def erp_withdraw_vehicle_entry(
+    entry_id: str,
+    request: Request,
+    data: dict = Body(...),
+    db: Session = Depends(database.get_db),
+):
+    """Record a withdrawal before O.S. opening without creating a delivery."""
+    if not erp_feature_enabled():
+        return erp_disabled_response()
+    user = require_login(request, db)
+    if not user:
+        return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not (
+        has_permission(user, authz.MES_WORK_ORDERS_MANAGE)
+        and has_permission(user, authz.MES_FINALIZE)
+    ):
+        return permission_denied(api=True)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.withdraw_vehicle_entry(
+                conn,
+                entry_id,
+                user.nome,
+                reason=data.get("motivo") or data.get("observacoes"),
+                event_at=data.get("data_evento"),
+            )
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
 @app.get("/api/erp/vehicle-entries/{entry_id}/stages")
 async def erp_vehicle_entry_stages(
     entry_id: str,

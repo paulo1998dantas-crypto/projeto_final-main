@@ -944,10 +944,75 @@ def update_vehicle_entry(conn, entry_id, payload, actor):
         **after,
     }
 
+def withdraw_vehicle_entry(conn, entry_id, actor, reason="", event_at=None):
+    """Register a withdrawal from the yard before an O.S. is opened.
+
+    This is an entry lifecycle event, never a delivery.  It preserves the
+    original ITEM and preliminary pointings for audit and requires a new entry
+    when the physical vehicle returns in the future.
+    """
+    reason = str(reason or "").strip()
+    if not reason:
+        raise ValueError("Informe o motivo da retirada do veiculo.")
+    entry = _one(conn.execute(text("""
+        select id,item_number,status
+        from erp_vehicle_entries
+        where id=:id
+        for update
+    """), {"id": entry_id}))
+    if not entry:
+        raise ValueError("Entrada de veiculo nao encontrada.")
+    work = _one(conn.execute(text("""
+        select id,numero_os
+        from erp_work_orders
+        where vehicle_entry_id=:entry
+        for update
+    """), {"entry": entry_id}))
+    if work:
+        raise ValueError(
+            f"A entrada ja possui a O.S. {work['numero_os']}. Registre a retirada na O.S."
+        )
+
+    old_status = str(entry.get("status") or "").strip().upper()
+    if old_status == "RETIRADA":
+        return {
+            "id": str(entry_id), "item_number": int(entry["item_number"]),
+            "status": "RETIRADA", "replayed": True,
+        }
+    if old_status != "AGUARDANDO_O_S":
+        raise ValueError("Somente veiculos aguardando O.S. podem ser retirados sem O.S.")
+
+    event_time = event_at or datetime.utcnow()
+    conn.execute(text("""
+        update erp_vehicle_entries
+        set status='RETIRADA'
+        where id=:id
+    """), {"id": entry_id})
+    conn.execute(text("""
+        insert into erp_audit_events(
+            entity_type,entity_id,action,actor,origin,before_data,after_data,reason
+        ) values(
+            'VEHICLE_ENTRY',:id,'RETIRADA_SEM_OS',:actor,'MES',
+            jsonb_build_object('status',cast(:old_status as text)),
+            jsonb_build_object('status','RETIRADA','data_evento',cast(:event_time as text)),
+            :reason
+        )
+    """), {
+        "id": entry_id, "actor": actor, "old_status": old_status,
+        "event_time": event_time, "reason": reason,
+    })
+    return {
+        "id": str(entry_id), "item_number": int(entry["item_number"]),
+        "status": "RETIRADA", "replayed": False,
+    }
+
+
 def create_work_order(conn, entry_id, payload, actor):
     documento_os_id = _optional_documento_os_id(payload)
-    entry=_one(conn.execute(text('select item_number,data_chegada from erp_vehicle_entries where id=:id for update'),{'id':entry_id}))
+    entry=_one(conn.execute(text('select item_number,data_chegada,status from erp_vehicle_entries where id=:id for update'),{'id':entry_id}))
     if not entry: raise ValueError('Entrada de veiculo nao encontrada.')
+    if str(entry.get('status') or '').strip().upper() == 'RETIRADA':
+        raise ValueError('Veiculo retirado sem O.S. Nao e possivel abrir uma O.S. nesta entrada; registre uma nova entrada no retorno do veiculo.')
     forecast_id=str(payload.get('forecast_id') or '').strip() or None
     current=_one(conn.execute(text('select id,numero_os from erp_work_orders where vehicle_entry_id=:id'),{'id':entry_id}))
     if current:
@@ -1434,12 +1499,22 @@ def vehicle_entry_stage_detail(conn, entry_id):
         order by event.created_at desc,event.id desc
         limit 500
     """), {"entry": entry_id})]
+    status_history = [dict(row._mapping) for row in conn.execute(text("""
+        select before_data->>'status' as status_anterior,
+               after_data->>'status' as novo_status,
+               actor as usuario,created_at,reason as observacao
+        from erp_audit_events
+        where entity_type='VEHICLE_ENTRY'
+          and entity_id=:entry
+          and action='RETIRADA_SEM_OS'
+        order by created_at desc,id desc
+    """), {"entry": entry_id})]
     return {
         "mode": "ENTRY",
         "entry": entry,
         "stages": stages,
         "stage_events": events,
-        "status_history": [],
+        "status_history": status_history,
         "schedules": [],
     }
 
@@ -1459,6 +1534,8 @@ def update_vehicle_entry_stage(conn, entry_id, code, payload, actor):
     entry = _one(conn.execute(text("""
         select id,status from erp_vehicle_entries where id=:entry for update
     """), {"entry": entry_id}))
+    if entry and str(entry.get("status") or "").strip().upper() == "RETIRADA":
+        raise ValueError("Veiculo retirado sem O.S. nao pode receber novos apontamentos.")
     if not entry:
         raise ValueError("Entrada de veículo não encontrada.")
     work = _one(conn.execute(text("""

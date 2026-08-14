@@ -8,7 +8,7 @@
 *{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;background:var(--bg);color:#172033;font:13px Arial,sans-serif}main{max-width:1580px;margin:auto;padding:16px 20px 30px}
 .head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:12px}.head h1{margin:0;font-size:23px}.head p{margin:4px 0;color:var(--muted)}
 .actions{display:flex;gap:7px;flex-wrap:wrap}.btn{display:inline-flex;align-items:center;justify-content:center;min-height:35px;padding:7px 12px;border:1px solid #aebbc7;border-radius:5px;background:#fff;color:#172033;font-weight:800;text-decoration:none;cursor:pointer}.btn.primary{background:var(--blue);border-color:#1d4ed8;color:#fff}.btn.success{background:var(--green);border-color:#047857;color:#fff}.btn.danger{background:var(--red);border-color:#b91c1c;color:#fff}.btn:disabled{opacity:.5;cursor:not-allowed}
-.metrics{display:grid;grid-template-columns:repeat(6,minmax(120px,1fr));gap:8px;margin-bottom:10px}.metric{padding:10px 12px;border:1px solid var(--line);border-radius:7px;background:#fff}.metric span{display:block;color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase}.metric strong{display:block;margin-top:4px;font-size:21px}
+.metrics{display:grid;grid-template-columns:repeat(7,minmax(120px,1fr));gap:8px;margin-bottom:10px}.metric{padding:10px 12px;border:1px solid var(--line);border-radius:7px;background:#fff}.metric span{display:block;color:var(--muted);font-size:10px;font-weight:800;text-transform:uppercase}.metric strong{display:block;margin-top:4px;font-size:21px}
 .panel{border:1px solid var(--line);border-radius:8px;background:#fff;overflow:hidden}.toolbar{display:flex;align-items:end;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);background:#f8fafc;flex-wrap:wrap}
 label{display:flex;flex-direction:column;gap:3px;color:#526174;font-size:11px;font-weight:750}input,select,textarea{width:100%;min-height:34px;padding:6px 8px;border:1px solid #cbd5e1;border-radius:5px;background:#fff;font:inherit}.search{min-width:340px;flex:1}
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(285px,1fr));gap:9px;padding:11px;max-height:650px;overflow:auto}.card{border:1px solid var(--line);border-left:4px solid var(--cyan);border-radius:7px;background:#fff;padding:11px;cursor:pointer}.card:hover{border-color:#93c5fd;box-shadow:0 3px 12px #0f172a12}.card.entry{border-left-color:#f59e0b;cursor:pointer}.card h3{margin:0 0 4px;font-size:15px}.card .line{display:flex;justify-content:space-between;gap:8px;margin-top:5px}.muted{color:var(--muted)}.badge{display:inline-flex;padding:3px 7px;border-radius:999px;background:#dbeafe;color:#1d4ed8;font-size:10px;font-weight:850}.badge.ATIVA,.badge.EM_PRODUÇÃO{background:#dcfce7;color:#166534}.badge.FINALIZADA,.badge.ENTREGUE,.badge.RETIRADA{background:#ede9fe;color:#6d28d9}.badge.CANCELADA{background:#fee2e2;color:#b91c1c}.progress{height:7px;border-radius:999px;background:#e2e8f0;overflow:hidden;margin-top:8px}.progress span{display:block;height:100%;background:var(--green)}
@@ -33,13 +33,14 @@ dialog{width:min(1480px,98vw);max-height:96vh;border:0;border-radius:9px;padding
   <div class="metric"><span>Em pátio</span><strong id="m-active">—</strong></div>
   <div class="metric"><span>Em produção</span><strong id="m-production">—</strong></div>
   <div class="metric"><span>Finalizadas</span><strong id="m-finished">—</strong></div>
-  <div class="metric"><span>Entregues / retiradas</span><strong id="m-delivered">—</strong></div>
+  <div class="metric"><span>Entregues</span><strong id="m-delivered">—</strong></div>
+  <div class="metric"><span>Retiradas</span><strong id="m-withdrawn">—</strong></div>
   <div class="metric"><span>Todos os veículos</span><strong id="m-total">—</strong></div>
 </section>
 <section class="panel">
   <div class="toolbar">
     <label class="search">Buscar<input id="search" type="search" placeholder="ITEM, O.S., chassi, cliente, linha ou transformação" oninput="render()"></label>
-    <label>Visão<select id="view" onchange="render()"><option value="WIP">Em processo (WIP: pátio + produção)</option><option value="ENTRIES">Entradas aguardando O.S.</option><option value="FINISHED">Finalizadas — todas</option><option value="DELIVERED">Entregues — todas</option><option value="DELIVERED_TRANSFORMATION">Entregues — transformação</option><option value="DELIVERED_POST_SALE">Entregues — pós-vendas</option><option value="DELIVERED_OTHER">Entregues — outros</option><option value="CANCELLED">Canceladas — todas</option><option value="ALL">Todos os veículos</option></select></label>
+    <label>Visão<select id="view" onchange="render()"><option value="WIP">Em processo (WIP: pátio + produção)</option><option value="ENTRIES">Entradas aguardando O.S.</option><option value="FINISHED">Finalizadas — todas</option><option value="DELIVERED">Entregues — todas</option><option value="DELIVERED_TRANSFORMATION">Entregues — transformação</option><option value="DELIVERED_POST_SALE">Entregues — pós-vendas</option><option value="DELIVERED_OTHER">Entregues — outros</option><option value="WITHDRAWN">Retiradas — sem transformação</option><option value="CANCELLED">Canceladas — todas</option><option value="ALL">Todos os veículos</option></select></label>
     <button class="btn" type="button" onclick="document.getElementById('search').value='';render()">Limpar</button>
   </div>
   <div id="cards" class="cards"></div><div id="empty" class="empty" hidden>Nenhum registro encontrado nesta visão.</div>
@@ -84,9 +85,13 @@ dialog{width:min(1480px,98vw);max-height:96vh;border:0;border-radius:9px;padding
       {% if current_user.can("mes.finalize") %}<div><h4>Finalização, entrega, retirada ou cancelamento</h4><p class="muted">Nenhum encerramento é gravado automaticamente: selecione a ação, confira a data/hora e clique em Registrar. O cancelamento exige motivo e preserva todo o histórico.</p><div class="form-row"><label>Status<select id="closing-status"><option value="">Selecione uma ação de encerramento...</option><option value="FINALIZADA">Produção finalizada</option><option value="ENTREGUE">Entregue</option><option value="RETIRADA">Retirada</option><option value="CANCELADA">O.S. cancelada</option></select></label><label>Data/hora<input id="closing-date" type="datetime-local"></label><label>Observação<input id="closing-note" placeholder="Condição final, entrega, responsável ou motivo do cancelamento..."></label><button class="btn success" type="button" onclick="closeWork()">Registrar</button></div></div>{% endif %}
     </div>
   </section>{% endif %}
+  {% if current_user.can("mes.work_orders.manage") and current_user.can("mes.finalize") %}<section id="entry-withdrawal-section" class="section" hidden>
+    <header class="section-head"><h3>Retirada sem O.S.</h3><span class="muted">Use quando o veículo sair sem transformação e sem abertura de O.S.</span></header>
+    <div class="lifecycle"><div><p class="muted">A retirada não é entrega nem finalização de produção. O ITEM sai da fila de O.S. e o motivo fica no histórico.</p><div class="form-row"><label>Data/hora<input id="entry-withdrawal-date" type="datetime-local"></label><label>Motivo<input id="entry-withdrawal-reason" placeholder="Motivo obrigatório da retirada"></label><button class="btn danger" type="button" onclick="withdrawVehicleEntry()">Registrar retirada</button></div></div></div>
+  </section>{% endif %}
   <section class="section">
     <header class="section-head"><h3>Histórico completo</h3><span class="muted">Status, programação e apontamentos produtivos.</span></header>
-    <div class="history"><div class="history-col"><h4>Status da O.S.</h4><div id="status-history"></div></div><div class="history-col"><h4>Programações</h4><div id="schedule-history"></div></div><div class="history-col"><h4>Apontamentos</h4><div id="stage-history"></div></div></div>
+    <div class="history"><div class="history-col"><h4 id="status-history-title">Status da O.S.</h4><div id="status-history"></div></div><div class="history-col"><h4>Programações</h4><div id="schedule-history"></div></div><div class="history-col"><h4>Apontamentos</h4><div id="stage-history"></div></div></div>
   </section>
 </div>
 </dialog>
@@ -148,11 +153,12 @@ function displayStatus(row){
 
 function metrics(){
   const rows=state.orders;
-  document.getElementById('m-entries').textContent=rows.filter(x=>!x.work_order_id).length;
+  document.getElementById('m-entries').textContent=rows.filter(x=>!x.work_order_id&&rowOperationalStatus(x)==='AGUARDANDO O S').length;
   document.getElementById('m-active').textContent=rows.filter(x=>rowOperationalStatus(x)==='ATIVA').length;
   document.getElementById('m-production').textContent=rows.filter(x=>rowOperationalStatus(x)==='EM PRODUCAO').length;
   document.getElementById('m-finished').textContent=rows.filter(x=>rowOperationalStatus(x)==='FINALIZADA').length;
-  document.getElementById('m-delivered').textContent=rows.filter(x=>['ENTREGUE','RETIRADA'].includes(rowOperationalStatus(x))).length;
+  document.getElementById('m-delivered').textContent=rows.filter(x=>x.work_order_id&&rowOperationalStatus(x)==='ENTREGUE').length;
+  document.getElementById('m-withdrawn').textContent=rows.filter(x=>rowOperationalStatus(x)==='RETIRADA').length;
   document.getElementById('m-total').textContent=rows.length;
 }
 
@@ -160,24 +166,25 @@ function render(){
   const query=norm(document.getElementById('search').value);
   const view=document.getElementById('view').value;
   const isWip=x=>x.work_order_id&&(x.em_wip===true||['ATIVA','EM PRODUCAO'].includes(rowOperationalStatus(x)));
-  const delivered=x=>x.work_order_id&&['ENTREGUE','RETIRADA'].includes(rowOperationalStatus(x));
+  const delivered=x=>x.work_order_id&&rowOperationalStatus(x)==='ENTREGUE';
   const typeGroup=x=>String(x.tipo_servico_grupo||'TRANSFORMAÇÃO').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
   const rows=state.orders.filter(x=>{
     const status=rowOperationalStatus(x);
-    const selected=view==='ENTRIES'?!x.work_order_id:
+    const selected=view==='ENTRIES'?!x.work_order_id&&status==='AGUARDANDO O S':
       view==='WIP'?isWip(x):
       view==='FINISHED'?x.work_order_id&&status==='FINALIZADA':
       view==='DELIVERED'?delivered(x):
       view==='DELIVERED_TRANSFORMATION'?delivered(x)&&typeGroup(x)==='TRANSFORMACAO':
       view==='DELIVERED_POST_SALE'?delivered(x)&&typeGroup(x)==='POS-VENDAS':
       view==='DELIVERED_OTHER'?delivered(x)&&typeGroup(x)==='OUTROS':
+      view==='WITHDRAWN'?status==='RETIRADA':
       view==='CANCELLED'?x.work_order_id&&status==='CANCELADA':true;
     const searchable=[x.item_number,x.numero_os,x.chassi,x.cliente_nome,x.entry_client,x.linha,x.transformacao,x.tipo_servico,x.situacao].join(' ');
     return selected&&(!query||norm(searchable).includes(query));
   });
   document.getElementById('empty').hidden=rows.length>0;
   document.getElementById('cards').innerHTML=rows.map(x=>{
-    if(!x.work_order_id){const pointed=Number(x.etapas_pre_os_apontadas||0),done=Number(x.etapas_pre_os_concluidas||0);return `<article class="card entry" onclick="openEntryDetail('${x.entry_id}')"><div class="line"><h3>ITEM ${esc(x.item_number)}</h3><span class="badge">AGUARDANDO O.S.</span></div><strong>${esc(String(x.chassi||'').slice(-8))}</strong><div class="muted">${esc(x.entry_client||'Cliente nao informado')}</div><div class="line"><span>${esc([x.marca,x.modelo,x.versao].filter(Boolean).join(' ')||'Veiculo nao detalhado')}</span><span>${date(x.data_chegada)}</span></div><div class="progress"><span style="width:${Math.round(done*100/12)}%"></span></div><div class="line muted"><span>${pointed}/12 etapas apontadas antes da O.S.</span><span>Abrir card</span></div></article>`;}
+    if(!x.work_order_id){const pointed=Number(x.etapas_pre_os_apontadas||0),done=Number(x.etapas_pre_os_concluidas||0),withdrawn=rowOperationalStatus(x)==='RETIRADA';return `<article class="card entry" onclick="openEntryDetail('${x.entry_id}')"><div class="line"><h3>ITEM ${esc(x.item_number)}</h3><span class="badge ${withdrawn?'RETIRADA':''}">${withdrawn?'RETIRADA':'AGUARDANDO O.S.'}</span></div><strong>${esc(String(x.chassi||'').slice(-8))}</strong><div class="muted">${esc(x.entry_client||'Cliente nao informado')}</div><div class="line"><span>${esc([x.marca,x.modelo,x.versao].filter(Boolean).join(' ')||'Veiculo nao detalhado')}</span><span>${date(x.data_chegada)}</span></div><div class="progress"><span style="width:${Math.round(done*100/12)}%"></span></div><div class="line muted"><span>${pointed}/12 etapas apontadas antes da O.S.</span><span>${withdrawn?'Veiculo retirado':'Abrir card'}</span></div></article>`;}
     const total=Number(x.etapas_aplicaveis||0),done=Number(x.etapas_concluidas||0),pct=total?Math.round(done*100/total):0;
     const vehicle=[x.marca,x.modelo,x.versao].filter(Boolean).join(' ')||'Veiculo nao detalhado';
     return `<article class="card" onclick="openDetail('${x.work_order_id}')"><div class="line"><h3>ITEM ${esc(x.item_number)} · O.S. ${esc(x.numero_os)}</h3><span class="badge ${esc(x.status)}">${esc(displayStatus(x))}</span></div><strong>${esc(String(x.chassi||'').slice(-8))}</strong><div>${esc(vehicle)}</div><div class="muted">${esc(x.cliente_nome||x.entry_client||'Cliente nao informado')}</div><div class="line"><span>${esc(x.tipo_servico_grupo||'TRANSFORMAÇÃO')} · ${esc(x.linha||'—')}</span><span>${date(x.data_comercial_prevista)}</span></div><div class="progress"><span style="width:${pct}%"></span></div><div class="line muted"><span>${done}/${total} etapas concluidas</span></div></article>`;
@@ -196,7 +203,9 @@ function renderStages(){
   const entryMode=state.detail?.mode==='ENTRY';
   const work=state.detail.work_order||{status:'AGUARDANDO_O_S'};
   const stages=state.detail.stages||[];
-  const closed=!entryMode&&isClosedWork(work);
+  const closed=entryMode
+    ?operationalStatus(state.detail?.entry?.status)==='RETIRADA'
+    :isClosedWork(work);
   const hardLocked=['CANCELADA','ARQUIVADA'].includes(work.status);
   const configurationPending=work.stage_configuration_status!=='CONCLUIDA'||stages.some(s=>!s.parametrizado);
   const configuring=!entryMode&&!closed&&(
@@ -215,14 +224,16 @@ function renderStages(){
   if(configurationActions)configurationActions.hidden=!canManage||!configuring;
   header.innerHTML='<tr><th>Etapa</th><th>Status</th><th>Responsavel</th><th>Localizacao</th><th>Inicio</th><th>Termino</th><th>Observacoes</th><th></th></tr>';
   help.textContent=entryMode
-    ?'Apontamento preliminar por ITEM. Ao abrir a O.S., estes registros serão incorporados automaticamente e não precisarão ser parametrizados novamente.'
+    ?closed
+      ?'Veículo retirado sem O.S.: histórico preservado e novos apontamentos bloqueados.'
+      :'Apontamento preliminar por ITEM. Ao abrir a O.S., estes registros serão incorporados automaticamente e não precisarão ser parametrizados novamente.'
     :configuring
       ?'Defina somente as etapas ainda marcadas com ?. Etapas já apontadas antes da O.S. estão preservadas.'
       :closed?'Historico tecnico: datas podem ser corrigidas sem reabrir a O.S.':'';
   document.getElementById('stage-rows').innerHTML=stages.map(s=>{
     const hasPointing=Boolean(s.has_operational_pointing);
     const fieldsLocked=closed||(configuring&&!hasPointing);
-    const actionAllowed=entryMode||!configuring||hasPointing;
+    const actionAllowed=!closed&&(entryMode||!configuring||hasPointing);
     const origin=hasPointing&&configuring?'<br><small class="muted">Apontada antes da O.S.</small>':'';
     return `<tr data-stage="${esc(s.stage_code)}" data-input-code="${esc(s.input_code||'?')}" data-has-operational-pointing="${hasPointing?'1':'0'}"><td><span class="stage-code">${esc(s.stage_code)}</span>${origin}<br><span class="badge ${esc(s.status)}">${esc(s.input_code||'?')} · ${esc(s.status.replaceAll('_',' '))}</span></td><td><select class="stage-status" ${closed?'disabled':''}>${stageInputs.map(([value,label])=>`<option value="${value}" ${value===(s.input_code||'?')?'selected':''}>${label}</option>`).join('')}</select></td><td><input class="stage-owner" value="${esc(s.responsavel||'')}" ${fieldsLocked?'disabled':''}></td><td><input class="stage-location" value="${esc(s.localizacao||'')}" ${fieldsLocked?'disabled':''}></td><td><input class="stage-start" type="datetime-local" value="${esc(inputDatetime(s.inicio))}" ${hardLocked?'disabled':''}></td><td><input class="stage-finish" type="datetime-local" value="${esc(inputDatetime(s.termino))}" ${hardLocked?'disabled':''}></td><td><input class="stage-note notes" value="${esc(s.observacoes||'')}" ${fieldsLocked?'disabled':''}></td><td>${actionAllowed?`<button class="btn primary" ${hardLocked?'disabled':''} type="button" onclick="saveStage(this)">${hasPointing?'Corrigir':'Salvar'}</button>`:'—'}</td></tr>`;
   }).join('');
@@ -290,6 +301,10 @@ openDetail=async function(id){
   state.detail.mode='WORK_ORDER';
   const lifecycle=document.getElementById('lifecycle-section');
   if(lifecycle)lifecycle.hidden=false;
+  const withdrawal=document.getElementById('entry-withdrawal-section');
+  if(withdrawal)withdrawal.hidden=true;
+  const historyTitle=document.getElementById('status-history-title');
+  if(historyTitle)historyTitle.textContent='Status da O.S.';
   resetClosingForm();
 };
 
@@ -298,10 +313,12 @@ async function openEntryDetail(entryId){
     const data=await api(`/api/erp/vehicle-entries/${entryId}/stages`);
     state.detail=data;
     const entry=data.entry;
-    document.getElementById('detail-title').textContent=`ITEM ${entry.item_number} · apontamento antes da O.S.`;
-    document.getElementById('detail-subtitle').textContent=`${entry.chassi} · ${entry.cliente_nome||'Cliente não informado'} · AGUARDANDO O.S.`;
+    const withdrawn=operationalStatus(entry.status)==='RETIRADA';
+    const entryStatus=withdrawn?'RETIRADA':'AGUARDANDO O.S.';
+    document.getElementById('detail-title').textContent=`ITEM ${entry.item_number} · ${withdrawn?'veículo retirado':'apontamento antes da O.S.'}`;
+    document.getElementById('detail-subtitle').textContent=`${entry.chassi} · ${entry.cliente_nome||'Cliente não informado'} · ${entryStatus}`;
     document.getElementById('summary').innerHTML=[
-      datum('Situação','AGUARDANDO O.S.'),
+      datum('Situação',entryStatus),
       datum('Tipo preliminar',entry.tipo_preliminar||'TRANSFORMAÇÃO'),
       datum('Entrada',datetime(entry.data_chegada)),
       datum('Cliente',entry.cliente_nome,true),
@@ -312,9 +329,47 @@ async function openEntryDetail(entryId){
     ].join('');
     const lifecycle=document.getElementById('lifecycle-section');
     if(lifecycle)lifecycle.hidden=true;
+    const withdrawal=document.getElementById('entry-withdrawal-section');
+    if(withdrawal){
+      withdrawal.hidden=withdrawn;
+      const dateControl=document.getElementById('entry-withdrawal-date');
+      const reasonControl=document.getElementById('entry-withdrawal-reason');
+      if(dateControl)dateControl.value=new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16);
+      if(reasonControl)reasonControl.value='';
+    }
+    const historyTitle=document.getElementById('status-history-title');
+    if(historyTitle)historyTitle.textContent='Histórico da entrada';
     renderStages();
     renderHistory();
     if(!detailDialog.open)detailDialog.showModal();
+  }catch(error){
+    message(error.message,true);
+  }
+}
+
+async function withdrawVehicleEntry(){
+  const entry=state.detail?.entry;
+  if(!entry)return;
+  const reasonControl=document.getElementById('entry-withdrawal-reason');
+  const dateControl=document.getElementById('entry-withdrawal-date');
+  const motivo=reasonControl?.value.trim()||'';
+  if(!motivo){
+    message('Informe o motivo da retirada antes de registrar.',true);
+    reasonControl?.focus();
+    return;
+  }
+  if(!confirm(`Confirma a retirada do ITEM ${entry.item_number} sem abertura de O.S.? O veículo não será contabilizado como entregue.`))return;
+  const localEvent=dateControl?.value||'';
+  try{
+    await api(`/api/erp/vehicle-entries/${entry.id}/withdraw`,{
+      method:'POST',
+      body:JSON.stringify({motivo,data_evento:localEvent?new Date(localEvent).toISOString():null})
+    });
+    detailDialog.close();
+    await loadOrders();
+    document.getElementById('view').value='WITHDRAWN';
+    render();
+    message(`ITEM ${entry.item_number}: retirada registrada sem entrega e sem finalização de produção.`);
   }catch(error){
     message(error.message,true);
   }
