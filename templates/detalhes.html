@@ -7,6 +7,7 @@
     <title>Checklist</title>
 </head>
 <body class="bg-slate-50">
+{% include "_portal_back.html" %}
     {% set can_point = current_user and current_user.can("mes.stage.write") %}
     <header class="bg-slate-900 p-4 sticky top-0 z-50 flex justify-between items-center text-white">
         <a href="/" class="text-yellow-400 font-bold">← VOLTAR</a>
