@@ -2688,6 +2688,105 @@ async def erp_update_work_order(work_id: str, request: Request, data: dict = Bod
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
+
+@app.post("/api/erp/work-orders/{work_id}/notes")
+async def erp_add_work_order_note(
+    work_id: str,
+    request: Request,
+    data: dict = Body(...),
+    db: Session = Depends(database.get_db),
+):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    user = require_login(request, db)
+    if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not (
+        has_permission(user, authz.MES_STAGE_WRITE)
+        or has_permission(user, authz.MES_WORK_ORDERS_MANAGE)
+    ):
+        return permission_denied(api=True)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.add_work_order_note(
+                conn, work_id, data.get("note"), user.nome, "MES"
+            )
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@app.post("/api/erp/vehicle-entries/{entry_id}/notes")
+async def erp_add_vehicle_entry_note(
+    entry_id: str,
+    request: Request,
+    data: dict = Body(...),
+    db: Session = Depends(database.get_db),
+):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    user = require_login(request, db)
+    if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not (
+        has_permission(user, authz.MES_STAGE_WRITE)
+        or has_permission(user, authz.MES_WORK_ORDERS_MANAGE)
+    ):
+        return permission_denied(api=True)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.add_vehicle_entry_note(
+                conn, entry_id, data.get("note"), user.nome, "MES"
+            )
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
+@app.get("/api/erp/purchase-orders/options")
+async def erp_purchase_order_options(
+    request: Request,
+    q: str = "",
+    limit: int = 50,
+    db: Session = Depends(database.get_db),
+):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    user = require_login(request, db)
+    if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE):
+        return permission_denied(api=True)
+    with database.engine.connect() as conn:
+        return {
+            "ok": True,
+            "options": erp_service.purchase_order_options(conn, q, limit),
+        }
+
+
+@app.put("/api/erp/purchase-orders/{order_id}/allocation")
+async def erp_set_purchase_order_allocation(
+    order_id: str,
+    request: Request,
+    data: dict = Body(...),
+    db: Session = Depends(database.get_db),
+):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    user = require_login(request, db)
+    if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE):
+        return permission_denied(api=True)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.set_purchase_order_allocation(
+                conn,
+                order_id,
+                data.get("mode"),
+                data.get("work_order_id"),
+                data.get("reference"),
+                user.nome,
+                vehicle_entry_id=data.get("vehicle_entry_id"),
+                reason=data.get("reason") or "",
+                origin="MES",
+            )
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
 # Backend contract used by Suprimentos. It does not depend on a MES browser
 # session and is protected by the same service token pattern used by Estoque.
 @app.get("/api/erp/internal/catalogs")

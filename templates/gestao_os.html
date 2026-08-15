@@ -18,7 +18,8 @@ dialog{width:min(1480px,98vw);max-height:96vh;border:0;border-radius:9px;padding
 .summary{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:7px;margin-bottom:10px}.datum{border:1px solid var(--line);border-radius:6px;background:#f8fafc;padding:7px 9px}.datum span{display:block;color:var(--muted);font-size:9px;font-weight:800;text-transform:uppercase}.datum strong{display:block;margin-top:3px;font-size:12px;word-break:break-word}
 .section{border:1px solid var(--line);border-radius:7px;margin-top:9px;overflow:hidden}.section-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 11px;background:#eef3f8}.section-head h3{margin:0;font-size:14px}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;font-size:11px}th{background:#f8fafc;color:#475569;text-transform:uppercase;font-size:9px}th,td{padding:7px 8px;border-bottom:1px solid #e8edf3;text-align:left;vertical-align:middle}.stage-table input,.stage-table select{min-width:125px;min-height:31px;font-size:11px}.stage-table .notes{min-width:180px}.stage-code{font-weight:850;color:#123d6a}.configuration-note{padding:8px 10px;border-radius:5px;background:#e0f2fe;color:#075985;font-weight:750}
 .lifecycle{display:grid;grid-template-columns:1fr 1fr;gap:9px;padding:11px}.form-row{display:grid;grid-template-columns:180px 1fr auto;gap:8px;align-items:end}.history{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:10px}.history-col{border:1px solid var(--line);border-radius:6px;overflow:hidden}.history-col h4{margin:0;padding:8px 9px;background:#f8fafc}.event{padding:7px 9px;border-top:1px solid #edf1f5;font-size:11px}.event:first-of-type{border-top:0}.event strong{display:block}.event small{color:var(--muted)}
-@media(max-width:1000px){.metrics{grid-template-columns:repeat(2,1fr)}.head{flex-direction:column}.summary,.entry-grid{grid-template-columns:repeat(2,1fr)}.lifecycle,.history{grid-template-columns:1fr}.form-row{grid-template-columns:1fr}}
+.relations{display:grid;grid-template-columns:minmax(300px,1fr) minmax(420px,1.5fr);gap:10px;padding:10px}.relation-col{border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#fff}.relation-col h4{margin:0;padding:9px;background:#f8fafc}.relation-form{display:flex;gap:7px;align-items:flex-end;padding:9px;border-top:1px solid #edf1f5}.relation-form label{flex:1}.po-row{display:grid;grid-template-columns:auto minmax(160px,1fr) auto;gap:8px;align-items:center;padding:9px;border-top:1px solid #edf1f5}.po-row:first-child{border-top:0}.po-row small{display:block;color:var(--muted);margin-top:2px}.signal{width:13px;height:13px;border-radius:50%;box-shadow:0 0 0 3px #fff,0 0 0 4px #cbd5e1}.signal.VERDE{background:#16a34a}.signal.VERMELHO{background:#dc2626}.po-actions{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}.purchase-search-results{max-height:230px;overflow:auto;border-top:1px solid #edf1f5}.allocation-history{max-height:220px;overflow:auto}
+@media(max-width:1000px){.metrics{grid-template-columns:repeat(2,1fr)}.head{flex-direction:column}.summary,.entry-grid{grid-template-columns:repeat(2,1fr)}.lifecycle,.history,.relations{grid-template-columns:1fr}.form-row{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -93,6 +94,22 @@ dialog{width:min(1480px,98vw);max-height:96vh;border:0;border-radius:9px;padding
     <header class="section-head"><h3>Histórico completo</h3><span class="muted">Status, programação e apontamentos produtivos.</span></header>
     <div class="history"><div class="history-col"><h4 id="status-history-title">Status da O.S.</h4><div id="status-history"></div></div><div class="history-col"><h4>Programações</h4><div id="schedule-history"></div></div><div class="history-col"><h4>Apontamentos</h4><div id="stage-history"></div></div></div>
   </section>
+  <section id="work-relations-section" class="section" hidden>
+    <header class="section-head"><h3>Observações e pedidos de compra</h3><span class="muted">Histórico operacional e materiais destinados a esta O.S.</span></header>
+    <div class="relations">
+      <div class="relation-col">
+        <h4>Histórico de observações</h4>
+        <div id="work-notes"></div>
+        {% if current_user.can("mes.stage.write") or current_user.can("mes.work_orders.manage") %}<div class="relation-form"><label>Nova observação<textarea id="work-note-input" rows="2" maxlength="4000" placeholder="Registre uma informação operacional..."></textarea></label><button class="btn primary" type="button" onclick="addOperationalNote()">Adicionar</button></div>{% endif %}
+      </div>
+      <div class="relation-col">
+        <h4>Pedidos de compra vinculados</h4>
+        <div id="linked-purchase-orders"></div>
+        {% if current_user.can("mes.work_orders.manage") %}<div class="relation-form"><label>Alocar outro pedido<input id="purchase-order-search" type="search" placeholder="Número da O.C., fornecedor ou destino"></label><button class="btn" type="button" onclick="searchPurchaseOrders()">Buscar</button></div><div id="purchase-order-search-results" class="purchase-search-results"></div>{% endif %}
+        <h4>Histórico de vínculos</h4><div id="purchase-allocation-history" class="allocation-history"></div>
+      </div>
+    </div>
+  </section>
 </div>
 </dialog>
 
@@ -133,7 +150,7 @@ datum('Situação',statusLabel),datum('Tipo de serviço',w.tipo_servico_grupo||w
 datum('Cliente',w.cliente_nome,true),datum('Município / UF',[w.municipio,w.uf].filter(Boolean).join(' / ')),datum('Veículo',[w.marca,w.modelo,w.versao].filter(Boolean).join(' '),true),datum('Chassi completo',w.chassi,true),
 datum('Linha',w.linha),datum('Transformação',[w.transformacao_codigo,w.transformacao].filter(Boolean).join(' — '),true),datum('Bancos',[w.codigo_banco,w.conjunto_bancos].filter(Boolean).join(' · '),true),datum('Acessibilidade',w.acessibilidade),datum('Lotação',w.lotacao),
 datum('Fornecedor do ar',w.ar_condicionado),datum('Tipo de ar',w.tipo_sistema_ar,true),datum('Ar quente?',w.ar_quente),datum('Acessório',w.acessorio),datum('Plotagem',w.plotagem),datum('Data de entrega vigente',date(w.data_comercial_prevista)),datum('Início do ciclo',datetime(w.inicio_ciclo_produtivo)),datum('Fim do ciclo',datetime(w.fim_ciclo_produtivo||w.termino_producao)),datum('Entrega / retirada',datetime(w.data_entrega)),datum('Avarias de entrada',w.avarias,true),datum('Informações de entrada',w.entry_notes,true)
-].join('');renderStages();renderHistory();const closingDate=document.getElementById('closing-date'),scheduleDate=document.getElementById('schedule-date'),closingStatus=document.getElementById('closing-status');const serviceSuffix=['PÓS-VENDAS','OUTROS'].includes(w.tipo_servico_grupo)?` ${w.tipo_servico_grupo}`:'';if(closingStatus){[...closingStatus.options].forEach(option=>{const base={FINALIZADA:'Produção finalizada',ENTREGUE:'Entregue',RETIRADA:'Retirada'}[option.value]||option.value;option.textContent=base+serviceSuffix})}if(closingDate)closingDate.value=new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16);if(scheduleDate)scheduleDate.value=isoDate(w.data_comercial_prevista);if(!detailDialog.open)detailDialog.showModal()}catch(error){message(error.message,true)}}
+].join('');renderStages();renderHistory();renderRelationships();const closingDate=document.getElementById('closing-date'),scheduleDate=document.getElementById('schedule-date'),closingStatus=document.getElementById('closing-status');const serviceSuffix=['PÓS-VENDAS','OUTROS'].includes(w.tipo_servico_grupo)?` ${w.tipo_servico_grupo}`:'';if(closingStatus){[...closingStatus.options].forEach(option=>{const base={FINALIZADA:'Produção finalizada',ENTREGUE:'Entregue',RETIRADA:'Retirada'}[option.value]||option.value;option.textContent=base+serviceSuffix})}if(closingDate)closingDate.value=new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16);if(scheduleDate)scheduleDate.value=isoDate(w.data_comercial_prevista);if(!detailDialog.open)detailDialog.showModal()}catch(error){message(error.message,true)}}
 const stageInputs=[['?','? — Parametrizar'],['P','P — Parcial'],['N','N — Pendente'],['S','S — Concluída'],['N/A','N/A — Não aplicável']];
 function renderStages(){const work=state.detail.work_order,stages=state.detail.stages||[],closed=['FINALIZADA','ENTREGUE','RETIRADA','CANCELADA','ARQUIVADA'].includes(work.status),hardLocked=['CANCELADA','ARQUIVADA'].includes(work.status),configurationPending=work.stage_configuration_status!=='CONCLUIDA'||stages.some(s=>!s.parametrizado),configuring=!closed&&(['RASCUNHO','AGUARDANDO_O_S'].includes(work.status)||configurationPending);document.getElementById('configuration-actions').hidden=!configuring;document.getElementById('stage-help').textContent=configuring?'Defina todas as etapas. Enquanto houver “?”, a O.S. permanece AG. PARAMETRIZAÇÃO.':closed?'Histórico técnico: as datas de início e fim podem ser corrigidas sem reabrir a O.S.':'';document.getElementById('stage-rows').innerHTML=stages.map(s=>`<tr data-stage="${esc(s.stage_code)}" data-input-code="${esc(s.input_code||'?')}" data-has-operational-pointing="${s.has_operational_pointing?'1':'0'}"><td><span class="stage-code">${esc(s.stage_code)}</span><br><span class="badge ${esc(s.status)}">${esc(s.input_code||'?')} · ${esc(s.status.replaceAll('_',' '))}</span></td><td><select class="stage-status" ${closed?'disabled':''}>${stageInputs.map(([value,label])=>`<option value="${value}" ${value===(s.input_code||'?')?'selected':''}>${label}</option>`).join('')}</select></td><td><input class="stage-owner" value="${esc(s.responsavel||'')}" ${closed||configuring?'disabled':''}></td><td><input class="stage-location" value="${esc(s.localizacao||'')}" ${closed||configuring?'disabled':''}></td><td><input class="stage-start" type="datetime-local" value="${esc(inputDatetime(s.inicio))}" ${hardLocked?'disabled':''}></td><td><input class="stage-finish" type="datetime-local" value="${esc(inputDatetime(s.termino))}" ${hardLocked?'disabled':''}></td><td><input class="stage-note notes" value="${esc(s.observacoes||'')}" ${closed||configuring?'disabled':''}></td><td>${configuring?'—':`<button class="btn primary" ${hardLocked?'disabled':''} type="button" onclick="saveStage(this)">Salvar</button>`}</td></tr>`).join('')}
 async function saveStageConfiguration(activate){const work=state.detail.work_order,stages={};document.querySelectorAll('#stage-rows tr').forEach(row=>stages[row.dataset.stage]=row.querySelector('.stage-status').value);try{await api(`/api/erp/work-orders/${work.id}/stage-configuration`,{method:'PUT',body:JSON.stringify({stages,complete:activate,activate})});await loadOrders();await openDetail(work.id);message(activate?`O.S. ${work.numero_os} parametrizada e ativada no quadro produtivo.`:'Parametrização salva. A O.S. continuará em espera enquanto houver “?”.')}catch(error){message(error.message,true)}}
@@ -141,6 +158,64 @@ async function saveStage(button){const row=button.closest('tr'),work=state.detai
 async function schedule(){const w=state.detail.work_order,dateInput=document.getElementById('schedule-date'),reasonInput=document.getElementById('schedule-reason'),button=document.getElementById('schedule-submit'),payload={nova_data:dateInput.value,motivo:reasonInput.value.trim()};if(!payload.nova_data){scheduleMessage('Informe a nova data de entrega.',true);dateInput.focus();return}if(!payload.motivo){scheduleMessage('Informe o motivo da reprogramação.',true);reasonInput.focus();return}button.disabled=true;scheduleMessage('Registrando reprogramação...');try{await api(`/api/erp/work-orders/${w.id}/schedules`,{method:'POST',body:JSON.stringify(payload)});await openDetail(w.id);await loadOrders();scheduleMessage('Reprogramação registrada. A nova data já está vigente e o histórico foi preservado.');message('Reprogramação registrada com histórico.')}catch(error){scheduleMessage(error.message,true);message(error.message,true)}finally{button.disabled=false}}
 async function closeWork(){const w=state.detail.work_order,status=document.getElementById('closing-status').value,localEvent=document.getElementById('closing-date').value,data_evento=localEvent?new Date(localEvent).toISOString():null,observacoes=document.getElementById('closing-note').value;const label={FINALIZADA:'finalizar a produção',ENTREGUE:'registrar a entrega',RETIRADA:'registrar a retirada'}[status];if(!confirm(`Confirma ${label} da O.S. ${w.numero_os}?`))return;try{await api(`/api/erp/work-orders/${w.id}/finalize`,{method:'POST',body:JSON.stringify({status,data_evento,observacoes})});detailDialog.close();await loadOrders();document.getElementById('view').value='HISTORY';render();message(`O.S. ${w.numero_os}: ${status.replaceAll('_',' ')}. Histórico preservado.`)}catch(error){message(error.message,true)}}
 function renderHistory(){const d=state.detail,revisionEvents=(d.revisions||[]).map(x=>eventHtml(`Revisão ${x.revision_number} · ${x.status}${x.is_current?' · VIGENTE':' · SUBSTITUÍDA'}`,`${datetime(x.created_at)} · ${x.criado_por||'SISTEMA'}`,x.supersedes_work_order_id?'Criada após cancelamento da revisão anterior.':'Revisão original.'));document.getElementById('status-history').innerHTML=[...revisionEvents,...(d.status_history||[]).map(x=>eventHtml(`${x.status_anterior||'INÍCIO'} → ${x.novo_status}`,`${datetime(x.created_at)} · ${x.usuario}`,x.observacao||x.motivo))].join('')||'<div class="event muted">Sem alterações.</div>';document.getElementById('schedule-history').innerHTML=(d.schedules||[]).map(x=>eventHtml(`${x.data_anterior?date(x.data_anterior):'DATA INICIAL'} → ${date(x.nova_data)}`,`${datetime(x.created_at)} · ${x.usuario} · ${x.vigente?'DATA VIGENTE':'DATA ALTERADA'}`,x.motivo)).join('')||'<div class="event muted">Sem programação.</div>';document.getElementById('stage-history').innerHTML=(d.stage_events||[]).map(x=>eventHtml(`${x.stage_code}: ${x.status_anterior||'—'} → ${x.novo_status}`,`${datetime(x.created_at)} · ${x.operador}`,x.observacao)).join('')||'<div class="event muted">Sem apontamentos.</div>'}
+
+function renderRelationships(){
+  const d=state.detail||{},section=document.getElementById('work-relations-section');
+  if(!section||(!d.work_order&&!d.entry)){if(section)section.hidden=true;return}
+  section.hidden=false;
+  const notes=document.getElementById('work-notes');
+  if(notes)notes.innerHTML=(d.notes||[]).map(x=>eventHtml('Observação',`${datetime(x.created_at)} · ${x.actor||'SISTEMA'} · ${x.origin||'MES'}`,x.note)).join('')||'<div class="event muted">Nenhuma observação registrada.</div>';
+  const orders=document.getElementById('linked-purchase-orders');
+  if(orders)orders.innerHTML=(d.purchase_orders||[]).map(x=>`<div class="po-row"><span class="signal ${esc(x.receipt_signal||'VERMELHO')}" title="${x.receipt_signal==='VERDE'?'Pedido recebido':'Recebimento pendente'}"></span><div><strong>O.C. ${esc(x.numero_oc)} · ${esc(x.fornecedor_nome||'Fornecedor não informado')}</strong><small>${esc(x.status||'—')} · ${x.receipt_signal==='VERDE'?'Recebida':'Aguardando recebimento'} · ${esc(x.allocation_reference||x.destino||'')}</small></div>${canManage?`<div class="po-actions"><button class="btn" type="button" onclick="movePurchaseOrder('${x.id}','AG_CHEGADA')">AG chegada</button><button class="btn" type="button" onclick="movePurchaseOrder('${x.id}','ESTOQUE')">Estoque</button></div>`:''}</div>`).join('')||'<div class="event muted">Nenhum pedido de compra vinculado.</div>';
+  const history=document.getElementById('purchase-allocation-history');
+  if(history)history.innerHTML=(d.purchase_allocation_history||[]).map(x=>eventHtml(`O.C. ${x.numero_oc}: ${x.from_mode||'INÍCIO'} → ${x.to_mode}`,`${datetime(x.created_at)} · ${x.actor||'SISTEMA'} · ${x.origin||'ERP'}`,x.reason||x.reference_text||'')).join('')||'<div class="event muted">Sem alterações de vínculo.</div>';
+  const results=document.getElementById('purchase-order-search-results');
+  if(results)results.innerHTML='';
+}
+
+async function addOperationalNote(){
+  const work=state.detail?.work_order,entry=state.detail?.entry,input=document.getElementById('work-note-input');
+  const note=input?.value.trim()||'';
+  if((!work&&!entry)||!note){message('Escreva a observação antes de adicionar.',true);input?.focus();return}
+  const endpoint=work?`/api/erp/work-orders/${work.id}/notes`:`/api/erp/vehicle-entries/${entry.id}/notes`;
+  try{await api(endpoint,{method:'POST',body:JSON.stringify({note})});input.value='';if(work)await openDetail(work.id);else await openEntryDetail(entry.id);message('Observação adicionada ao histórico.')}catch(error){message(error.message,true)}
+}
+
+async function searchPurchaseOrders(){
+  const work=state.detail?.work_order,entry=state.detail?.entry,input=document.getElementById('purchase-order-search'),results=document.getElementById('purchase-order-search-results');
+  if((!work&&!entry)||!results)return;
+  results.innerHTML='<div class="event muted">Buscando pedidos...</div>';
+  try{
+    const data=await api(`/api/erp/purchase-orders/options?q=${encodeURIComponent(input?.value||'')}&limit=50`);
+    const linked=new Set((state.detail.purchase_orders||[]).map(x=>String(x.id)));
+    const options=(data.options||[]).filter(x=>!linked.has(String(x.id)));
+    results.innerHTML=options.map(x=>`<div class="po-row"><span class="signal ${Number(x.quantidade_recebida||0)>0?'VERDE':'VERMELHO'}"></span><div><strong>O.C. ${esc(x.numero_oc)} · ${esc(x.fornecedor_nome||'')}</strong><small>${esc(x.status||'—')} · pedido ${esc(x.quantidade_pedida||0)} · recebido ${esc(x.quantidade_recebida||0)}</small></div><button class="btn primary" type="button" onclick="linkPurchaseOrder('${x.id}')">Vincular</button></div>`).join('')||'<div class="event muted">Nenhum pedido aberto encontrado.</div>';
+  }catch(error){results.innerHTML=`<div class="event muted">${esc(error.message)}</div>`}
+}
+
+async function updatePurchaseOrderAllocation(orderId,mode,workOrderId,vehicleEntryId,reference,reason){
+  const detail=state.detail;
+  await api(`/api/erp/purchase-orders/${orderId}/allocation`,{method:'PUT',body:JSON.stringify({mode,work_order_id:workOrderId,vehicle_entry_id:vehicleEntryId,reference,reason})});
+  if(detail.work_order)await openDetail(detail.work_order.id);else await openEntryDetail(detail.entry.id);await loadOrders();
+}
+
+async function linkPurchaseOrder(orderId){
+  const w=state.detail?.work_order,e=state.detail?.entry;if(!w&&!e)return;
+  const target=w?`O.S. ${w.numero_os}`:`ITEM ${e.item_number}`;
+  const reason=window.prompt(`Motivo do vínculo da O.C. com ${target}:`,'Alocação de compra para o veículo.');
+  if(reason===null)return;
+  const reference=w?`O.S. ${w.numero_os} · CHASSI ${String(w.chassi||'').slice(-8)}`:`ITEM ${e.item_number} · CHASSI ${String(e.chassi||'').slice(-8)}`;
+  try{await updatePurchaseOrderAllocation(orderId,w?'WORK_ORDER':'AG_CHEGADA',w?.id||null,e?.id||null,reference,reason.trim());message(`Pedido vinculado a ${target}.`)}catch(error){message(error.message,true)}
+}
+
+async function movePurchaseOrder(orderId,mode){
+  const label=mode==='ESTOQUE'?'ESTOQUE':'AG CHEGADA';
+  const reference=window.prompt(`Informe a referência para mover o pedido para ${label}:`,label);
+  if(reference===null||!reference.trim()){message('A alteração do vínculo exige uma referência.',true);return}
+  const reason=window.prompt('Informe o motivo da alteração do vínculo:');
+  if(reason===null||!reason.trim()){message('A alteração do vínculo exige um motivo.',true);return}
+  try{await updatePurchaseOrderAllocation(orderId,mode,null,null,reference.trim(),reason.trim());message(`Pedido movido para ${label}.`)}catch(error){message(error.message,true)}
+}
 const canManage={{ current_user.can("mes.work_orders.manage")|tojson }};
 const canStageWrite={{ current_user.can("mes.stage.write")|tojson }};
 const operationalStatus=value=>norm(value).replace(/[_\s]+/g,' ').trim();
@@ -303,6 +378,8 @@ openDetail=async function(id){
   if(lifecycle)lifecycle.hidden=false;
   const withdrawal=document.getElementById('entry-withdrawal-section');
   if(withdrawal)withdrawal.hidden=true;
+  const relations=document.getElementById('work-relations-section');
+  if(relations)relations.hidden=false;
   const historyTitle=document.getElementById('status-history-title');
   if(historyTitle)historyTitle.textContent='Status da O.S.';
   resetClosingForm();
@@ -329,6 +406,8 @@ async function openEntryDetail(entryId){
     ].join('');
     const lifecycle=document.getElementById('lifecycle-section');
     if(lifecycle)lifecycle.hidden=true;
+    const relations=document.getElementById('work-relations-section');
+    if(relations)relations.hidden=false;
     const withdrawal=document.getElementById('entry-withdrawal-section');
     if(withdrawal){
       withdrawal.hidden=withdrawn;
@@ -341,6 +420,7 @@ async function openEntryDetail(entryId){
     if(historyTitle)historyTitle.textContent='Histórico da entrada';
     renderStages();
     renderHistory();
+    renderRelationships();
     if(!detailDialog.open)detailDialog.showModal();
   }catch(error){
     message(error.message,true);

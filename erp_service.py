@@ -850,6 +850,7 @@ def create_entry(conn, payload, actor):
             )
     entry_id=_id(); row=_one(conn.execute(text("insert into erp_vehicle_entries(id,vehicle_id,data_chegada,cliente_id,cliente_nome,origem,observacoes,avarias,criado_por,status) values(:id,:vehicle,:arrival,:client_id,:client,:origin,:notes,:damage,:actor,'AGUARDANDO_O_S') returning item_number"),{'id':entry_id,'vehicle':vehicle_id,'arrival':payload.get('data_chegada') or datetime.utcnow(),'client_id':payload.get('cliente_id'),'client':str(payload.get('cliente_nome') or ''),'origin':str(payload.get('origem') or 'MANUAL'),'notes':str(payload.get('observacoes') or ''),'damage':str(payload.get('avarias') or ''),'actor':actor}))
     _ensure_entry_stage_rows(conn, entry_id)
+    reconcile_purchase_order_allocations(conn, actor, "ENTRADA_VEICULO")
     return {'id':entry_id,'vehicle_id':vehicle_id,'item_number':int(row['item_number'])}
 
 
@@ -941,6 +942,7 @@ def update_vehicle_entry(conn, entry_id, payload, actor):
         "after_data": json.dumps(after, default=str, ensure_ascii=False),
         "reason": str(payload.get("motivo") or "Correcao dos dados informados na entrada do veiculo."),
     })
+    reconcile_purchase_order_allocations(conn, actor, "ENTRADA_VEICULO")
     return {
         "id": str(entry_id), "vehicle_id": str(current["vehicle_id"]),
         "item_number": int(current["item_number"]), "replayed": False,
@@ -1183,6 +1185,7 @@ def create_work_order(conn, entry_id, payload, actor):
     }
     if documento_os_id is not None:
         result['documento_os_id'] = documento_os_id
+    reconcile_purchase_order_allocations(conn, actor, "ABERTURA_OS")
     return result
 
 def update_work_order(conn, work_id, payload, actor):
@@ -1291,6 +1294,7 @@ def update_work_order(conn, work_id, payload, actor):
     }
     if documento_os_id is not None:
         result["documento_os_id"] = documento_os_id
+    reconcile_purchase_order_allocations(conn, actor, "EDICAO_OS")
     return result
 
 def activate_work_order(conn, work_id, actor):
@@ -1368,6 +1372,7 @@ def activate_work_order(conn, work_id, actor):
         'note': 'Etapas publicadas no MES; produção já iniciada antes da abertura da O.S.' if has_started else 'Etapas publicadas no MES',
     })
     recalculate_work_order_sequences(conn, actor)
+    reconcile_purchase_order_allocations(conn, actor, "ATIVACAO_OS")
     return {'id':work_id,'replayed':False,'status':next_status}
 
 def active_cards(conn):
@@ -1442,6 +1447,226 @@ def active_work_order_options(conn, search="", limit=20):
         )
         options.append(option)
     return options
+
+
+def reconcile_purchase_order_allocations(conn, actor, origin="MES"):
+    result = conn.execute(text(
+        "select erp_reconcile_ag_chegada_allocations(:actor,:origin)"
+    ), {"actor": actor, "origin": origin})
+    # Some transactional test doubles deliberately implement only ``first``.
+    # Production SQLAlchemy results use scalar_one(), while the fallback keeps
+    # the lifecycle contract testable without hiding real database errors.
+    scalar_one = getattr(result, "scalar_one", None)
+    if callable(scalar_one):
+        return int(scalar_one() or 0)
+    row = result.first()
+    if row is None:
+        return 0
+    try:
+        return int(row[0] or 0)
+    except (KeyError, TypeError):
+        return 0
+
+
+def add_work_order_note(conn, work_id, note, actor, origin="MES"):
+    message = str(note or "").strip()
+    if not message:
+        raise ValueError("Escreva a observação antes de adicionar.")
+    if len(message) > 4000:
+        raise ValueError("A observação deve ter no máximo 4.000 caracteres.")
+    exists = conn.execute(text(
+        "select 1 from erp_work_orders where id=:id"
+    ), {"id": work_id}).first()
+    if not exists:
+        raise ValueError("O.S. não encontrada.")
+    note_id = _id()
+    conn.execute(text("""
+        insert into erp_work_order_notes(id,work_order_id,note,actor,origin)
+        values(:id,:work_order,:note,:actor,:origin)
+    """), {
+        "id": note_id, "work_order": work_id, "note": message,
+        "actor": actor, "origin": origin,
+    })
+    return {"id": note_id, "note": message}
+
+
+def add_vehicle_entry_note(conn, entry_id, note, actor, origin="MES"):
+    message = str(note or "").strip()
+    if not message:
+        raise ValueError("Escreva a observação antes de adicionar.")
+    if len(message) > 4000:
+        raise ValueError("A observação deve ter no máximo 4.000 caracteres.")
+    exists = conn.execute(text(
+        "select 1 from erp_vehicle_entries where id=:id"
+    ), {"id": entry_id}).first()
+    if not exists:
+        raise ValueError("Entrada de veículo não encontrada.")
+    note_id = _id()
+    conn.execute(text("""
+        insert into erp_vehicle_entry_notes(id,vehicle_entry_id,note,actor,origin)
+        values(:id,:entry,:note,:actor,:origin)
+    """), {
+        "id": note_id, "entry": entry_id, "note": message,
+        "actor": actor, "origin": origin,
+    })
+    return {"id": note_id, "note": message}
+
+
+def purchase_order_options(conn, search="", limit=50):
+    query = str(search or "").strip()
+    bounded_limit = min(max(int(limit or 50), 1), 100)
+    rows = conn.execute(text("""
+        select o.id,o.numero_oc,o.fornecedor_nome,o.status,o.destino,
+               o.allocation_mode,o.work_order_id,o.vehicle_entry_id,o.allocation_reference,
+               coalesce(sum(l.quantidade_pedida),0) as quantidade_pedida,
+               coalesce(sum(l.quantidade_recebida),0) as quantidade_recebida
+          from erp_purchase_orders o
+          left join erp_purchase_order_lines l on l.purchase_order_id=o.id
+         where o.status<>'CANCELADA'
+           and coalesce(o.technical_status,'ABERTA')='ABERTA'
+           and (
+                :search=''
+                or concat_ws(' ',o.numero_oc,o.fornecedor_nome,o.destino,
+                             o.allocation_reference) ilike :pattern
+           )
+         group by o.id
+         order by o.data_emissao desc nulls last,o.created_at desc
+         limit :limit
+    """), {"search": query, "pattern": f"%{query}%", "limit": bounded_limit}).mappings()
+    return [dict(row) for row in rows]
+
+
+def set_purchase_order_allocation(
+    conn, purchase_order_id, mode, work_order_id, reference, actor,
+    vehicle_entry_id=None,
+    *, reason="", origin="MES"
+):
+    target_mode = str(mode or "").strip().upper()
+    if target_mode not in {"ESTOQUE", "WORK_ORDER", "AG_CHEGADA"}:
+        raise ValueError("Destino de vínculo inválido.")
+    order = _one(conn.execute(text("""
+        select id,numero_oc,allocation_mode,work_order_id,vehicle_entry_id,
+               allocation_reference,destino
+          from erp_purchase_orders
+         where id=:id
+         for update
+    """), {"id": purchase_order_id}))
+    if not order:
+        raise ValueError("O.C. não encontrada.")
+
+    target_work_order = str(work_order_id or "").strip() or None
+    target_vehicle_entry = str(vehicle_entry_id or "").strip() or None
+    target_reference = str(reference or "").strip()
+    if target_mode == "WORK_ORDER":
+        if not target_work_order:
+            raise ValueError("Informe a O.S. de destino.")
+        work = _one(conn.execute(text("""
+            select w.id,w.numero_os,w.vehicle_entry_id,e.item_number,v.chassi
+              from erp_work_orders w
+              join erp_vehicle_entries e on e.id=w.vehicle_entry_id
+              join erp_vehicles v on v.id=e.vehicle_id
+             where w.id=:id and w.is_current=true
+               and coalesce(w.technical_status,'ABERTA')='ABERTA'
+               and w.status in ('ATIVA','EM_PRODUÇÃO')
+        """), {"id": target_work_order}))
+        if not work:
+            raise ValueError("A O.S. escolhida não está ativa ou em produção.")
+        target_vehicle_entry = str(work["vehicle_entry_id"])
+        target_reference = target_reference or (
+            f"O.S. {work['numero_os']} · ITEM {work['item_number']} · "
+            f"CHASSI {str(work['chassi'] or '')[-8:]}"
+        )
+    else:
+        target_work_order = None
+        if target_mode == "ESTOQUE":
+            target_vehicle_entry = None
+            target_reference = target_reference or "ESTOQUE"
+        else:
+            if target_vehicle_entry:
+                entry = _one(conn.execute(text("""
+                    select e.id,e.item_number,v.chassi
+                      from erp_vehicle_entries e
+                      join erp_vehicles v on v.id=e.vehicle_id
+                     where e.id=:id and coalesce(e.status,'AGUARDANDO_O_S')<>'RETIRADA'
+                """), {"id": target_vehicle_entry}))
+                if not entry:
+                    raise ValueError("A entrada escolhida não está disponível para vínculo.")
+                target_reference = target_reference or (
+                    f"ITEM {entry['item_number']} · CHASSI {str(entry['chassi'] or '')[-8:]}"
+                )
+            elif not target_reference:
+                target_reference = str(order.get("destino") or "").strip()
+
+    changed = (
+        str(order.get("allocation_mode") or "ESTOQUE") != target_mode
+        or str(order.get("work_order_id") or "") != str(target_work_order or "")
+        or str(order.get("vehicle_entry_id") or "") != str(target_vehicle_entry or "")
+        or str(order.get("allocation_reference") or "") != target_reference
+    )
+    if not changed:
+        return {"id": str(order["id"]), "unchanged": True}
+
+    conn.execute(text("""
+        update erp_purchase_orders
+           set allocation_mode=:mode,work_order_id=:work_order,
+               vehicle_entry_id=:vehicle_entry,allocation_reference=:reference,
+               allocation_updated_at=now(),
+               allocation_updated_by=:actor,updated_at=now(),version=version+1
+         where id=:id
+    """), {
+        "id": purchase_order_id, "mode": target_mode,
+        "work_order": target_work_order, "reference": target_reference,
+        "vehicle_entry": target_vehicle_entry,
+        "actor": actor,
+    })
+    conn.execute(text("""
+        update erp_purchase_order_lines
+           set work_order_id=:work_order
+         where purchase_order_id=:id
+    """), {"id": purchase_order_id, "work_order": target_work_order})
+    conn.execute(text("""
+        insert into erp_purchase_order_allocation_events(
+            purchase_order_id,from_mode,to_mode,from_work_order_id,to_work_order_id,
+            from_vehicle_entry_id,to_vehicle_entry_id,reference_text,
+            action,actor,origin,reason
+        ) values(
+            :order_id,:from_mode,:to_mode,:from_work_order,:to_work_order,
+            :from_vehicle_entry,:to_vehicle_entry,:reference,
+            :action,:actor,:origin,:reason
+        )
+    """), {
+        "order_id": purchase_order_id,
+        "from_mode": str(order.get("allocation_mode") or "ESTOQUE"),
+        "to_mode": target_mode,"from_work_order": order.get("work_order_id"),
+        "to_work_order": target_work_order,"reference": target_reference,
+        "from_vehicle_entry": order.get("vehicle_entry_id"),
+        "to_vehicle_entry": target_vehicle_entry,
+        "action": (
+            "MANUAL_LINK" if target_mode == "WORK_ORDER"
+            else "MANUAL_LINK_ENTRY" if target_vehicle_entry
+            else "UNLINK"
+        ),
+        "actor": actor,"origin": origin,"reason": str(reason or "").strip(),
+    })
+    conn.execute(text("""
+        insert into erp_audit_events(
+            entity_type,entity_id,action,actor,origin,before_data,after_data,reason
+        ) values(
+            'PURCHASE_ORDER',:id,'ALOCACAO_OS_ATUALIZADA',:actor,:origin,
+            jsonb_build_object('mode',cast(:from_mode as text),'work_order_id',cast(:from_work as text)),
+            jsonb_build_object('mode',cast(:to_mode as text),'work_order_id',cast(:to_work as text)),
+            :reason
+        )
+    """), {
+        "id": purchase_order_id,"actor": actor,"origin": origin,
+        "from_mode": str(order.get("allocation_mode") or "ESTOQUE"),
+        "from_work": str(order.get("work_order_id") or ""),
+        "to_mode": target_mode,"to_work": str(target_work_order or ""),
+        "reason": str(reason or "").strip(),
+    })
+    return {"id": str(order["id"]), "allocation_mode": target_mode,
+            "work_order_id": target_work_order,
+            "vehicle_entry_id": target_vehicle_entry}
 
 
 def list_work_orders(conn, search="", status="", limit=1000):
@@ -1580,6 +1805,38 @@ def vehicle_entry_stage_detail(conn, entry_id):
           and action='RETIRADA_SEM_OS'
         order by created_at desc,id desc
     """), {"entry": entry_id})]
+    notes = [dict(row._mapping) for row in conn.execute(text("""
+        select id,note,actor,origin,created_at
+          from erp_vehicle_entry_notes
+         where vehicle_entry_id=:entry
+         order by created_at desc,id desc
+    """), {"entry": entry_id})]
+    purchase_orders = [dict(row._mapping) for row in conn.execute(text("""
+        select o.id,o.numero_oc,o.fornecedor_nome,o.status,o.destino,
+               o.allocation_mode,o.allocation_reference,o.data_emissao,
+               o.data_necessidade,o.valor_total_pedido,o.updated_at,
+               coalesce((select count(*) from erp_goods_receipts r
+                         where r.purchase_order_id=o.id and r.status='CONFIRMADO'),0)
+                   as recebimentos_confirmados,
+               case when exists(select 1 from erp_goods_receipts r
+                                where r.purchase_order_id=o.id and r.status='CONFIRMADO')
+                    then 'VERDE' else 'VERMELHO' end as receipt_signal
+          from erp_purchase_orders o
+         where o.vehicle_entry_id=:entry and o.work_order_id is null
+         order by o.data_emissao desc nulls last,o.created_at desc
+    """), {"entry": entry_id})]
+    purchase_allocation_history = [dict(row._mapping) for row in conn.execute(text("""
+        select event.id,event.purchase_order_id,event.from_mode,event.to_mode,
+               event.from_work_order_id,event.to_work_order_id,
+               event.from_vehicle_entry_id,event.to_vehicle_entry_id,
+               event.reference_text,event.action,event.actor,event.origin,
+               event.reason,event.created_at,o.numero_oc,o.fornecedor_nome
+          from erp_purchase_order_allocation_events event
+          join erp_purchase_orders o on o.id=event.purchase_order_id
+         where event.from_vehicle_entry_id=:entry or event.to_vehicle_entry_id=:entry
+         order by event.created_at desc,event.id desc
+         limit 500
+    """), {"entry": entry_id})]
     return {
         "mode": "ENTRY",
         "entry": entry,
@@ -1587,6 +1844,9 @@ def vehicle_entry_stage_detail(conn, entry_id):
         "stage_events": events,
         "status_history": status_history,
         "schedules": [],
+        "notes": notes,
+        "purchase_orders": purchase_orders,
+        "purchase_allocation_history": purchase_allocation_history,
     }
 
 
@@ -1781,6 +2041,42 @@ def work_order_detail(conn, work_id):
         order by e.created_at desc
         limit 500
     """), {"id": work_id})]
+    notes = [dict(row) for row in conn.execute(text("""
+        select id,note,actor,origin,created_at
+          from erp_work_order_notes
+         where work_order_id=:id
+         order by created_at desc,id desc
+    """), {"id": work_id}).mappings()]
+    purchase_orders = [dict(row) for row in conn.execute(text("""
+        select o.id,o.numero_oc,o.fornecedor_nome,o.status,o.destino,
+               o.allocation_mode,o.allocation_reference,o.data_emissao,
+               o.data_necessidade,o.valor_total_pedido,o.updated_at,
+               coalesce((
+                   select count(*) from erp_goods_receipts r
+                    where r.purchase_order_id=o.id and r.status='CONFIRMADO'
+               ),0) as recebimentos_confirmados,
+               case when exists(
+                   select 1 from erp_goods_receipts r
+                    where r.purchase_order_id=o.id and r.status='CONFIRMADO'
+               ) then 'VERDE' else 'VERMELHO' end
+                   as receipt_signal
+          from erp_purchase_orders o
+         where o.work_order_id=:id or o.vehicle_entry_id=:entry_id
+         order by o.data_emissao desc nulls last,o.created_at desc
+    """), {"id": work_id, "entry_id": work["vehicle_entry_id"]}).mappings()]
+    purchase_allocation_history = [dict(row) for row in conn.execute(text("""
+        select e.id,e.purchase_order_id,e.from_mode,e.to_mode,
+               e.from_work_order_id,e.to_work_order_id,
+               e.from_vehicle_entry_id,e.to_vehicle_entry_id,e.reference_text,
+               e.action,e.actor,e.origin,e.reason,e.created_at,o.numero_oc,
+               o.fornecedor_nome
+          from erp_purchase_order_allocation_events e
+          join erp_purchase_orders o on o.id=e.purchase_order_id
+         where e.from_work_order_id=:id or e.to_work_order_id=:id
+            or e.from_vehicle_entry_id=:entry_id or e.to_vehicle_entry_id=:entry_id
+         order by e.created_at desc,e.id desc
+         limit 500
+    """), {"id": work_id, "entry_id": work["vehicle_entry_id"]}).mappings()]
     return {
         "work_order": work,
         "stages": stages,
@@ -1788,6 +2084,9 @@ def work_order_detail(conn, work_id):
         "status_history": history,
         "revisions": revisions,
         "stage_events": stage_events,
+        "notes": notes,
+        "purchase_orders": purchase_orders,
+        "purchase_allocation_history": purchase_allocation_history,
     }
 
 def configure_stages(conn, work_id, payload, actor):
