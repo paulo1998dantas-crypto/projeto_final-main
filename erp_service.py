@@ -1302,6 +1302,92 @@ def update_work_order(conn, work_id, payload, actor):
     reconcile_purchase_order_allocations(conn, actor, "EDICAO_OS")
     return result
 
+
+def correct_work_order_bank(conn, work_id, payload, actor):
+    """Correct only the bank reference without reopening a closed work order."""
+    bank_code = str(payload.get("codigo_banco") or "").strip()
+    bank_description = str(payload.get("conjunto_bancos") or "").strip()
+    reason = str(payload.get("motivo") or payload.get("reason") or "").strip()
+    if not bank_code:
+        raise ValueError("Informe o código do banco ou N/A.")
+    if _token(bank_code) == "N/A":
+        bank_code = "N/A"
+        bank_description = "N/A"
+    elif not bank_description:
+        raise ValueError("O código do banco precisa ter uma descrição válida do Cadastro.")
+    if not reason:
+        raise ValueError("Informe o motivo da correção do código do banco.")
+
+    work = _one(conn.execute(text("""
+        select id,numero_os,status,codigo_banco,conjunto_bancos,version
+        from erp_work_orders
+        where id=:id
+        for update
+    """), {"id": work_id}))
+    if not work:
+        raise ValueError("O.S. não encontrada.")
+
+    previous_code = str(work.get("codigo_banco") or "").strip()
+    previous_description = str(work.get("conjunto_bancos") or "").strip()
+    if previous_code == bank_code and previous_description == bank_description:
+        return {
+            "id": work_id,
+            "numero_os": work["numero_os"],
+            "status": work["status"],
+            "codigo_banco": bank_code,
+            "conjunto_bancos": bank_description,
+            "replayed": True,
+        }
+
+    conn.execute(text("""
+        update erp_work_orders
+        set codigo_banco=:codigo_banco,
+            conjunto_bancos=:conjunto_bancos,
+            updated_at=now(),
+            version=version+1
+        where id=:id
+    """), {
+        "id": work_id,
+        "codigo_banco": bank_code,
+        "conjunto_bancos": bank_description,
+    })
+    conn.execute(text("""
+        insert into erp_audit_events(
+            entity_type,entity_id,action,actor,origin,before_data,after_data,reason
+        ) values(
+            'WORK_ORDER',:id,'CORRECAO_CODIGO_BANCO',:actor,'SUPRIMENTOS',
+            jsonb_build_object(
+                'codigo_banco',cast(:codigo_anterior as text),
+                'conjunto_bancos',cast(:descricao_anterior as text),
+                'status',cast(:status as text)
+            ),
+            jsonb_build_object(
+                'codigo_banco',cast(:codigo_novo as text),
+                'conjunto_bancos',cast(:descricao_nova as text),
+                'status',cast(:status as text)
+            ),
+            :reason
+        )
+    """), {
+        "id": work_id,
+        "actor": actor,
+        "codigo_anterior": previous_code or None,
+        "descricao_anterior": previous_description or None,
+        "codigo_novo": bank_code,
+        "descricao_nova": bank_description,
+        "status": work["status"],
+        "reason": reason,
+    })
+    return {
+        "id": work_id,
+        "numero_os": work["numero_os"],
+        "status": work["status"],
+        "codigo_banco": bank_code,
+        "conjunto_bancos": bank_description,
+        "replayed": False,
+    }
+
+
 def activate_work_order(conn, work_id, actor):
     work=_one(conn.execute(text('select * from erp_work_orders where id=:id for update'),{'id':work_id}))
     if not work: raise ValueError('O.S. nao encontrada.')

@@ -2883,6 +2883,22 @@ async def erp_internal_update_work_order(work_id: str, request: Request, data: d
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
+@app.patch("/api/erp/internal/work-orders/{work_id}/bank")
+async def erp_internal_correct_work_order_bank(
+    work_id: str,
+    request: Request,
+    data: dict = Body(...),
+):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    actor = erp_backend_actor(request)
+    if not actor: return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.correct_work_order_bank(conn, work_id, data, actor)
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
 @app.post("/api/erp/internal/work-orders/{work_id}/activate")
 async def erp_internal_activate(work_id: str, request: Request):
     if not erp_feature_enabled(): return erp_disabled_response()
