@@ -122,6 +122,38 @@ class MesStageWriteSafetyTests(unittest.TestCase):
 
         connection.execute.assert_not_called()
 
+    def test_finalized_work_order_allows_only_accessory_or_plotting_pointings(self):
+        """LIBERAÇÃO finaliza o veículo sem bloquear os dois acabamentos finais."""
+        connection = Mock()
+        work = {"status": "FINALIZADA", "vehicle_entry_id": "entry"}
+        stage = {
+            "id": "stage",
+            "status": erp_service._stage_status_from_input("N"),
+            "parametrizado": True,
+            "aplicavel": True,
+            "inicio": None,
+            "termino": None,
+        }
+        with (
+            patch.object(
+                erp_service,
+                "_locked_work_and_stage",
+                return_value=(work, stage),
+            ),
+            patch.object(erp_service, "_has_operational_pointing", return_value=False),
+        ):
+            result = erp_service.update_stage(
+                connection,
+                "work-order",
+                "ACESSÓRIO",
+                {"input_code": "S", "expected_status": "N"},
+                "OPERADOR",
+            )
+
+        self.assertEqual(result["status"], "CONCLUÍDA")
+        self.assertEqual(result["work_order_status"], "FINALIZADA")
+        self.assertTrue(connection.execute.called)
+
     def test_reopening_clears_a_stale_finish_value_from_the_browser(self):
         connection = Mock()
         old_finish = datetime.datetime(2026, 8, 3, 11, 22, 15)
@@ -263,6 +295,28 @@ class MesStageWriteSafetyTests(unittest.TestCase):
             completing_stage_id="release-stage",
         )
         connection.execute.assert_not_called()
+
+    def test_release_pending_check_ignores_accessory_and_plotting(self):
+        class _Row:
+            def __init__(self, **values):
+                self._mapping = values
+
+        connection = Mock()
+        connection.execute.return_value = [
+            _Row(id="release", stage_code="LIBERAÇÃO", status="PENDENTE", aplicavel=True),
+            _Row(id="bco", stage_code="BCO", status="PENDENTE", aplicavel=True),
+            _Row(id="accessory", stage_code="ACESSÓRIO", status="PENDENTE", aplicavel=True),
+            _Row(id="plotting", stage_code="PLOTAGEM", status="PENDENTE", aplicavel=True),
+        ]
+
+        self.assertEqual(
+            erp_service._unfinished_applicable_stage_codes(
+                connection,
+                "work-order",
+                completing_stage_id="release",
+            ),
+            ["BCO"],
+        )
 
     def test_cycle_end_is_visible_only_after_the_work_order_is_closed(self):
         start = datetime.datetime(2026, 8, 3, 8, 22)

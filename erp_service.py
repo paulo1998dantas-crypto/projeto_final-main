@@ -18,6 +18,11 @@ STAGES = [
     ("PLOTAGEM", 110, []), ("LIBERAÇÃO", 120, ["BCO"]),
 ]
 
+# LIBERAÇÃO encerra o ciclo produtivo do veículo. ACESSÓRIO e PLOTAGEM podem
+# ser executados depois da liberação e, por isso, não bloqueiam o fechamento
+# nem ficam bloqueados quando a O.S. já estiver FINALIZADA.
+POST_RELEASE_POINTING_STAGE_CODES = frozenset({"ACESSORIO", "PLOTAGEM"})
+
 STAGE_INPUT_TO_STATUS = {
     "?": ("PENDENTE", None, False),
     "N": ("PENDENTE", True, True),
@@ -2324,11 +2329,14 @@ def _locked_work_and_stage(conn, work_id, code):
 
 
 def _unfinished_applicable_stage_codes(conn, work_id, completing_stage_id=None):
-    """Return applicable stages that still prevent automatic finalization.
+    """Return applicable stages that still prevent LIBERAÇÃO.
 
     The rows are locked under the same work-order transaction as the pointing.
     This keeps two operators from independently completing the last steps and
     accidentally finalizing an order based on an inconsistent snapshot.
+
+    ACESSÓRIO and PLOTAGEM are deliberately excluded: they remain production
+    pointings, but may occur after the vehicle was released and finalized.
     """
     rows = [dict(row._mapping) for row in conn.execute(text("""
         select id,stage_code,status,aplicavel
@@ -2343,6 +2351,7 @@ def _unfinished_applicable_stage_codes(conn, work_id, completing_stage_id=None):
         for row in rows
         if row["id"] != completing_stage_id
         and bool(row.get("aplicavel"))
+        and _token(row.get("stage_code")) not in POST_RELEASE_POINTING_STAGE_CODES
         and _token(row.get("status")) not in completed
     ]
 
@@ -2486,7 +2495,11 @@ def update_stage(conn, work_id, code, payload, actor):
     # The technical history screen may correct its metadata after production
     # is finalized, delivered or withdrawn.  It must never silently reopen a
     # production stage while the work order remains closed, though.
-    if work["status"] in {"FINALIZADA", "ENTREGUE", "RETIRADA"}:
+    post_release_pointing = (
+        work["status"] == "FINALIZADA"
+        and _token(code) in POST_RELEASE_POINTING_STAGE_CODES
+    )
+    if work["status"] in {"FINALIZADA", "ENTREGUE", "RETIRADA"} and not post_release_pointing:
         if new != stage["status"]:
             raise StageConflictError(
                 "A O.S. esta encerrada. Reabra a O.S. explicitamente antes de alterar o status de uma etapa."
@@ -2628,7 +2641,7 @@ def update_stage(conn, work_id, code, payload, actor):
         transition_note = (
             "Início automático da produção pelo apontamento da etapa " + code
             if next_status == "EM_PRODUÇÃO"
-            else "Produção finalizada automaticamente pela conclusão de LIBERAÇÃO, após todas as etapas aplicáveis."
+            else "Produção finalizada automaticamente pela conclusão de LIBERAÇÃO; ACESSÓRIO e PLOTAGEM permanecem apontáveis."
         )
         conn.execute(text("""
             insert into erp_work_order_status_history(
