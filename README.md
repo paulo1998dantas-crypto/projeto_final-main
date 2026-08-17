@@ -22,9 +22,13 @@ O botão **Exportar controle diário** e a rota
 `/exportar_controle_producao` geram um XLSX com:
 
 - Controle de Produção e todas as 12 etapas.
-- `DATA 1` e uma coluna dinâmica para cada `REPROGRAMA n`.
+- `DATA COMERCIAL` calculada pelo prazo padrão da linha: 30 dias para LB/LAB
+  e 45 dias para LE/LAE, sem ser alterada por reprogramações.
+- `INÍCIO REAL DE PRODUÇÃO`, `TÉRMINO PRODUÇÃO` e `DATA SAÍDA` separados.
+- `DATA 1` com a primeira promessa e `REPROGRAMA 1` com a data vigente.
 - Aba normalizada com o histórico ilimitado de reprogramações.
-- Legenda dos códigos operacionais.
+- Processos em branco quando ainda não houve O.S.; `?` apenas para O.S.
+  aguardando parametrização, além da legenda dos códigos operacionais.
 
 A migração aditiva necessária é
 `ModuloEstoque/supabase/migrations/20260729_mes_stage_parameterization.sql`.

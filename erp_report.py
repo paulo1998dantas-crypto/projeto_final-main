@@ -1,6 +1,6 @@
 """Relatório diário consolidado de Controle de Produção e Agenda do MES."""
 from collections import defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from io import BytesIO
 
 from openpyxl import Workbook
@@ -9,7 +9,13 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from sqlalchemy import text
 
-from erp_service import STAGES, stage_input_code, work_order_situation
+from erp_service import (
+    LEAD_TIME_DAYS,
+    STAGES,
+    productive_cycle_window,
+    stage_input_code,
+    work_order_situation,
+)
 
 
 CORE_HEADERS = [
@@ -18,7 +24,8 @@ CORE_HEADERS = [
     "MARCA - MODELO - VERSÃO", "MMV", "CHASSI", "MODELO", "TIPO DE VEÍCULO",
     "LINHA", "TRANSFORMAÇÃO", "COD. BCO", "CJ. BCO", "ACESSIBILIDADE",
     "LOTAÇÃO", "A/C", "TIPO AR", "AR QUENTE", "ACESSÓRIO", "PLOTAGEM",
-    "DATA COMERCIAL", "TÉRMINO PRODUÇÃO", "DIAS PRODUÇÃO", "DATA SAÍDA",
+    "DATA COMERCIAL", "INÍCIO REAL DE PRODUÇÃO", "TÉRMINO PRODUÇÃO",
+    "DIAS PRODUÇÃO", "DATA SAÍDA",
     "ATRASO?", "INFO", "CHASSI 2", "AVARIAS", "ARQUIVADO",
 ]
 STAGE_HEADERS = [
@@ -28,7 +35,7 @@ STAGE_HEADERS = [
 STAGE_HEADER_BY_CODE = dict(zip((item[0] for item in STAGES), STAGE_HEADERS))
 CONTROL_HEADERS = [
     "B.O.", "OBSERVAÇÕES CONTROLE PRODUÇÃO", "OBSERVAÇÕES GERAIS",
-    "SEQUENCIAMENTO", "DATA ENTREGA", "PEDIDO DE COMPRAS", "Nº SEQUENCIA",
+    "SEQUENCIAMENTO", "PEDIDO DE COMPRAS", "Nº SEQUENCIA",
 ]
 
 
@@ -67,12 +74,19 @@ def _days_between(start, end):
 
 
 def _delay_label(planned, finished, status):
-    if str(status or "").strip().upper() == "CANCELADA":
+    normalized_status = str(status or "").strip().upper().replace(" ", "_")
+    if normalized_status == "CANCELADA":
         return "CANCELADA"
     planned_date = _as_date(planned)
     if not planned_date:
         return ""
-    terminal = status in {"FINALIZADA", "ENTREGUE", "RETIRADA", "CANCELADA", "CONCLUIDA", "ARQUIVADA"}
+    terminal = (
+        normalized_status in {"FINALIZADA", "ENTREGUE", "RETIRADA", "ARQUIVADA"}
+        and bool(finished)
+    )
+    # CONCLUIDA pode representar apenas a conclusão técnica em Suprimentos.
+    # Sem uma data produtiva/saída real ela continua sendo comparada com hoje.
+    terminal = terminal or (normalized_status == "CONCLUIDA" and bool(finished))
     comparison = _as_date(finished) if terminal and finished else date.today()
     if not comparison:
         return ""
@@ -83,7 +97,19 @@ def _delay_label(planned, finished, status):
         return f"FINALIZADO COM ATRASO DE {difference} DIA(S)"
     if difference > 0:
         return f"EM ATRASO DE {difference} DIA(S)"
-    return f"FALTAM {abs(difference)} DIA(S) PARA ENTREGA"
+    return f"FALTAM {abs(difference)} DIA(S) PARA ATRASAR"
+
+
+def _commercial_deadline(row):
+    """Prazo canônico de 30/45 dias, independente da programação vigente."""
+    explicit = _as_date(row.get("data_comercial_calculada"))
+    if explicit:
+        return explicit
+    base = _date_to_consider(row.get("data_chegada"), row.get("data_aprovacao"))
+    if not base:
+        return None
+    line = str(row.get("linha") or "").strip().upper()
+    return base + timedelta(days=LEAD_TIME_DAYS.get(line, 30))
 
 
 def _situation(row):
@@ -189,6 +215,22 @@ def _query_report_data(conn):
             order by work_order_id,created_at
         """), {"ids": work_order_ids}):
             observations[result._mapping["work_order_id"]].append(result._mapping["observacao"])
+    awaiting_entry_ids = [row["id"] for row in awaiting_entries]
+    if awaiting_entry_ids:
+        try:
+            pre_os_ready = bool(conn.execute(text(
+                "select to_regclass('public.erp_vehicle_entry_stages') is not null"
+            )).scalar())
+        except (AttributeError, TypeError):
+            pre_os_ready = False
+        if pre_os_ready:
+            for result in conn.execute(text("""
+                select * from erp_vehicle_entry_stages
+                where vehicle_entry_id=any(:ids)
+                order by vehicle_entry_id,ordem
+            """), {"ids": awaiting_entry_ids}):
+                stage = dict(result._mapping)
+                stages[stage["vehicle_entry_id"]][stage["stage_code"]] = stage
     return report_rows, stages, schedules, observations
 
 
@@ -197,12 +239,26 @@ def _report_row(row, stage_map, schedule_rows, status_notes, max_schedules):
     stage_values = {}
     for code, _, _ in STAGES:
         stage = stage_map.get(code)
-        stage_values[STAGE_HEADER_BY_CODE[code]] = stage_input_code(stage) if stage else "?"
+        if not stage:
+            stage_value = (
+                "?"
+                if row.get("report_source") != "VEHICLE_ENTRY"
+                and str(row.get("stage_configuration_status") or "").strip().upper() == "PENDENTE"
+                else ""
+            )
+        elif row.get("report_source") == "VEHICLE_ENTRY" and not stage.get("parametrizado"):
+            stage_value = ""
+        else:
+            stage_value = stage_input_code(stage)
+        stage_values[STAGE_HEADER_BY_CODE[code]] = stage_value
         if stage and str(stage.get("observacoes") or "").strip():
             stage_notes.append(f"[{code}] {stage['observacoes']}")
 
     data_considerar = _date_to_consider(row.get("data_chegada"), row.get("data_aprovacao"))
-    end_reference = row.get("termino_producao") or row.get("data_entrega") or row.get("finalizado_at")
+    cycle_start, cycle_end = productive_cycle_window(row, list(stage_map.values()))
+    cancelled = str(row.get("status") or "").strip().upper() == "CANCELADA"
+    production_end = row.get("termino_producao") or (None if cancelled else cycle_end)
+    end_reference = production_end or row.get("data_entrega")
     general_notes = [
         value for value in [row.get("entry_notes"), *status_notes]
         if str(value or "").strip()
@@ -220,10 +276,7 @@ def _report_row(row, stage_map, schedule_rows, status_notes, max_schedules):
         if current_schedule
         else row.get("data_comercial_prevista")
     )
-    commercial_deadline = (
-        row.get("data_comercial_calculada")
-        or row.get("data_comercial_prevista")
-    )
+    commercial_deadline = _commercial_deadline(row)
     purchase_order_references = list(dict.fromkeys(
         value.strip()
         for value in (
@@ -274,8 +327,9 @@ def _report_row(row, stage_map, schedule_rows, status_notes, max_schedules):
         "ACESSÓRIO": row.get("acessorio") or "",
         "PLOTAGEM": row.get("plotagem") or "",
         "DATA COMERCIAL": commercial_deadline,
-        "TÉRMINO PRODUÇÃO": row.get("termino_producao"),
-        "DIAS PRODUÇÃO": _days_between(row.get("data_aprovacao"), row.get("termino_producao")),
+        "INÍCIO REAL DE PRODUÇÃO": cycle_start,
+        "TÉRMINO PRODUÇÃO": production_end,
+        "DIAS PRODUÇÃO": _days_between(row.get("data_aprovacao"), production_end),
         "DATA SAÍDA": row.get("data_entrega"),
         "ATRASO?": _delay_label(commercial_deadline, end_reference, row.get("status")),
         "INFO": row.get("info") or row.get("entry_notes") or "",
@@ -293,14 +347,12 @@ def _report_row(row, stage_map, schedule_rows, status_notes, max_schedules):
             or row.get("sequenciamento_legacy")
             or _sequence_week(current_planned_date)
         ),
-        "DATA ENTREGA": current_planned_date,
         "PEDIDO DE COMPRAS": " | ".join(purchase_order_references),
         "Nº SEQUENCIA": row.get("sequencia_persistida") or row.get("numero_sequencia_legacy") or "",
     }
     schedule_dates = [item.get("nova_data") for item in schedule_rows]
     values["DATA 1"] = schedule_dates[0] if schedule_dates else row.get("data_comercial_prevista")
-    for index in range(1, max_schedules):
-        values[f"REPROGRAMA {index}"] = schedule_dates[index] if index < len(schedule_dates) else None
+    values["REPROGRAMA 1"] = current_planned_date
     return values
 
 
@@ -325,14 +377,18 @@ def _apply_sheet_style(sheet, headers, row_count):
             cell.border = Border(bottom=thin)
     date_headers = {
         "DATA ENTRADA", "DATA APROV. PV", "DATA A CONSIDERAR", "DATA COMERCIAL",
-        "TÉRMINO PRODUÇÃO", "DATA SAÍDA", "DATA ENTREGA", "DATA 1",
+        "DATA SAÍDA", "DATA 1",
     }
     date_headers.update(header for header in headers if header.startswith("REPROGRAMA "))
+    datetime_headers = {"INÍCIO REAL DE PRODUÇÃO", "TÉRMINO PRODUÇÃO"}
     for index, header in enumerate(headers, start=1):
         letter = get_column_letter(index)
         if header in date_headers:
             for cell in sheet[letter][1:]:
                 cell.number_format = "dd/mm/yyyy"
+        elif header in datetime_headers:
+            for cell in sheet[letter][1:]:
+                cell.number_format = "dd/mm/yyyy hh:mm"
         width = 13
         if header in {"CHASSI", "MARCA - MODELO - VERSÃO", "TRANSFORMAÇÃO", "CJ. BCO"}:
             width = 28
@@ -366,9 +422,9 @@ def build_work_order_report(conn):
     work_orders, stages, schedules, observations = _query_report_data(conn)
     max_schedules = max((len(schedules[row["id"]]) for row in work_orders), default=0)
     max_schedules = max(max_schedules, 1)
-    schedule_headers = ["DATA 1"] + [
-        f"REPROGRAMA {index}" for index in range(1, max_schedules)
-    ]
+    # A planilha principal é uma fotografia: primeira promessa e data vigente.
+    # O histórico ilimitado continua normalizado na aba própria.
+    schedule_headers = ["DATA 1", "REPROGRAMA 1"]
     headers = CORE_HEADERS + STAGE_HEADERS + CONTROL_HEADERS + schedule_headers
 
     workbook = Workbook()
@@ -417,13 +473,19 @@ def build_work_order_report(conn):
     legend.sheet_view.showGridLines = False
     legend.append(["RELATÓRIO DIÁRIO DO MES", "Significado"])
     legend.append(["Gerado em", datetime.now()])
-    legend.append(["?", "Aguardando parametrização da etapa"])
+    legend.append(["(vazio)", "Etapa ainda não preenchida em entrada sem O.S. ou registro sem parametrização pendente"])
+    legend.append(["?", "Aguardando parametrização da etapa após a abertura da O.S."])
     legend.append(["P", "Parcial / em andamento"])
     legend.append(["N", "Pendente"])
     legend.append(["S", "Etapa concluída"])
     legend.append(["N/A", "Etapa não aplicável"])
-    legend.append(["DATA 1", "Primeira data de programação registrada"])
-    legend.append(["REPROGRAMA n", "Histórico dinâmico; uma coluna por reprogramação"])
+    legend.append(["DATA COMERCIAL", "Prazo padrão: data a considerar + 30 dias (LB/LAB) ou 45 dias (LE/LAE)"])
+    legend.append(["INÍCIO REAL DE PRODUÇÃO", "Primeiro início efetivamente apontado em qualquer etapa produtiva"])
+    legend.append(["TÉRMINO PRODUÇÃO", "Data/hora da finalização produtiva; não é a entrega do veículo"])
+    legend.append(["DATA SAÍDA", "Data/hora real da entrega ou retirada do veículo"])
+    legend.append(["ATRASO?", "Calculado contra a DATA COMERCIAL padrão de 30/45 dias"])
+    legend.append(["DATA 1", "Primeira promessa de entrega registrada para a O.S."])
+    legend.append(["REPROGRAMA 1", "Data de entrega vigente na data da exportação"])
     legend.append(["DATA VIGENTE", "Data de programação atualmente consolidada para a O.S."])
     legend.append(["DATA ALTERADA", "Data substituída por uma reprogramação e mantida somente no histórico"])
     legend.append(["ARQUIVADO = SIM", "O.S. com conclusão técnica registrada em Suprimentos"])

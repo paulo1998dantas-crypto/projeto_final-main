@@ -108,7 +108,11 @@ def main():
         headers = [cell.value for cell in report[1]]
         assert row_count >= 1
         assert schedule_count >= 3
-        assert "REPROGRAMA 1" in headers and "REPROGRAMA 2" in headers
+        assert "DATA 1" in headers and "REPROGRAMA 1" in headers
+        assert "REPROGRAMA 2" not in headers
+        assert "DATA ENTREGA" not in headers
+        assert "INÍCIO REAL DE PRODUÇÃO" in headers
+        assert "TÉRMINO PRODUÇÃO" in headers
         assert "HISTÓRICO REPROGRAMAÇÕES" in workbook.sheetnames
         assert "LEGENDA" in workbook.sheetnames
         item_column = headers.index("ITEM") + 1
@@ -145,7 +149,7 @@ def main():
             "stage_codes": {"VIDROS": "S", "A/C": "N/A", "DESMONT": "P"},
             "lifecycle": {"start": started["work_order_status"], "end": completed_cycle["work_order_status"]},
             "report_rows": row_count,
-            "dynamic_schedule_columns": schedule_count,
+            "schedule_history_depth": schedule_count,
             "sheets": workbook.sheetnames,
             "transaction": "ROLLBACK",
         }, ensure_ascii=False, indent=2))
