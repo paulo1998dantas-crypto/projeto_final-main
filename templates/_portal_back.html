@@ -1,9 +1,8 @@
 <style>
-  .ji-portal-back{position:fixed;top:10px;left:10px;z-index:2147483647;display:inline-flex;width:42px;height:42px;align-items:center;gap:9px;overflow:hidden;border:1px solid rgba(125,211,252,.72);border-radius:12px;background:rgba(15,23,42,.94);color:#fff;box-shadow:0 8px 24px rgba(15,23,42,.24);text-decoration:none;white-space:nowrap;transition:width .2s ease,background-color .2s ease,transform .2s ease;backdrop-filter:blur(8px)}
-  .ji-portal-back:hover,.ji-portal-back:focus-visible{width:142px;background:#0f766e;color:#fff;transform:translateY(-1px);outline:3px solid rgba(45,212,191,.28);outline-offset:2px}
-  .ji-portal-back__arrow{display:grid;width:40px;min-width:40px;place-items:center;font:800 24px/1 Arial,sans-serif}
-  .ji-portal-back__label{padding-right:12px;font:700 14px/1 Arial,sans-serif}
-  @media(max-width:640px){.ji-portal-back:hover,.ji-portal-back:focus-visible{width:42px}.ji-portal-back__label{display:none}}
+  .ji-portal-back{position:fixed;top:50%;left:0;z-index:80;display:grid;width:22px;height:40px;place-items:center;border:1px solid rgba(125,211,252,.45);border-left:0;border-radius:0 8px 8px 0;background:rgba(15,23,42,.72);color:#fff;box-shadow:0 3px 10px rgba(15,23,42,.14);opacity:.38;text-decoration:none;transform:translateY(-50%);transition:opacity .18s ease,background-color .18s ease,transform .18s ease;backdrop-filter:blur(4px)}
+  .ji-portal-back:hover,.ji-portal-back:focus-visible{background:#0f766e;color:#fff;opacity:1;transform:translate(2px,-50%);outline:2px solid rgba(45,212,191,.25);outline-offset:1px}
+  .ji-portal-back__arrow{font:700 16px/1 Arial,sans-serif}
+  .ji-portal-back__label{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap}
   @media print{.ji-portal-back{display:none!important}}
 </style>
 <a class="ji-portal-back" href="https://ji-portal-operacional.onrender.com/" aria-label="Voltar ao Portal JI" title="Voltar ao Portal JI"><span class="ji-portal-back__arrow" aria-hidden="true">←</span><span class="ji-portal-back__label">Portal JI</span></a>
