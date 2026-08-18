@@ -1,5 +1,6 @@
 import unittest
 import json
+import inspect
 from unittest.mock import patch
 
 import erp_service
@@ -41,6 +42,10 @@ class FakeConnection:
 
 
 class VehicleChassisTests(unittest.TestCase):
+    def test_vehicle_model_type_is_projected_in_card_and_detail_queries(self):
+        self.assertIn("e.modelo_veicular", inspect.getsource(erp_service.active_cards))
+        self.assertIn("e.modelo_veicular", inspect.getsource(erp_service.work_order_detail))
+
     def test_normalizes_complete_vin(self):
         self.assertEqual(
             erp_service._normalize_chassis(" 9bw-zzz377-vt004251 "),

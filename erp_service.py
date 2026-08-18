@@ -1502,7 +1502,7 @@ def activate_work_order(conn, work_id, actor):
 def active_cards(conn):
     rows=conn.execute(text("""
         select w.id,w.numero_os,w.status,w.tipo_servico,w.technical_status,e.item_number,
-               v.chassi,v.marca,v.modelo,v.versao,
+               v.chassi,v.marca,v.modelo,v.versao,e.modelo_veicular,
                w.cliente_nome,w.linha,w.transformacao,w.data_comercial_prevista,
                seq.sequencia,seq.semana_planejada,seq.prioridade_manual,
                count(s.id) filter(where s.aplicavel) as etapas_aplicaveis,
@@ -1514,7 +1514,7 @@ def active_cards(conn):
         left join erp_work_order_stages s on s.work_order_id=w.id
         where w.status in ('ATIVA','EM_PRODUÇÃO')
           and w.is_current=true
-        group by w.id,e.item_number,v.chassi,v.marca,v.modelo,v.versao,
+        group by w.id,e.item_number,e.modelo_veicular,v.chassi,v.marca,v.modelo,v.versao,
                  seq.sequencia,seq.semana_planejada,seq.prioridade_manual
         order by seq.sequencia nulls last,w.data_comercial_prevista nulls last,e.item_number
     """))
@@ -2111,7 +2111,7 @@ def work_order_detail(conn, work_id):
     work = _one(conn.execute(text("""
         select w.*,e.item_number,e.data_chegada,e.status as entry_status,
                e.cliente_nome as entry_client,e.observacoes as entry_notes,
-               e.avarias,v.chassi,v.marca,v.modelo,v.versao,v.mmv,
+               e.avarias,e.modelo_veicular,v.chassi,v.marca,v.modelo,v.versao,v.mmv,
                f.id as forecast_id,f.codigo as forecast_codigo,f.status as forecast_status
                ,seq.sequencia,seq.semana_planejada,seq.prioridade_manual
         from erp_work_orders w
