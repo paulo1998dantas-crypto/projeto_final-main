@@ -2,6 +2,8 @@
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from io import BytesIO
+import re
+import unicodedata
 
 from openpyxl import Workbook
 from openpyxl.formatting.rule import FormulaRule
@@ -37,6 +39,57 @@ CONTROL_HEADERS = [
     "B.O.", "OBSERVAÇÕES CONTROLE PRODUÇÃO", "OBSERVAÇÕES GERAIS",
     "SEQUENCIAMENTO", "PEDIDO DE COMPRAS", "Nº SEQUENCIA",
 ]
+
+_STAGE_CODE_BY_TOKEN = {
+    "VIDROS": "VIDROS",
+    "AC": "A/C",
+    "PREP": "PREP",
+    "PREPARACAO": "PREP",
+    "SERRA": "SERRA",
+    "EXPE": "EXPE",
+    "EXPEDICAO": "EXPE",
+    "DESMONT": "DESMONT",
+    "DESMONTAGEM": "DESMONT",
+    "ELETRICA": "ELÉTRICA",
+    "REVEST": "REVEST",
+    "REVESTIMENTO": "REVEST",
+    "BCO": "BCO",
+    "BANCO": "BCO",
+    "ACESSORIO": "ACESSÓRIO",
+    "PLOTAGEM": "PLOTAGEM",
+    "PLOTA": "PLOTAGEM",
+    "LIBERACAO": "LIBERAÇÃO",
+    "LIBERA": "LIBERAÇÃO",
+}
+
+
+def _canonical_stage_code(value):
+    """Unifica nomes atuais e legados sem alterar os apontamentos persistidos."""
+    raw = str(value or "").strip()
+    ascii_value = unicodedata.normalize("NFKD", raw).encode("ascii", "ignore").decode()
+    token = re.sub(r"[^A-Z0-9]", "", ascii_value.upper())
+    return _STAGE_CODE_BY_TOKEN.get(token, raw)
+
+
+def _canonical_stage_map(stage_map):
+    canonical = {}
+    for raw_code, stage in (stage_map or {}).items():
+        code = _canonical_stage_code((stage or {}).get("stage_code") or raw_code)
+        canonical[code] = stage
+    return canonical
+
+
+def _has_deadline_flow(situation):
+    """Prazo comercial só existe depois que a O.S. entrou no fluxo produtivo."""
+    ascii_value = unicodedata.normalize("NFKD", str(situation or "")).encode(
+        "ascii", "ignore"
+    ).decode().upper()
+    normalized = re.sub(r"\s+", " ", ascii_value.replace("_", " ")).strip()
+    return (
+        normalized in {"EM PATIO", "EM PRODUCAO"}
+        or normalized.startswith("FINALIZADA")
+        or normalized.startswith("ENTREGUE")
+    )
 
 
 def _as_date(value):
@@ -76,7 +129,7 @@ def _days_between(start, end):
 def _delay_label(planned, finished, status):
     normalized_status = str(status or "").strip().upper().replace(" ", "_")
     if normalized_status == "CANCELADA":
-        return "CANCELADA"
+        return ""
     planned_date = _as_date(planned)
     if not planned_date:
         return ""
@@ -199,7 +252,7 @@ def _query_report_data(conn):
             order by work_order_id,ordem
         """), {"ids": work_order_ids}):
             row = dict(result._mapping)
-            stages[row["work_order_id"]][row["stage_code"]] = row
+            stages[row["work_order_id"]][_canonical_stage_code(row["stage_code"])] = row
         for result in conn.execute(text("""
             select * from erp_work_order_schedules
             where work_order_id=any(:ids)
@@ -230,11 +283,14 @@ def _query_report_data(conn):
                 order by vehicle_entry_id,ordem
             """), {"ids": awaiting_entry_ids}):
                 stage = dict(result._mapping)
-                stages[stage["vehicle_entry_id"]][stage["stage_code"]] = stage
+                stages[stage["vehicle_entry_id"]][
+                    _canonical_stage_code(stage["stage_code"])
+                ] = stage
     return report_rows, stages, schedules, observations
 
 
 def _report_row(row, stage_map, schedule_rows, status_notes, max_schedules):
+    stage_map = _canonical_stage_map(stage_map)
     stage_notes = []
     stage_values = {}
     for code, _, _ in STAGES:
@@ -276,7 +332,8 @@ def _report_row(row, stage_map, schedule_rows, status_notes, max_schedules):
         if current_schedule
         else row.get("data_comercial_prevista")
     )
-    commercial_deadline = _commercial_deadline(row)
+    situation = _situation(row)
+    commercial_deadline = _commercial_deadline(row) if _has_deadline_flow(situation) else None
     purchase_order_references = list(dict.fromkeys(
         value.strip()
         for value in (
@@ -301,7 +358,7 @@ def _report_row(row, stage_map, schedule_rows, status_notes, max_schedules):
     values = {
         "ITEM": f"JI - {row['item_number']}",
         "Nº PROPOSTA": row.get("proposta_numero") or "",
-        "SITUAÇÃO": _situation(row),
+        "SITUAÇÃO": situation,
         "DATA ENTRADA": row.get("data_chegada"),
         "DATA APROV. PV": row.get("data_aprovacao"),
         "DATA A CONSIDERAR": data_considerar,

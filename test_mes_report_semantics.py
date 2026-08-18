@@ -10,6 +10,7 @@ from erp_report import (
     CORE_HEADERS,
     STAGE_HEADERS,
     _commercial_deadline,
+    _canonical_stage_code,
     build_work_order_report,
     _delay_label,
     _query_report_data,
@@ -129,8 +130,63 @@ class MesReportSemanticsTests(unittest.TestCase):
     def test_cancelled_order_is_not_reported_as_delayed(self):
         self.assertEqual(
             _delay_label(date(2026, 8, 20), date(2026, 8, 10), "CANCELADA"),
-            "CANCELADA",
+            "",
         )
+
+    def test_legacy_stage_codes_are_exported_in_their_canonical_columns(self):
+        work = self.base_work_order()
+        stages = {
+            "AC": {
+                "stage_code": "AC", "parametrizado": True, "aplicavel": True,
+                "status": "CONCLUÍDA",
+            },
+            "ELETRICA": {
+                "stage_code": "ELETRICA", "parametrizado": True, "aplicavel": True,
+                "status": "CONCLUÍDA",
+            },
+            "ACESSORIO": {
+                "stage_code": "ACESSORIO", "parametrizado": True, "aplicavel": True,
+                "status": "CONCLUÍDA",
+            },
+            "LIBERACAO": {
+                "stage_code": "LIBERACAO", "parametrizado": True, "aplicavel": True,
+                "status": "CONCLUÍDA",
+            },
+        }
+
+        row = _report_row(work, stages, [], [], 0)
+
+        self.assertEqual(_canonical_stage_code("A/C"), "A/C")
+        self.assertEqual(row["A/C "], "S")
+        self.assertEqual(row["ELÉTRICA"], "S")
+        self.assertEqual(row["ACESSÓ."], "S")
+        self.assertEqual(row["LIBERA."], "S")
+
+    def test_commercial_deadline_and_delay_are_blank_outside_productive_flow(self):
+        for status, configuration in (
+            ("AGUARDANDO_O_S", "PENDENTE"),
+            ("RASCUNHO", "PENDENTE"),
+            ("CANCELADA", "CONCLUIDA"),
+            ("RETIRADA", "CONCLUIDA"),
+        ):
+            with self.subTest(status=status):
+                work = self.base_work_order()
+                work.update({
+                    "status": status,
+                    "stage_configuration_status": configuration,
+                })
+                row = _report_row(work, {}, [], [], 0)
+                self.assertEqual(row["DATA COMERCIAL"], None)
+                self.assertEqual(row["ATRASO?"], "")
+
+    def test_commercial_deadline_remains_for_patio_production_and_terminal_flow(self):
+        for status in ("ATIVA", "EM_PRODUÇÃO", "FINALIZADA", "ENTREGUE"):
+            with self.subTest(status=status):
+                work = self.base_work_order()
+                work["status"] = status
+                row = _report_row(work, {}, [], [], 0)
+                self.assertEqual(row["DATA COMERCIAL"], date(2026, 8, 23))
+                self.assertTrue(row["ATRASO?"])
 
     def test_vehicle_entry_without_work_order_is_exported_as_awaiting_os(self):
         entry = {
