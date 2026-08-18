@@ -16,6 +16,7 @@ from erp_report import (
     _query_report_data,
     _report_row,
 )
+from erp_service import work_order_is_archived
 
 
 class MesReportSemanticsTests(unittest.TestCase):
@@ -126,6 +127,45 @@ class MesReportSemanticsTests(unittest.TestCase):
         work.update({"status": "FINALIZADA", "tipo_servico": "INSTALAÇÃO_DE_ACESSÓRIO"})
         row = _report_row(work, {}, [], [], 0)
         self.assertEqual(row["SITUAÇÃO"], "FINALIZADA OUTROS")
+
+    def test_archived_follows_operational_finalization_for_every_service_type(self):
+        for status, service_type in (
+            ("FINALIZADA", "TRANSFORMAÇÃO"),
+            ("FINALIZADA", "PÓS-VENDA"),
+            ("FINALIZADA", "INSTALAÇÃO_DE_ACESSÓRIO"),
+            ("ENTREGUE", "TRANSFORMAÇÃO"),
+            ("ENTREGUE", "PÓS-VENDA"),
+            ("ENTREGUE", "OUTRO"),
+            ("ARQUIVADA", "TRANSFORMAÇÃO"),
+        ):
+            with self.subTest(status=status, service_type=service_type):
+                work = self.base_work_order()
+                work.update({
+                    "status": status,
+                    "tipo_servico": service_type,
+                    "technical_status": "ABERTA",
+                })
+                self.assertTrue(work_order_is_archived(status))
+                self.assertEqual(_report_row(work, {}, [], [], 0)["ARQUIVADO"], "SIM")
+
+        technically_closed = self.base_work_order()
+        technically_closed.update({
+            "status": "CONCLUIDA",
+            "technical_status": "CONCLUIDA",
+            "technical_previous_status": "ENTREGUE",
+        })
+        self.assertTrue(work_order_is_archived("CONCLUIDA", "ENTREGUE"))
+        self.assertEqual(
+            _report_row(technically_closed, {}, [], [], 0)["ARQUIVADO"], "SIM"
+        )
+
+    def test_archived_does_not_follow_technical_closure_or_withdrawal(self):
+        for status in ("RASCUNHO", "AGUARDANDO_O_S", "ATIVA", "EM_PRODUÇÃO", "RETIRADA", "CANCELADA"):
+            with self.subTest(status=status):
+                work = self.base_work_order()
+                work.update({"status": status, "technical_status": "CONCLUIDA"})
+                self.assertFalse(work_order_is_archived(status))
+                self.assertEqual(_report_row(work, {}, [], [], 0)["ARQUIVADO"], "NÃO")
 
     def test_cancelled_order_is_not_reported_as_delayed(self):
         self.assertEqual(

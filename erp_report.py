@@ -16,6 +16,7 @@ from erp_service import (
     STAGES,
     productive_cycle_window,
     stage_input_code,
+    work_order_is_archived,
     work_order_situation,
 )
 
@@ -392,9 +393,11 @@ def _report_row(row, stage_map, schedule_rows, status_notes, max_schedules):
         "INFO": row.get("info") or row.get("entry_notes") or "",
         "CHASSI 2": str(row.get("chassi") or "")[-8:],
         "AVARIAS": _yes_no(row.get("avarias")),
-        # Arquivamento do relatório representa a conclusão técnica registrada
-        # em Suprimentos, cujo estado canônico da O.S. é CONCLUIDA.
-        "ARQUIVADO": "SIM" if row.get("technical_status") == "CONCLUIDA" else "NÃO",
+        # Arquivamento acompanha o encerramento produtivo/entrega do veículo.
+        # A conclusão técnica de Suprimentos continua independente desse estado.
+        "ARQUIVADO": "SIM" if work_order_is_archived(
+            row.get("status"), row.get("technical_previous_status")
+        ) else "NÃO",
         **stage_values,
         "B.O.": row.get("bo") or "",
         "OBSERVAÇÕES CONTROLE PRODUÇÃO": " | ".join(production_notes),
@@ -545,7 +548,10 @@ def build_work_order_report(conn):
     legend.append(["REPROGRAMA 1", "Data de entrega vigente na data da exportação"])
     legend.append(["DATA VIGENTE", "Data de programação atualmente consolidada para a O.S."])
     legend.append(["DATA ALTERADA", "Data substituída por uma reprogramação e mantida somente no histórico"])
-    legend.append(["ARQUIVADO = SIM", "O.S. com conclusão técnica registrada em Suprimentos"])
+    legend.append([
+        "ARQUIVADO = SIM",
+        "O.S. finalizada ou entregue, incluindo transformação, pós-venda e outros serviços.",
+    ])
     legend.append([
         "Nº SEQUENCIA",
         "Mantido vazio enquanto não houver campo estrutural próprio; nunca é inferido pela linha do Excel.",

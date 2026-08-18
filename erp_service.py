@@ -215,6 +215,19 @@ def work_order_situation(status, service_type="", stage_configuration_status="")
     group = service_type_group(service_type)
     return base if group == "TRANSFORMAÇÃO" else f"{base} {group}"
 
+
+def work_order_is_archived(status, technical_previous_status=""):
+    """Arquivamento operacional derivado do encerramento produtivo da O.S."""
+    normalized_statuses = {
+        _token(value).replace("_", " ").strip()
+        for value in (status, technical_previous_status)
+        if str(value or "").strip()
+    }
+    return any(
+        value == "ARQUIVADA" or value.startswith(("FINALIZAD", "ENTREGUE"))
+        for value in normalized_statuses
+    )
+
 def _date_value(value):
     if isinstance(value, datetime):
         return value.date()
@@ -1797,7 +1810,8 @@ def list_work_orders(conn, search="", status="", limit=1000):
                w.acessorio,w.plotagem,w.data_comercial_prevista,w.status,w.version,
                w.revision_number,w.is_current,w.supersedes_work_order_id,
                w.stage_configuration_status,w.stage_configured_at,w.stage_configured_by,
-               w.technical_status,w.technical_closed_at,w.technical_closed_by,
+               w.technical_status,w.technical_previous_status,
+               w.technical_closed_at,w.technical_closed_by,
                w.technical_close_reason,
                w.created_at,w.updated_at,
                f.id as forecast_id,f.codigo as forecast_codigo,f.status as forecast_status,
@@ -1861,6 +1875,12 @@ def list_work_orders(conn, search="", status="", limit=1000):
             order.get("tipo_servico"),
             order.get("stage_configuration_status"),
         )
+        order["arquivado"] = bool(
+            order.get("work_order_id") and work_order_is_archived(
+                order.get("status"), order.get("technical_previous_status")
+            )
+        )
+        order["arquivado_label"] = "SIM" if order["arquivado"] else "NÃO"
         if not order.get("work_order_id"):
             preliminary = preliminary_by_entry.get(str(order["entry_id"]), {})
             order["etapas_pre_os_apontadas"] = int(preliminary.get("etapas_apontadas") or 0)
@@ -2107,6 +2127,10 @@ def work_order_detail(conn, work_id):
     work["situacao"] = work_order_situation(
         work.get("status"), work.get("tipo_servico"), work.get("stage_configuration_status")
     )
+    work["arquivado"] = work_order_is_archived(
+        work.get("status"), work.get("technical_previous_status")
+    )
+    work["arquivado_label"] = "SIM" if work["arquivado"] else "NÃO"
     if (
         work.get("status") in {"RASCUNHO", "AGUARDANDO_O_S"}
         and work.get("stage_configuration_status") == "PENDENTE"
