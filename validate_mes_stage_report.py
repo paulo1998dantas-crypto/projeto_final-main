@@ -26,6 +26,7 @@ def main():
             "marca": "CITROËN",
             "modelo": "JUMPY",
             "versao": "FURGÃO",
+            "modelo_veicular": "PACK",
             "avarias": "NÃO",
             "observacoes": "Entrada criada somente dentro de transação de teste.",
         }, actor)

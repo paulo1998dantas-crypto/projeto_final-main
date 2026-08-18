@@ -32,6 +32,7 @@ class MesReportSemanticsTests(unittest.TestCase):
             "marca": "MERCEDES-BENZ",
             "modelo": "SPRINTER 417",
             "versao": "10,5 M³",
+            "modelo_veicular": "PACK",
             "technical_status": "ABERTA",
             "purchase_orders": "",
             "pedido_compras_legacy": "PC 123",
@@ -56,6 +57,8 @@ class MesReportSemanticsTests(unittest.TestCase):
         self.assertEqual(row["DATA COMERCIAL"], date(2026, 8, 23))
         self.assertEqual(row["REPROGRAMA 1"], date(2026, 8, 21))
         self.assertEqual(row["PEDIDO DE COMPRAS"], "PC 123")
+        self.assertEqual(row["MODELO"], "PACK")
+        self.assertEqual(row["MARCA - MODELO - VERSÃO"], "MERCEDES-BENZ SPRINTER 417 10,5 M³")
         self.assertEqual(row["Nº SEQUENCIA"], "1")
         self.assertNotIn("DATA ENTREGA", CONTROL_HEADERS)
 
@@ -146,6 +149,7 @@ class MesReportSemanticsTests(unittest.TestCase):
             "marca": "MERCEDES-BENZ",
             "modelo": "SPRINTER 417",
             "versao": "FURGÃO",
+            "modelo_veicular": "STANDART",
             "mmv": "",
             "purchase_orders": "",
         }
@@ -156,6 +160,7 @@ class MesReportSemanticsTests(unittest.TestCase):
         self.assertEqual(row["SITUAÇÃO"], "AGUARDANDO O.S.")
         self.assertEqual(row["DATA A CONSIDERAR"], date(2026, 8, 5))
         self.assertEqual(row["CHASSI"], "9V8VPFC3XTA008976")
+        self.assertEqual(row["MODELO"], "STANDART")
         self.assertEqual(row["REPROGRAMA 1"], None)
         self.assertTrue(all(row[header] == "" for header in STAGE_HEADERS))
 

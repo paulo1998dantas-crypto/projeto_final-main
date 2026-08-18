@@ -135,7 +135,7 @@ def _query_report_data(conn):
         dict(row._mapping) for row in conn.execute(text("""
             select
                 w.*,e.item_number,e.data_chegada,e.status as entry_status,
-                e.observacoes as entry_notes,e.avarias,
+                e.observacoes as entry_notes,e.avarias,e.modelo_veicular,
                 v.chassi,v.marca,v.modelo,v.versao,v.mmv,
                 seq.sequencia as sequencia_persistida,
                 seq.semana_planejada as semana_planejada_persistida,
@@ -158,7 +158,7 @@ def _query_report_data(conn):
         dict(row._mapping) for row in conn.execute(text("""
             select
                 e.id,e.item_number,e.status as entry_status,e.data_chegada,
-                e.cliente_nome,e.observacoes as entry_notes,e.avarias,
+                e.cliente_nome,e.observacoes as entry_notes,e.avarias,e.modelo_veicular,
                 v.chassi,v.marca,v.modelo,v.versao,v.mmv
             from erp_vehicle_entries e
             join erp_vehicles v on v.id=e.vehicle_id
@@ -313,7 +313,7 @@ def _report_row(row, stage_map, schedule_rows, status_notes, max_schedules):
         "MARCA - MODELO - VERSÃO": vehicle_description,
         "MMV": row.get("mmv") or "",
         "CHASSI": row.get("chassi") or "",
-        "MODELO": row.get("modelo") or "",
+        "MODELO": row.get("modelo_veicular") or "",
         "TIPO DE VEÍCULO": row.get("tipo_veiculo") or "",
         "LINHA": row.get("linha") or "",
         "TRANSFORMAÇÃO": row.get("transformacao") or "",

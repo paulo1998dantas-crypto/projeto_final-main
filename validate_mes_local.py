@@ -19,6 +19,7 @@ def open_and_activate(conn, chassis, actor):
     entry = create_entry(conn, {
         "chassi": chassis, "cliente_nome": "VALIDAÇÃO LOCAL",
         "marca": "MERCEDES-BENZ", "modelo": "SPRINTER 417", "versao": "10,5 M³",
+        "modelo_veicular": "PACK",
     }, actor)
     work = create_work_order(conn, entry["id"], {
         "tipo_servico": "TRANSFORMAÇÃO",

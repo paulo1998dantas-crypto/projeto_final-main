@@ -48,6 +48,15 @@ class VehicleChassisTests(unittest.TestCase):
         )
         self.assertTrue(erp_service._is_complete_vin("9BWZZZ377VT004251"))
 
+    def test_vehicle_model_type_accepts_only_operational_catalog(self):
+        self.assertEqual(erp_service._vehicle_model_type("pack"), "PACK")
+        self.assertEqual(erp_service._vehicle_model_type("standart"), "STANDART")
+        self.assertEqual(erp_service._vehicle_model_type("original"), "ORIGINAL")
+        with self.assertRaisesRegex(ValueError, "PACK, STANDART ou ORIGINAL"):
+            erp_service._vehicle_model_type("VITRÊ")
+        with self.assertRaisesRegex(ValueError, "Selecione o Modelo Veicular"):
+            erp_service._vehicle_model_type("", required=True)
+
     def test_reuses_exact_vehicle_without_legacy_lookup(self):
         existing = {
             "id": "vehicle-1",
@@ -148,6 +157,7 @@ class VehicleChassisTests(unittest.TestCase):
             "chassi": "9V8VPFC30TA001776", "marca": "PEUGEOT", "modelo": "EXPERT",
             "versao": "FURGÃO", "mmv": "", "data_chegada": "2026-07-24T10:00:00",
             "cliente_nome": "CLIENTE", "observacoes": "", "avarias": "NAO",
+            "modelo_veicular": "PACK",
             "status": "AGUARDANDO_O_S",
         }
 
@@ -164,16 +174,19 @@ class VehicleChassisTests(unittest.TestCase):
 
         conn = UpdateConnection()
         result = erp_service.update_vehicle_entry(
-            conn, "entry-1", {"versao": "VITRÊ", "avarias": "NÃO"}, "PCP",
+            conn, "entry-1", {"versao": "VITRÊ", "avarias": "NÃO", "modelo_veicular": "ORIGINAL"}, "PCP",
         )
 
         self.assertFalse(result["replayed"])
         self.assertEqual("VITRÊ", result["versao"])
+        self.assertEqual("ORIGINAL", result["modelo_veicular"])
         vehicle_update = next(params for sql, params in conn.calls if sql.startswith("update erp_vehicles"))
         self.assertEqual("VITRÊ", vehicle_update["versao"])
         audit = next(params for sql, params in conn.calls if sql.startswith("insert into erp_audit_events"))
         self.assertEqual("FURGÃO", json.loads(audit["before_data"])["versao"])
         self.assertEqual("VITRÊ", json.loads(audit["after_data"])["versao"])
+        self.assertEqual("PACK", json.loads(audit["before_data"])["modelo_veicular"])
+        self.assertEqual("ORIGINAL", json.loads(audit["after_data"])["modelo_veicular"])
 
 
 if __name__ == "__main__":

@@ -41,6 +41,7 @@ WORK_ORDER_FIELDS = (
 WORK_ORDER_DATE_FIELDS = {"data_aprovacao", "data_comercial_prevista"}
 
 LEAD_TIME_DAYS = {"LE": 45, "LAE": 45, "LB": 30, "LAB": 30}
+VEHICLE_MODEL_TYPES = ("PACK", "STANDART", "ORIGINAL")
 
 # A sequência operacional é deliberadamente separada das colunas *_legacy.
 # Estas últimas continuam servindo exclusivamente à rastreabilidade da planilha.
@@ -162,6 +163,17 @@ def _token(value):
         char for char in unicodedata.normalize("NFKD", str(value or "").strip().upper())
         if not unicodedata.combining(char)
     )
+
+
+def _vehicle_model_type(value, required=False):
+    normalized = _token(value)
+    if not normalized:
+        if required:
+            raise ValueError("Selecione o Modelo Veicular: PACK, STANDART ou ORIGINAL.")
+        return None
+    if normalized not in VEHICLE_MODEL_TYPES:
+        raise ValueError("Modelo Veicular deve ser PACK, STANDART ou ORIGINAL.")
+    return normalized
 
 
 def operational_work_order_status(value):
@@ -832,6 +844,11 @@ def update_manual_sequence_priority(conn, work_id, priority, actor):
 def create_entry(conn, payload, actor):
     chassi = _normalize_chassis(payload.get("chassi"))
     if not chassi: raise ValueError('Chassi completo e obrigatorio.')
+    origin = _token(payload.get("origem") or "MANUAL")
+    modelo_veicular = _vehicle_model_type(
+        payload.get("modelo_veicular"),
+        required=not origin.startswith("LEGACY"),
+    )
     vehicle, created = _resolve_vehicle(conn, chassi, payload)
     vehicle_id = str(vehicle["id"])
     if not created:
@@ -853,7 +870,7 @@ def create_entry(conn, payload, actor):
                 text(f"update erp_vehicles set {assignments} where id=:id"),
                 {"id": vehicle_id, **changed},
             )
-    entry_id=_id(); row=_one(conn.execute(text("insert into erp_vehicle_entries(id,vehicle_id,data_chegada,cliente_id,cliente_nome,origem,observacoes,avarias,criado_por,status) values(:id,:vehicle,:arrival,:client_id,:client,:origin,:notes,:damage,:actor,'AGUARDANDO_O_S') returning item_number"),{'id':entry_id,'vehicle':vehicle_id,'arrival':payload.get('data_chegada') or datetime.utcnow(),'client_id':payload.get('cliente_id'),'client':str(payload.get('cliente_nome') or ''),'origin':str(payload.get('origem') or 'MANUAL'),'notes':str(payload.get('observacoes') or ''),'damage':str(payload.get('avarias') or ''),'actor':actor}))
+    entry_id=_id(); row=_one(conn.execute(text("insert into erp_vehicle_entries(id,vehicle_id,data_chegada,cliente_id,cliente_nome,origem,observacoes,avarias,modelo_veicular,criado_por,status) values(:id,:vehicle,:arrival,:client_id,:client,:origin,:notes,:damage,:modelo_veicular,:actor,'AGUARDANDO_O_S') returning item_number"),{'id':entry_id,'vehicle':vehicle_id,'arrival':payload.get('data_chegada') or datetime.utcnow(),'client_id':payload.get('cliente_id'),'client':str(payload.get('cliente_nome') or ''),'origin':str(payload.get('origem') or 'MANUAL'),'notes':str(payload.get('observacoes') or ''),'damage':str(payload.get('avarias') or ''),'modelo_veicular':modelo_veicular,'actor':actor}))
     _ensure_entry_stage_rows(conn, entry_id)
     reconcile_purchase_order_allocations(conn, actor, "ENTRADA_VEICULO")
     return {'id':entry_id,'vehicle_id':vehicle_id,'item_number':int(row['item_number'])}
@@ -875,7 +892,7 @@ def update_vehicle_entry(conn, entry_id, payload, actor):
         key: current.get(key)
         for key in (
             "item_number", "vehicle_id", "chassi", "marca", "modelo", "versao", "mmv",
-            "data_chegada", "cliente_nome", "observacoes", "avarias", "status",
+            "data_chegada", "cliente_nome", "observacoes", "avarias", "modelo_veicular", "status",
         )
     }
     vehicle_values = {
@@ -906,6 +923,9 @@ def update_vehicle_entry(conn, entry_id, payload, actor):
         "cliente_nome": str(payload.get("cliente_nome") if "cliente_nome" in payload else current.get("cliente_nome") or "").strip(),
         "observacoes": str(payload.get("observacoes") if "observacoes" in payload else current.get("observacoes") or "").strip(),
         "avarias": str(payload.get("avarias") if "avarias" in payload else current.get("avarias") or "NAO").strip().upper(),
+        "modelo_veicular": _vehicle_model_type(
+            payload.get("modelo_veicular") if "modelo_veicular" in payload else current.get("modelo_veicular")
+        ),
     }
     if _token(entry_values["avarias"]) not in {"SIM", "NAO", "N/A"}:
         raise ValueError("Avarias deve ser SIM, NAO ou N/A.")
@@ -930,7 +950,7 @@ def update_vehicle_entry(conn, entry_id, payload, actor):
     conn.execute(text("""
         update erp_vehicle_entries
            set data_chegada=:data_chegada,cliente_nome=:cliente_nome,
-               observacoes=:observacoes,avarias=:avarias
+               observacoes=:observacoes,avarias=:avarias,modelo_veicular=:modelo_veicular
          where id=:id
     """), {"id": entry_id, **entry_values})
     conn.execute(text("""
@@ -1768,7 +1788,7 @@ def list_work_orders(conn, search="", status="", limit=1000):
     }
     rows = conn.execute(text("""
         select e.id as entry_id,e.item_number,e.status as entry_status,e.data_chegada,
-               e.cliente_nome as entry_client,e.observacoes as entry_notes,e.avarias,
+               e.cliente_nome as entry_client,e.observacoes as entry_notes,e.avarias,e.modelo_veicular,
                v.id as vehicle_id,v.chassi,v.marca,v.modelo,v.versao,v.mmv,
                w.id as work_order_id,w.numero_os,w.tipo_servico,w.proposta_numero,
                w.data_aprovacao,w.vendedor,w.mercado,w.cliente_nome,w.municipio,w.uf,
