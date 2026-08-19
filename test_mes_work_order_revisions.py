@@ -32,6 +32,7 @@ class RevisionConnection:
                 "item_number": 2922,
                 "data_chegada": None,
                 "status": "CANCELADA",
+                "cliente_nome": "Cliente da entrada",
             })
         if "from erp_work_orders" in sql and "vehicle_entry_id=:id" in sql:
             return FakeResult(self.current)
@@ -81,6 +82,7 @@ class WorkOrderRevisionTests(unittest.TestCase):
         self.assertEqual("2922", insertion["number"])
         self.assertEqual(2, insertion["revision"])
         self.assertEqual("cancelled-work", insertion["previous"])
+        self.assertEqual("Cliente da entrada", insertion["cliente_nome"])
         self.assertTrue(any(
             sql.startswith("update erp_vehicle_entries") and params.get("id") == "entry-2922"
             for sql, params in conn.calls

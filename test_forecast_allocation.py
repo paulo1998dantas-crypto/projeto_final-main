@@ -28,7 +28,10 @@ class ForecastConnection:
         params = params or {}
         self.calls.append((sql, params))
         if "from erp_vehicle_entries where id=:id for update" in sql:
-            return FakeResult({"item_number": 3113, "data_chegada": None})
+            return FakeResult({
+                "item_number": 3113, "data_chegada": None,
+                "status": "AGUARDANDO_O_S", "cliente_nome": "Cliente da entrada",
+            })
         if "from erp_work_orders" in sql and "vehicle_entry_id=:id" in sql:
             return FakeResult()
         if "from suprimentos_forecasts where id=:id for update" in sql:
@@ -65,11 +68,12 @@ class ForecastAllocationTests(unittest.TestCase):
         self.assertEqual(allocation[0]["entry_id"], "entry-real-vehicle")
         self.assertEqual(allocation[0]["work_id"], "work-1")
         self.assertFalse(any("chassi" in sql for sql, _ in conn.calls if "suprimentos_forecasts" in sql))
-        work_order_insert = next(
-            sql for sql, _ in conn.calls if sql.startswith("insert into erp_work_orders")
+        work_order_insert, work_order_params = next(
+            (sql, params) for sql, params in conn.calls if sql.startswith("insert into erp_work_orders")
         )
         self.assertIn("status", work_order_insert)
         self.assertIn("'aguardando_o_s'", work_order_insert)
+        self.assertEqual(work_order_params["cliente_nome"], "Cliente da entrada")
         history_insert = next(
             sql for sql, _ in conn.calls
             if sql.startswith("insert into erp_work_order_status_history")

@@ -735,7 +735,7 @@ def recalculate_work_order_sequences(conn, actor="SISTEMA"):
     profile = _active_sequence_profile(conn)
     rows = [dict(row._mapping) for row in conn.execute(text("""
         select w.id,w.status,w.data_comercial_prevista,w.linha,w.tipo_veiculo,
-               w.transformacao,w.ar_condicionado,w.conjunto_bancos,w.cliente_nome,
+               w.transformacao,w.ar_condicionado,w.conjunto_bancos,e.cliente_nome,
                e.item_number,seq.prioridade_manual
           from erp_work_orders w
           join erp_vehicle_entries e on e.id=w.vehicle_entry_id
@@ -793,7 +793,7 @@ def sequence_overview(conn):
     rows = [dict(row._mapping) for row in conn.execute(text("""
         select seq.work_order_id,seq.sequencia,seq.prioridade_manual,
                seq.data_entrega_vigente,seq.semana_planejada,seq.updated_at,
-               w.numero_os,w.status,w.linha,w.cliente_nome,w.transformacao,
+               w.numero_os,w.status,w.linha,e.cliente_nome,w.transformacao,
                e.item_number,v.chassi,v.marca,v.modelo,v.versao
           from erp_work_order_sequences seq
           join erp_work_orders w on w.id=seq.work_order_id
@@ -963,9 +963,15 @@ def update_vehicle_entry(conn, entry_id, payload, actor):
     conn.execute(text("""
         update erp_vehicle_entries
            set data_chegada=:data_chegada,cliente_nome=:cliente_nome,
-               observacoes=:observacoes,avarias=:avarias,modelo_veicular=:modelo_veicular
+                observacoes=:observacoes,avarias=:avarias,modelo_veicular=:modelo_veicular
          where id=:id
     """), {"id": entry_id, **entry_values})
+    conn.execute(text("""
+        update erp_work_orders
+           set cliente_nome=:cliente_nome,updated_at=now(),version=version+1
+         where vehicle_entry_id=:id
+           and cliente_nome is distinct from :cliente_nome
+    """), {"id": entry_id, "cliente_nome": entry_values["cliente_nome"]})
     conn.execute(text("""
         insert into erp_audit_events(
             entity_type,entity_id,action,actor,origin,before_data,after_data,reason
@@ -1052,7 +1058,7 @@ def withdraw_vehicle_entry(conn, entry_id, actor, reason="", event_at=None):
 
 def create_work_order(conn, entry_id, payload, actor):
     documento_os_id = _optional_documento_os_id(payload)
-    entry=_one(conn.execute(text('select item_number,data_chegada,status from erp_vehicle_entries where id=:id for update'),{'id':entry_id}))
+    entry=_one(conn.execute(text('select item_number,data_chegada,status,cliente_nome from erp_vehicle_entries where id=:id for update'),{'id':entry_id}))
     if not entry: raise ValueError('Entrada de veiculo nao encontrada.')
     if str(entry.get('status') or '').strip().upper() == 'RETIRADA':
         raise ValueError('Veiculo retirado sem O.S. Nao e possivel abrir uma O.S. nesta entrada; registre uma nova entrada no retorno do veiculo.')
@@ -1137,6 +1143,9 @@ def create_work_order(conn, entry_id, payload, actor):
         for key, value in payload.items()
         if key in fields
     })
+    # O cliente pertence à entrada do veículo. A O.S. apenas mantém uma cópia
+    # compatível para documentos e consultas legadas, sem aceitar divergência.
+    fields['cliente_nome'] = str(entry.get('cliente_nome') or '').strip()
     # Opening the O.S. is already its business emission.  MES stage
     # parametrization is a later, independent step and remains represented by
     # stage_configuration_status=PENDENTE until the PCP configures all stages.
@@ -1229,7 +1238,7 @@ def create_work_order(conn, entry_id, payload, actor):
 def update_work_order(conn, work_id, payload, actor):
     documento_os_id = _optional_documento_os_id(payload)
     work = _one(conn.execute(text("""
-        select w.*,e.data_chegada from erp_work_orders w
+        select w.*,e.data_chegada,e.cliente_nome as entry_client from erp_work_orders w
         join erp_vehicle_entries e on e.id=w.vehicle_entry_id
         where w.id=:id for update
     """), {"id": work_id}))
@@ -1243,6 +1252,7 @@ def update_work_order(conn, work_id, payload, actor):
         name: _work_field_value(name, payload[name]) if name in payload else work.get(name)
         for name in WORK_ORDER_FIELDS
     }
+    fields["cliente_nome"] = str(work.get("entry_client") or "").strip()
     if (
         not is_draft
         and "data_comercial_prevista" in payload
@@ -1503,7 +1513,7 @@ def active_cards(conn):
     rows=conn.execute(text("""
         select w.id,w.numero_os,w.status,w.tipo_servico,w.technical_status,e.item_number,
                v.chassi,v.marca,v.modelo,v.versao,e.modelo_veicular,
-               w.cliente_nome,w.linha,w.transformacao,w.data_comercial_prevista,
+               e.cliente_nome as cliente_nome,w.linha,w.transformacao,w.data_comercial_prevista,
                seq.sequencia,seq.semana_planejada,seq.prioridade_manual,
                count(s.id) filter(where s.aplicavel) as etapas_aplicaveis,
                count(s.id) filter(where s.status='CONCLUÍDA') as etapas_concluidas
@@ -1514,7 +1524,7 @@ def active_cards(conn):
         left join erp_work_order_stages s on s.work_order_id=w.id
         where w.status in ('ATIVA','EM_PRODUÇÃO')
           and w.is_current=true
-        group by w.id,e.item_number,e.modelo_veicular,v.chassi,v.marca,v.modelo,v.versao,
+        group by w.id,e.item_number,e.cliente_nome,e.modelo_veicular,v.chassi,v.marca,v.modelo,v.versao,
                  seq.sequencia,seq.semana_planejada,seq.prioridade_manual
         order by seq.sequencia nulls last,w.data_comercial_prevista nulls last,e.item_number
     """))
@@ -1537,7 +1547,7 @@ def active_work_order_options(conn, search="", limit=20):
     rows = conn.execute(text("""
         select w.id as work_order_id,w.numero_os,e.item_number,v.chassi,
                right(v.chassi,8) as chassi_exibicao,
-               coalesce(nullif(trim(w.cliente_nome),''),nullif(trim(e.cliente_nome),''),'') as cliente,
+               coalesce(nullif(trim(e.cliente_nome),''),'') as cliente,
                concat_ws(' ',nullif(trim(v.marca),''),nullif(trim(v.modelo),''),
                          nullif(trim(v.versao),'')) as veiculo
           from erp_work_orders w
@@ -1549,7 +1559,7 @@ def active_work_order_options(conn, search="", limit=20):
            and (
                 :search=''
                 or concat_ws(' ',w.numero_os,e.item_number,v.chassi,right(v.chassi,8),
-                             w.cliente_nome,e.cliente_nome,v.marca,v.modelo,v.versao)
+                             e.cliente_nome,v.marca,v.modelo,v.versao)
                    ilike :pattern
            )
          order by e.item_number desc,w.numero_os
@@ -1804,7 +1814,7 @@ def list_work_orders(conn, search="", status="", limit=1000):
                e.cliente_nome as entry_client,e.observacoes as entry_notes,e.avarias,e.modelo_veicular,
                v.id as vehicle_id,v.chassi,v.marca,v.modelo,v.versao,v.mmv,
                w.id as work_order_id,w.numero_os,w.tipo_servico,w.proposta_numero,
-               w.data_aprovacao,w.vendedor,w.mercado,w.cliente_nome,w.municipio,w.uf,
+                w.data_aprovacao,w.vendedor,w.mercado,e.cliente_nome as cliente_nome,w.municipio,w.uf,
                w.tipo_veiculo,w.linha,w.transformacao_codigo,w.transformacao,w.codigo_banco,w.conjunto_bancos,
                w.acessibilidade,w.lotacao,w.ar_condicionado,w.tipo_sistema_ar,w.ar_quente,
                w.acessorio,w.plotagem,w.data_comercial_prevista,w.status,w.version,
@@ -1841,6 +1851,8 @@ def list_work_orders(conn, search="", status="", limit=1000):
         limit :limit
     """), params)
     orders = [dict(row._mapping) for row in rows]
+    for order in orders:
+        order["cliente_nome"] = str(order.get("entry_client") or "").strip()
     preliminary_by_entry = {}
     if orders and _pre_os_stage_schema_ready(conn):
         entry_ids = [str(order["entry_id"]) for order in orders if not order.get("work_order_id")]
@@ -2123,6 +2135,7 @@ def work_order_detail(conn, work_id):
     """), {"id": work_id}))
     if not work:
         raise ValueError("O.S. não encontrada.")
+    work["cliente_nome"] = str(work.get("entry_client") or "").strip()
     work["tipo_servico_grupo"] = service_type_group(work.get("tipo_servico"))
     work["situacao"] = work_order_situation(
         work.get("status"), work.get("tipo_servico"), work.get("stage_configuration_status")

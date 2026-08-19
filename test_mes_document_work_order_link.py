@@ -39,7 +39,10 @@ class StateConnection:
         document_number="JI - 3113",
     ):
         self.entries = {
-            ENTRY_ID: {"item_number": 3113, "data_chegada": None, "vehicle_id": "vehicle-1"}
+            ENTRY_ID: {
+                "item_number": 3113, "data_chegada": None, "vehicle_id": "vehicle-1",
+                "status": "AGUARDANDO_O_S", "cliente_nome": "Cliente da entrada",
+            }
         }
         self.vehicles = {"vehicle-1": {"chassi": FULL_CHASSIS}}
         self.work_orders = {}
@@ -63,7 +66,10 @@ class StateConnection:
         if "from erp_vehicle_entries where id=:id for update" in sql:
             entry = self.entries.get(params["id"])
             return FakeResult(
-                {"item_number": entry["item_number"], "data_chegada": entry["data_chegada"]}
+                {
+                    "item_number": entry["item_number"], "data_chegada": entry["data_chegada"],
+                    "status": entry["status"], "cliente_nome": entry["cliente_nome"],
+                }
                 if entry else None
             )
         if "select id,numero_os from erp_work_orders where vehicle_entry_id=:id" in sql:
@@ -83,11 +89,14 @@ class StateConnection:
                 "version": 1,
             }
             return FakeResult(rowcount=1)
-        if "select w.*,e.data_chegada from erp_work_orders w" in sql:
+        if "select w.*,e.data_chegada,e.cliente_nome as entry_client from erp_work_orders w" in sql:
             work = self.work_orders.get(params["id"])
             if not work:
                 return FakeResult()
-            return FakeResult({**work, "data_chegada": None})
+            return FakeResult({
+                **work, "data_chegada": None,
+                "entry_client": self.entries[work["vehicle_entry_id"]]["cliente_nome"],
+            })
         if sql.startswith("update erp_work_orders set"):
             work = self.work_orders[params["id"]]
             for field in erp_service.WORK_ORDER_FIELDS:
@@ -236,12 +245,12 @@ class MesDocumentWorkOrderLinkTests(unittest.TestCase):
         result = erp_service.update_work_order(
             conn,
             WORK_ID,
-            {"cliente_nome": "Cliente atualizado", "documento_os_id": 42},
+            {"cliente_nome": "Cliente divergente", "documento_os_id": 42},
             "PCP",
         )
 
         self.assertEqual(result["documento_os_id"], 42)
-        self.assertEqual(conn.work_orders[WORK_ID]["cliente_nome"], "Cliente atualizado")
+        self.assertEqual(conn.work_orders[WORK_ID]["cliente_nome"], "Cliente da entrada")
         self.assertEqual(conn.documents[42]["erp_work_order_id"], WORK_ID)
 
 

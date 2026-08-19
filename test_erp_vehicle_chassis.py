@@ -188,6 +188,11 @@ class VehicleChassisTests(unittest.TestCase):
         vehicle_update = next(params for sql, params in conn.calls if sql.startswith("update erp_vehicles"))
         self.assertEqual("VITRÊ", vehicle_update["versao"])
         audit = next(params for sql, params in conn.calls if sql.startswith("insert into erp_audit_events"))
+        work_sync = next(
+            params for sql, params in conn.calls
+            if sql.startswith("update erp_work_orders") and "cliente_nome=:cliente_nome" in sql
+        )
+        self.assertEqual("CLIENTE", work_sync["cliente_nome"])
         self.assertEqual("FURGÃO", json.loads(audit["before_data"])["versao"])
         self.assertEqual("VITRÊ", json.loads(audit["after_data"])["versao"])
         self.assertEqual("PACK", json.loads(audit["before_data"])["modelo_veicular"])

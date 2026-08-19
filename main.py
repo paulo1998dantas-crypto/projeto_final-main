@@ -923,7 +923,7 @@ def carregar_erp_dashboard(
     with database.engine.connect() as conn:
         rows = conn.execute(text(f"""
             select w.id as work_order_id,w.numero_os,w.status,w.tipo_servico,w.linha,
-                   w.cliente_nome,w.municipio,w.uf,w.transformacao,
+                   e.cliente_nome as cliente_nome,w.municipio,w.uf,w.transformacao,
                    w.ar_condicionado,w.conjunto_bancos,w.data_comercial_prevista,
                    e.item_number,v.chassi,v.marca,v.modelo,v.versao,{sequence_fields}
             from erp_work_orders w
