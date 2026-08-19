@@ -15,6 +15,7 @@ from erp_report import (
     _delay_label,
     _query_report_data,
     _report_row,
+    _sequence_week,
 )
 from erp_service import work_order_is_archived
 
@@ -78,6 +79,76 @@ class MesReportSemanticsTests(unittest.TestCase):
 
         self.assertEqual(row["DATA 1"], date(2026, 8, 20))
         self.assertEqual(row["REPROGRAMA 1"], date(2026, 8, 22))
+
+    def test_sequence_week_uses_finalization_after_vehicle_is_finished(self):
+        work = self.base_work_order()
+        work.update({
+            "status": "FINALIZADA",
+            "termino_producao": datetime(2026, 8, 20, 16, 30),
+            "semana_planejada_persistida": "99",
+            "sequenciamento_legacy": "SEMANA ANTIGA",
+        })
+
+        row = _report_row(
+            work,
+            {},
+            [{"nova_data": date(2026, 9, 15), "vigente": True}],
+            [],
+            1,
+        )
+
+        self.assertEqual(_sequence_week(date(2026, 8, 20)), 34)
+        self.assertEqual(row["SEQUENCIAMENTO"], 34)
+
+    def test_sequence_week_uses_current_planned_date_before_finalization(self):
+        work = self.base_work_order()
+        work.update({
+            "status": "EM_PRODUÇÃO",
+            "termino_producao": None,
+            "semana_planejada_persistida": "99",
+        })
+
+        row = _report_row(
+            work,
+            {},
+            [{"nova_data": date(2026, 9, 15), "vigente": True}],
+            [],
+            1,
+        )
+
+        self.assertEqual(row["SEQUENCIAMENTO"], 38)
+
+    def test_card_notes_and_purchase_orders_are_consolidated_in_their_columns(self):
+        work = self.base_work_order()
+        work.update({
+            "purchase_orders": "2724 | 2749",
+            "pedido_compras_legacy": "PC LEGADO",
+            "observacoes_controle_producao": "Observação legada",
+            "observacoes_gerais": "Não deve sair",
+            "entry_notes": "Também não deve sair em observações gerais",
+        })
+        stages = {
+            "PREP": {
+                "stage_code": "PREP", "parametrizado": True, "aplicavel": True,
+                "status": "CONCLUÍDA", "observacoes": "Preparação conferida",
+            },
+        }
+
+        row = _report_row(
+            work,
+            stages,
+            [],
+            ["Pedido aguardando material", "Cliente confirmou a cor"],
+            0,
+        )
+
+        self.assertEqual(
+            row["OBSERVAÇÕES CONTROLE PRODUÇÃO"],
+            "Observação legada | Pedido aguardando material | Cliente confirmou a cor | "
+            "[PREP] Preparação conferida",
+        )
+        self.assertEqual(row["OBSERVAÇÕES GERAIS"], "")
+        self.assertEqual(row["PEDIDO DE COMPRAS"], "2724 | 2749 | PC LEGADO")
 
     def test_standard_commercial_deadline_is_calculated_from_line(self):
         work = self.base_work_order()
@@ -379,7 +450,8 @@ class MesReportSemanticsTests(unittest.TestCase):
                     })]
                 return []
 
-        rows, stages, schedules, observations = _query_report_data(FakeConnection())
+        connection = FakeConnection()
+        rows, stages, schedules, observations = _query_report_data(connection)
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["report_source"], "VEHICLE_ENTRY")
@@ -387,6 +459,10 @@ class MesReportSemanticsTests(unittest.TestCase):
         self.assertEqual(dict(stages), {})
         self.assertEqual(dict(schedules), {})
         self.assertEqual(dict(observations), {})
+        sql = "\n".join(connection.statements)
+        self.assertIn("p.work_order_id=w.id", sql)
+        self.assertIn("p.vehicle_entry_id=e.id", sql)
+        self.assertIn("erp_vehicle_entry_notes", sql)
 
 
 if __name__ == "__main__":

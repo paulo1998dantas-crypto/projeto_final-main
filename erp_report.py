@@ -180,8 +180,7 @@ def _sequence_week(value):
     current = _as_date(value)
     if not current:
         return ""
-    iso = current.isocalendar()
-    return f"{iso.year} - SEMANA {iso.week:02d}"
+    return current.isocalendar().week
 
 
 def _query_report_data(conn):
@@ -199,10 +198,16 @@ def _query_report_data(conn):
             join erp_vehicles v on v.id=e.vehicle_id
             left join erp_work_order_sequences seq on seq.work_order_id=w.id
             left join lateral (
-                select string_agg(distinct p.numero_oc, ', ' order by p.numero_oc) as purchase_orders
-                from erp_purchase_order_lines l
-                join erp_purchase_orders p on p.id=l.purchase_order_id
-                where l.work_order_id=w.id
+                select string_agg(distinct p.numero_oc, ' | ' order by p.numero_oc) as purchase_orders
+                from erp_purchase_orders p
+                where p.work_order_id=w.id
+                   or p.vehicle_entry_id=e.id
+                   or exists (
+                        select 1
+                        from erp_purchase_order_lines l
+                        where l.purchase_order_id=p.id
+                          and l.work_order_id=w.id
+                   )
             ) po on true
             where w.is_current=true
             order by e.item_number
@@ -213,12 +218,18 @@ def _query_report_data(conn):
             select
                 e.id,e.item_number,e.status as entry_status,e.data_chegada,
                 e.cliente_nome,e.observacoes as entry_notes,e.avarias,e.modelo_veicular,
-                v.chassi,v.marca,v.modelo,v.versao,v.mmv
+                v.chassi,v.marca,v.modelo,v.versao,v.mmv,
+                coalesce(po.purchase_orders,'') as purchase_orders
             from erp_vehicle_entries e
             join erp_vehicles v on v.id=e.vehicle_id
             left join erp_work_orders w
               on w.vehicle_entry_id=e.id
              and w.is_current=true
+            left join lateral (
+                select string_agg(distinct p.numero_oc, ' | ' order by p.numero_oc) as purchase_orders
+                from erp_purchase_orders p
+                where p.vehicle_entry_id=e.id
+            ) po on true
             where w.id is null
             order by e.item_number
         """))
@@ -232,7 +243,7 @@ def _query_report_data(conn):
             "status": entry.get("entry_status") or "AGUARDANDO_O_S",
             "stage_configuration_status": "PENDENTE",
             "technical_status": "ABERTA",
-            "purchase_orders": "",
+            "purchase_orders": entry.get("purchase_orders") or "",
         })
 
     report_rows = sorted(
@@ -262,13 +273,22 @@ def _query_report_data(conn):
             row = dict(result._mapping)
             schedules[row["work_order_id"]].append(row)
         for result in conn.execute(text("""
-            select work_order_id,observacao
-            from erp_work_order_status_history
-            where work_order_id=any(:ids)
-              and nullif(trim(coalesce(observacao,'')),'') is not null
-            order by work_order_id,created_at
+            select note_source.work_order_id,note_source.note
+            from (
+                select w.id as work_order_id,n.note,n.created_at
+                from erp_work_orders w
+                join erp_vehicle_entry_notes n
+                  on n.vehicle_entry_id=w.vehicle_entry_id
+                where w.id=any(:ids)
+                union all
+                select n.work_order_id,n.note,n.created_at
+                from erp_work_order_notes n
+                where n.work_order_id=any(:ids)
+            ) note_source
+            where nullif(trim(coalesce(note_source.note,'')),'') is not null
+            order by note_source.work_order_id,note_source.created_at,note_source.note
         """), {"ids": work_order_ids}):
-            observations[result._mapping["work_order_id"]].append(result._mapping["observacao"])
+            observations[result._mapping["work_order_id"]].append(result._mapping["note"])
     awaiting_entry_ids = [row["id"] for row in awaiting_entries]
     if awaiting_entry_ids:
         try:
@@ -287,10 +307,18 @@ def _query_report_data(conn):
                 stages[stage["vehicle_entry_id"]][
                     _canonical_stage_code(stage["stage_code"])
                 ] = stage
+        for result in conn.execute(text("""
+            select vehicle_entry_id,note
+            from erp_vehicle_entry_notes
+            where vehicle_entry_id=any(:ids)
+              and nullif(trim(coalesce(note,'')),'') is not null
+            order by vehicle_entry_id,created_at,note
+        """), {"ids": awaiting_entry_ids}):
+            observations[result._mapping["vehicle_entry_id"]].append(result._mapping["note"])
     return report_rows, stages, schedules, observations
 
 
-def _report_row(row, stage_map, schedule_rows, status_notes, max_schedules):
+def _report_row(row, stage_map, schedule_rows, card_notes, max_schedules):
     stage_map = _canonical_stage_map(stage_map)
     stage_notes = []
     stage_values = {}
@@ -316,10 +344,6 @@ def _report_row(row, stage_map, schedule_rows, status_notes, max_schedules):
     cancelled = str(row.get("status") or "").strip().upper() == "CANCELADA"
     production_end = row.get("termino_producao") or (None if cancelled else cycle_end)
     end_reference = production_end or row.get("data_entrega")
-    general_notes = [
-        value for value in [row.get("entry_notes"), *status_notes]
-        if str(value or "").strip()
-    ]
     vehicle_description = " ".join(
         str(value).strip() for value in (row.get("marca"), row.get("modelo"), row.get("versao"))
         if str(value or "").strip()
@@ -335,27 +359,27 @@ def _report_row(row, stage_map, schedule_rows, status_notes, max_schedules):
     )
     situation = _situation(row)
     commercial_deadline = _commercial_deadline(row) if _has_deadline_flow(situation) else None
-    purchase_order_references = list(dict.fromkeys(
-        value.strip()
-        for value in (
-            str(row.get("purchase_orders") or ""),
-            str(row.get("pedido_compras_legacy") or ""),
-        )
-        if value.strip()
-    ))
+    purchase_order_references = []
+    for source in (row.get("purchase_orders"), row.get("pedido_compras_legacy")):
+        for value in re.split(r"\s*\|\s*", str(source or "")):
+            value = value.strip()
+            if value and value not in purchase_order_references:
+                purchase_order_references.append(value)
     production_notes = list(dict.fromkeys(
         value.strip()
-        for value in (
+        for value in [
             str(row.get("observacoes_controle_producao") or ""),
-            " | ".join(stage_notes),
-        )
+            *(str(note or "") for note in card_notes),
+            *stage_notes,
+        ]
         if value.strip()
     ))
-    general_notes = list(dict.fromkeys([
-        *general_notes,
-        str(row.get("observacoes_gerais") or "").strip(),
-    ]))
-    general_notes = [value for value in general_notes if value]
+    finalized = work_order_is_archived(
+        row.get("status"), row.get("technical_previous_status")
+    )
+    sequence_reference = (
+        production_end if finalized and production_end else current_planned_date
+    )
     values = {
         "ITEM": f"JI - {row['item_number']}",
         "Nº PROPOSTA": row.get("proposta_numero") or "",
@@ -401,12 +425,8 @@ def _report_row(row, stage_map, schedule_rows, status_notes, max_schedules):
         **stage_values,
         "B.O.": row.get("bo") or "",
         "OBSERVAÇÕES CONTROLE PRODUÇÃO": " | ".join(production_notes),
-        "OBSERVAÇÕES GERAIS": " | ".join(dict.fromkeys(general_notes)),
-        "SEQUENCIAMENTO": (
-            row.get("semana_planejada_persistida")
-            or row.get("sequenciamento_legacy")
-            or _sequence_week(current_planned_date)
-        ),
+        "OBSERVAÇÕES GERAIS": "",
+        "SEQUENCIAMENTO": _sequence_week(sequence_reference),
         "PEDIDO DE COMPRAS": " | ".join(purchase_order_references),
         "Nº SEQUENCIA": row.get("sequencia_persistida") or row.get("numero_sequencia_legacy") or "",
     }
