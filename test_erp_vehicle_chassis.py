@@ -163,6 +163,7 @@ class VehicleChassisTests(unittest.TestCase):
             "versao": "FURGÃO", "mmv": "", "data_chegada": "2026-07-24T10:00:00",
             "cliente_nome": "CLIENTE", "observacoes": "", "avarias": "NAO",
             "modelo_veicular": "PACK",
+            "tipo_preliminar": "TRANSFORMAÇÃO",
             "status": "AGUARDANDO_O_S",
         }
 
@@ -197,6 +198,80 @@ class VehicleChassisTests(unittest.TestCase):
         self.assertEqual("VITRÊ", json.loads(audit["after_data"])["versao"])
         self.assertEqual("PACK", json.loads(audit["before_data"])["modelo_veicular"])
         self.assertEqual("ORIGINAL", json.loads(audit["after_data"])["modelo_veicular"])
+
+    def test_service_type_catalog_is_canonical_and_rejects_unknown_values(self):
+        self.assertEqual("TRANSFORMAÇÃO", erp_service.canonical_service_type("transformacao"))
+        self.assertEqual("PÓS-VENDA", erp_service.canonical_service_type("pós vendas"))
+        self.assertEqual(
+            "INSTALAÇÃO_DE_ACESSÓRIO",
+            erp_service.canonical_service_type("instalação de acessório"),
+        )
+        self.assertEqual("OUTRO", erp_service.canonical_service_type("outros"))
+        with self.assertRaisesRegex(ValueError, "Tipo de serviço"):
+            erp_service.canonical_service_type("AG")
+
+    def test_closed_work_order_type_requires_role_and_reason_and_is_audited(self):
+        current = {
+            "id": "entry-2778", "item_number": 2778, "vehicle_id": "vehicle-2778",
+            "chassi": "9V8VPFC30TA002778", "marca": "PEUGEOT", "modelo": "EXPERT",
+            "versao": "FURGÃO", "mmv": "", "data_chegada": "2026-01-28T10:00:00",
+            "cliente_nome": "CLIENTE", "observacoes": "", "avarias": "NAO",
+            "modelo_veicular": "PACK", "tipo_preliminar": "TRANSFORMAÇÃO",
+            "status": "ENTREGUE",
+        }
+        work = {
+            "id": "work-2778", "numero_os": "2778", "status": "ENTREGUE",
+            "tipo_servico": "TRANSFORMAÇÃO",
+        }
+
+        class TypeCorrectionConnection:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, statement, params=None):
+                sql = " ".join(str(statement).split()).lower()
+                self.calls.append((sql, params or {}))
+                if "from erp_vehicle_entries e" in sql:
+                    return FakeResult([current])
+                if "from erp_work_orders" in sql and "tipo_servico" in sql:
+                    return FakeResult([work])
+                return FakeResult()
+
+        payload = {
+            "tipo_preliminar": "OUTRO",
+            "atualizar_tipo_servico_os": True,
+            "motivo": "Correção histórica validada pelo PCP.",
+        }
+        with self.assertRaisesRegex(ValueError, "Somente PCP ou ADMIN"):
+            erp_service.update_vehicle_entry(
+                TypeCorrectionConnection(), "entry-2778", payload, "OPERADOR",
+            )
+
+        without_reason = dict(payload, motivo="")
+        with self.assertRaisesRegex(ValueError, "motivo da correção histórica"):
+            erp_service.update_vehicle_entry(
+                TypeCorrectionConnection(), "entry-2778", without_reason, "PCP",
+                allow_closed_type_correction=True,
+            )
+
+        conn = TypeCorrectionConnection()
+        result = erp_service.update_vehicle_entry(
+            conn, "entry-2778", payload, "PCP",
+            allow_closed_type_correction=True,
+        )
+        self.assertTrue(result["work_order_type_updated"])
+        self.assertEqual("OUTRO", result["tipo_preliminar"])
+        work_update = next(
+            params for sql, params in conn.calls
+            if sql.startswith("update erp_work_orders") and "tipo_servico=:tipo_servico" in sql
+        )
+        self.assertEqual("OUTRO", work_update["tipo_servico"])
+        work_audit = next(
+            params for sql, params in conn.calls
+            if "tipo_servico_os_corrigido" in sql
+        )
+        self.assertEqual("TRANSFORMAÇÃO", work_audit["tipo_anterior"])
+        self.assertEqual("OUTRO", work_audit["tipo_novo"])
 
 
 if __name__ == "__main__":

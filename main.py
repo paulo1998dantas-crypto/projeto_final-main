@@ -2297,8 +2297,18 @@ async def erp_update_vehicle_entry(
     ):
         return permission_denied(api=True)
     try:
+        allowed_closed_type_correction = bool(
+            {authz.normalize_role(role) for role in getattr(user, "roles", ())}
+            & {"PCP", "ADMIN"}
+        )
         with database.engine.begin() as conn:
-            result = erp_service.update_vehicle_entry(conn, entry_id, data, user.nome)
+            result = erp_service.update_vehicle_entry(
+                conn,
+                entry_id,
+                data,
+                user.nome,
+                allow_closed_type_correction=allowed_closed_type_correction,
+            )
         return {"ok": True, **result}
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)

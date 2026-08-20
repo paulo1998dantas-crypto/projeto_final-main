@@ -232,6 +232,11 @@ class MesSharedAuthRbacTests(unittest.TestCase):
                     source,
                 )
 
+    def test_closed_service_type_correction_is_limited_to_pcp_and_admin(self):
+        source = inspect.getsource(main.erp_update_vehicle_entry)
+        self.assertIn('{"PCP", "ADMIN"}', source)
+        self.assertIn("allow_closed_type_correction", source)
+
     def test_active_options_are_compact_filtered_and_limited(self):
         connection = _Connection([{
             "work_order_id": "00000000-0000-0000-0000-000000000001",

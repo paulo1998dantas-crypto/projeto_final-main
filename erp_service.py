@@ -42,6 +42,12 @@ WORK_ORDER_DATE_FIELDS = {"data_aprovacao", "data_comercial_prevista"}
 
 LEAD_TIME_DAYS = {"LE": 45, "LAE": 45, "LB": 30, "LAB": 30}
 VEHICLE_MODEL_TYPES = ("PACK", "STANDART", "ORIGINAL")
+SERVICE_TYPES = (
+    "TRANSFORMAÇÃO", "PÓS-VENDA", "INSTALAÇÃO_DE_ACESSÓRIO", "RETORNO", "OUTRO",
+)
+CLOSED_WORK_ORDER_STATUSES = frozenset(
+    {"FINALIZADA", "ENTREGUE", "RETIRADA", "CANCELADA", "ARQUIVADA"}
+)
 
 # A sequência operacional é deliberadamente separada das colunas *_legacy.
 # Estas últimas continuam servindo exclusivamente à rastreabilidade da planilha.
@@ -198,6 +204,35 @@ def service_type_group(value):
     # INSTALAÇÃO DE ACESSÓRIO, RETORNO e OUTRO seguem o mesmo agrupamento
     # operacional e financeiro de entregas fora da transformação.
     return "OUTROS"
+
+
+def canonical_service_type(value, default="TRANSFORMAÇÃO"):
+    normalized = " ".join(
+        _token(value).replace("_", " ").replace("-", " ").split()
+    )
+    aliases = {
+        "": default,
+        "TRANSFORMACAO": "TRANSFORMAÇÃO",
+        "POS VENDA": "PÓS-VENDA",
+        "POS VENDAS": "PÓS-VENDA",
+        "INSTALACAO DE ACESSORIO": "INSTALAÇÃO_DE_ACESSÓRIO",
+        "INSTALACAO ACESSORIO": "INSTALAÇÃO_DE_ACESSÓRIO",
+        "INST ACESSORIO": "INSTALAÇÃO_DE_ACESSÓRIO",
+        "RETORNO": "RETORNO",
+        "OUTRO": "OUTRO",
+        "OUTROS": "OUTRO",
+    }
+    result = aliases.get(normalized)
+    if result not in SERVICE_TYPES:
+        raise ValueError(
+            "Tipo de serviço deve ser TRANSFORMAÇÃO, PÓS-VENDA, "
+            "INSTALAÇÃO DE ACESSÓRIO, RETORNO ou OUTRO."
+        )
+    return result
+
+
+def _truthy(value):
+    return str(value or "").strip().lower() in {"1", "true", "sim", "yes"}
 
 
 def work_order_situation(status, service_type="", stage_configuration_status=""):
@@ -862,6 +897,7 @@ def create_entry(conn, payload, actor):
         payload.get("modelo_veicular"),
         required=not origin.startswith("LEGACY"),
     )
+    tipo_preliminar = canonical_service_type(payload.get("tipo_preliminar"))
     vehicle, created = _resolve_vehicle(conn, chassi, payload)
     vehicle_id = str(vehicle["id"])
     if not created:
@@ -883,13 +919,15 @@ def create_entry(conn, payload, actor):
                 text(f"update erp_vehicles set {assignments} where id=:id"),
                 {"id": vehicle_id, **changed},
             )
-    entry_id=_id(); row=_one(conn.execute(text("insert into erp_vehicle_entries(id,vehicle_id,data_chegada,cliente_id,cliente_nome,origem,observacoes,avarias,modelo_veicular,criado_por,status) values(:id,:vehicle,:arrival,:client_id,:client,:origin,:notes,:damage,:modelo_veicular,:actor,'AGUARDANDO_O_S') returning item_number"),{'id':entry_id,'vehicle':vehicle_id,'arrival':payload.get('data_chegada') or datetime.utcnow(),'client_id':payload.get('cliente_id'),'client':str(payload.get('cliente_nome') or ''),'origin':str(payload.get('origem') or 'MANUAL'),'notes':str(payload.get('observacoes') or ''),'damage':str(payload.get('avarias') or ''),'modelo_veicular':modelo_veicular,'actor':actor}))
+    entry_id=_id(); row=_one(conn.execute(text("insert into erp_vehicle_entries(id,vehicle_id,data_chegada,cliente_id,cliente_nome,origem,observacoes,avarias,modelo_veicular,tipo_preliminar,criado_por,status) values(:id,:vehicle,:arrival,:client_id,:client,:origin,:notes,:damage,:modelo_veicular,:tipo_preliminar,:actor,'AGUARDANDO_O_S') returning item_number"),{'id':entry_id,'vehicle':vehicle_id,'arrival':payload.get('data_chegada') or datetime.utcnow(),'client_id':payload.get('cliente_id'),'client':str(payload.get('cliente_nome') or ''),'origin':str(payload.get('origem') or 'MANUAL'),'notes':str(payload.get('observacoes') or ''),'damage':str(payload.get('avarias') or ''),'modelo_veicular':modelo_veicular,'tipo_preliminar':tipo_preliminar,'actor':actor}))
     _ensure_entry_stage_rows(conn, entry_id)
     reconcile_purchase_order_allocations(conn, actor, "ENTRADA_VEICULO")
-    return {'id':entry_id,'vehicle_id':vehicle_id,'item_number':int(row['item_number'])}
+    return {'id':entry_id,'vehicle_id':vehicle_id,'item_number':int(row['item_number']),'tipo_preliminar':tipo_preliminar}
 
 
-def update_vehicle_entry(conn, entry_id, payload, actor):
+def update_vehicle_entry(
+    conn, entry_id, payload, actor, allow_closed_type_correction=False,
+):
     """Correct the arrival record and the physical vehicle without losing history."""
     current = _one(conn.execute(text("""
         select e.*,v.chassi,v.marca,v.modelo,v.versao,v.mmv
@@ -905,7 +943,8 @@ def update_vehicle_entry(conn, entry_id, payload, actor):
         key: current.get(key)
         for key in (
             "item_number", "vehicle_id", "chassi", "marca", "modelo", "versao", "mmv",
-            "data_chegada", "cliente_nome", "observacoes", "avarias", "modelo_veicular", "status",
+            "data_chegada", "cliente_nome", "observacoes", "avarias", "modelo_veicular",
+            "tipo_preliminar", "status",
         )
     }
     vehicle_values = {
@@ -939,9 +978,38 @@ def update_vehicle_entry(conn, entry_id, payload, actor):
         "modelo_veicular": _vehicle_model_type(
             payload.get("modelo_veicular") if "modelo_veicular" in payload else current.get("modelo_veicular")
         ),
+        "tipo_preliminar": canonical_service_type(
+            payload.get("tipo_preliminar")
+            if "tipo_preliminar" in payload else current.get("tipo_preliminar")
+        ),
     }
     if _token(entry_values["avarias"]) not in {"SIM", "NAO", "N/A"}:
         raise ValueError("Avarias deve ser SIM, NAO ou N/A.")
+
+    sync_work_order_type = _truthy(payload.get("atualizar_tipo_servico_os"))
+    current_work = None
+    work_order_type_changed = False
+    if sync_work_order_type:
+        current_work = _one(conn.execute(text("""
+            select id,numero_os,status,tipo_servico
+              from erp_work_orders
+             where vehicle_entry_id=:entry and is_current=true
+             for update
+        """), {"entry": entry_id}))
+        if not current_work:
+            raise ValueError("Esta entrada ainda não possui O.S. para corrigir o tipo de serviço.")
+        work_order_type_changed = (
+            canonical_service_type(current_work.get("tipo_servico"))
+            != entry_values["tipo_preliminar"]
+        )
+        work_status = str(current_work.get("status") or "").strip().upper()
+        if work_order_type_changed and work_status in CLOSED_WORK_ORDER_STATUSES:
+            if not allow_closed_type_correction:
+                raise ValueError(
+                    "Somente PCP ou ADMIN pode corrigir o tipo de uma O.S. encerrada."
+                )
+            if not str(payload.get("motivo") or "").strip():
+                raise ValueError("Informe o motivo da correção histórica do tipo de serviço.")
 
     after = {
         **before,
@@ -951,7 +1019,7 @@ def update_vehicle_entry(conn, entry_id, payload, actor):
     }
     comparable_before = {key: str(value or "") for key, value in before.items()}
     comparable_after = {key: str(value or "") for key, value in after.items()}
-    if comparable_before == comparable_after:
+    if comparable_before == comparable_after and not work_order_type_changed:
         return {"id": str(entry_id), "item_number": int(current["item_number"]), "replayed": True}
 
     conn.execute(text("""
@@ -963,7 +1031,8 @@ def update_vehicle_entry(conn, entry_id, payload, actor):
     conn.execute(text("""
         update erp_vehicle_entries
            set data_chegada=:data_chegada,cliente_nome=:cliente_nome,
-                observacoes=:observacoes,avarias=:avarias,modelo_veicular=:modelo_veicular
+                observacoes=:observacoes,avarias=:avarias,modelo_veicular=:modelo_veicular,
+                tipo_preliminar=:tipo_preliminar
          where id=:id
     """), {"id": entry_id, **entry_values})
     conn.execute(text("""
@@ -972,6 +1041,40 @@ def update_vehicle_entry(conn, entry_id, payload, actor):
          where vehicle_entry_id=:id
            and cliente_nome is distinct from :cliente_nome
     """), {"id": entry_id, "cliente_nome": entry_values["cliente_nome"]})
+    if work_order_type_changed:
+        conn.execute(text("""
+            update erp_work_orders
+               set tipo_servico=:tipo_servico,updated_at=now(),version=version+1
+             where id=:work_id
+        """), {
+            "work_id": current_work["id"],
+            "tipo_servico": entry_values["tipo_preliminar"],
+        })
+        conn.execute(text("""
+            insert into erp_audit_events(
+                entity_type,entity_id,action,actor,origin,before_data,after_data,reason
+            ) values(
+                'WORK_ORDER',:work_id,'TIPO_SERVICO_OS_CORRIGIDO',:actor,'MES',
+                jsonb_build_object(
+                    'numero_os',cast(:numero_os as text),
+                    'status',cast(:status as text),
+                    'tipo_servico',cast(:tipo_anterior as text)
+                ),
+                jsonb_build_object(
+                    'numero_os',cast(:numero_os as text),
+                    'status',cast(:status as text),
+                    'tipo_servico',cast(:tipo_novo as text)
+                ),
+                :reason
+            )
+        """), {
+            "work_id": current_work["id"], "actor": actor,
+            "numero_os": current_work.get("numero_os"),
+            "status": current_work.get("status"),
+            "tipo_anterior": current_work.get("tipo_servico"),
+            "tipo_novo": entry_values["tipo_preliminar"],
+            "reason": str(payload.get("motivo") or "Correção do tipo de serviço da O.S."),
+        })
     conn.execute(text("""
         insert into erp_audit_events(
             entity_type,entity_id,action,actor,origin,before_data,after_data,reason
@@ -990,6 +1093,7 @@ def update_vehicle_entry(conn, entry_id, payload, actor):
     return {
         "id": str(entry_id), "vehicle_id": str(current["vehicle_id"]),
         "item_number": int(current["item_number"]), "replayed": False,
+        "work_order_type_updated": work_order_type_changed,
         **after,
     }
 
@@ -1058,7 +1162,7 @@ def withdraw_vehicle_entry(conn, entry_id, actor, reason="", event_at=None):
 
 def create_work_order(conn, entry_id, payload, actor):
     documento_os_id = _optional_documento_os_id(payload)
-    entry=_one(conn.execute(text('select item_number,data_chegada,status,cliente_nome from erp_vehicle_entries where id=:id for update'),{'id':entry_id}))
+    entry=_one(conn.execute(text('select item_number,data_chegada,status,cliente_nome,tipo_preliminar from erp_vehicle_entries where id=:id for update'),{'id':entry_id}))
     if not entry: raise ValueError('Entrada de veiculo nao encontrada.')
     if str(entry.get('status') or '').strip().upper() == 'RETIRADA':
         raise ValueError('Veiculo retirado sem O.S. Nao e possivel abrir uma O.S. nesta entrada; registre uma nova entrada no retorno do veiculo.')
@@ -1137,12 +1241,13 @@ def create_work_order(conn, entry_id, payload, actor):
     work_id=_id(); number=str(entry['item_number'])
     previous_work_id = current['id'] if current and create_replacement else None
     revision_number = int(current.get('revision_number') or 1) + 1 if previous_work_id else 1
-    fields={'tipo_servico':'TRANSFORMAÇÃO','proposta_numero':'','data_aprovacao':None,'vendedor':'','mercado':'','cliente_nome':'','municipio':'','uf':'','tipo_veiculo':'','linha':'','transformacao':'','transformacao_codigo':'','codigo_banco':'','conjunto_bancos':'','acessibilidade':'','lotacao':'','ar_condicionado':'','tipo_sistema_ar':'','ar_quente':'','acessorio':'','plotagem':'','data_comercial_prevista':None}
+    fields={'tipo_servico':canonical_service_type(entry.get('tipo_preliminar')),'proposta_numero':'','data_aprovacao':None,'vendedor':'','mercado':'','cliente_nome':'','municipio':'','uf':'','tipo_veiculo':'','linha':'','transformacao':'','transformacao_codigo':'','codigo_banco':'','conjunto_bancos':'','acessibilidade':'','lotacao':'','ar_condicionado':'','tipo_sistema_ar':'','ar_quente':'','acessorio':'','plotagem':'','data_comercial_prevista':None}
     fields.update({
         key: _work_field_value(key, value)
         for key, value in payload.items()
         if key in fields
     })
+    fields['tipo_servico'] = canonical_service_type(fields.get('tipo_servico'))
     # O cliente pertence à entrada do veículo. A O.S. apenas mantém uma cópia
     # compatível para documentos e consultas legadas, sem aceitar divergência.
     fields['cliente_nome'] = str(entry.get('cliente_nome') or '').strip()
@@ -1176,7 +1281,11 @@ def create_work_order(conn, entry_id, payload, actor):
                 work_order_id,data_anterior,nova_data,motivo,usuario,vigente
             ) values(:id,null,:date,'PROGRAMAÇÃO INICIAL',:actor,true)
         """), {"id": work_id, "date": fields["data_comercial_prevista"], "actor": actor})
-    conn.execute(text("update erp_vehicle_entries set status='O_S_ABERTA' where id=:id"), {"id": entry_id})
+    conn.execute(text("""
+        update erp_vehicle_entries
+           set status='O_S_ABERTA',tipo_preliminar=:tipo_servico
+         where id=:id
+    """), {"id": entry_id, "tipo_servico": fields["tipo_servico"]})
     if previous_work_id:
         conn.execute(text("""
             insert into erp_audit_events(
@@ -1811,7 +1920,7 @@ def list_work_orders(conn, search="", status="", limit=1000):
     }
     rows = conn.execute(text("""
         select e.id as entry_id,e.item_number,e.status as entry_status,e.data_chegada,
-               e.cliente_nome as entry_client,e.observacoes as entry_notes,e.avarias,e.modelo_veicular,
+               e.cliente_nome as entry_client,e.observacoes as entry_notes,e.avarias,e.modelo_veicular,e.tipo_preliminar,
                v.id as vehicle_id,v.chassi,v.marca,v.modelo,v.versao,v.mmv,
                w.id as work_order_id,w.numero_os,w.tipo_servico,w.proposta_numero,
                 w.data_aprovacao,w.vendedor,w.mercado,e.cliente_nome as cliente_nome,w.municipio,w.uf,
@@ -1881,10 +1990,11 @@ def list_work_orders(conn, search="", status="", limit=1000):
         order["em_wip"] = bool(order.get("work_order_id")) and (
             order["status_operacional"] in {"ATIVA", "EM_PRODUCAO"}
         )
-        order["tipo_servico_grupo"] = service_type_group(order.get("tipo_servico")) if order.get("work_order_id") else ""
+        effective_service_type = order.get("tipo_servico") or order.get("tipo_preliminar")
+        order["tipo_servico_grupo"] = service_type_group(effective_service_type)
         order["situacao"] = work_order_situation(
             order.get("status") or order.get("entry_status"),
-            order.get("tipo_servico"),
+            effective_service_type,
             order.get("stage_configuration_status"),
         )
         order["arquivado"] = bool(
@@ -2123,7 +2233,7 @@ def work_order_detail(conn, work_id):
     work = _one(conn.execute(text("""
         select w.*,e.item_number,e.data_chegada,e.status as entry_status,
                e.cliente_nome as entry_client,e.observacoes as entry_notes,
-               e.avarias,e.modelo_veicular,v.chassi,v.marca,v.modelo,v.versao,v.mmv,
+               e.avarias,e.modelo_veicular,e.tipo_preliminar,v.chassi,v.marca,v.modelo,v.versao,v.mmv,
                f.id as forecast_id,f.codigo as forecast_codigo,f.status as forecast_status
                ,seq.sequencia,seq.semana_planejada,seq.prioridade_manual
         from erp_work_orders w
