@@ -199,6 +199,41 @@ class VehicleChassisTests(unittest.TestCase):
         self.assertEqual("PACK", json.loads(audit["before_data"])["modelo_veicular"])
         self.assertEqual("ORIGINAL", json.loads(audit["after_data"])["modelo_veicular"])
 
+    def test_entry_correction_preserves_an_unchanged_legacy_chassis(self):
+        current = {
+            "id": "entry-legacy", "item_number": 900, "vehicle_id": "vehicle-legacy",
+            "chassi": "TA001776", "chassi_completo": False,
+            "legacy_chassi_reduzido": "TA001776", "marca": "PEUGEOT",
+            "modelo": "EXPERT", "versao": "FURGÃO", "mmv": "",
+            "data_chegada": "2025-01-10T10:00:00", "cliente_nome": "ANTIGO",
+            "observacoes": "", "avarias": "NAO", "modelo_veicular": "PACK",
+            "tipo_preliminar": "TRANSFORMAÇÃO", "status": "ENTREGUE",
+        }
+
+        class LegacyUpdateConnection:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, statement, params=None):
+                sql = " ".join(str(statement).split()).lower()
+                self.calls.append((sql, params or {}))
+                if "from erp_vehicle_entries e" in sql:
+                    return FakeResult([current])
+                return FakeResult()
+
+        conn = LegacyUpdateConnection()
+        result = erp_service.update_vehicle_entry(
+            conn, "entry-legacy", {"cliente_nome": "CLIENTE CORRETO"}, "PCP",
+        )
+
+        self.assertFalse(result["replayed"])
+        vehicle_update = next(
+            params for sql, params in conn.calls if sql.startswith("update erp_vehicles")
+        )
+        self.assertFalse(vehicle_update["chassi_completo"])
+        self.assertEqual("TA001776", vehicle_update["legacy_chassi_reduzido"])
+        self.assertEqual("CLIENTE CORRETO", result["cliente_nome"])
+
     def test_service_type_catalog_is_canonical_and_rejects_unknown_values(self):
         self.assertEqual("TRANSFORMAÇÃO", erp_service.canonical_service_type("transformacao"))
         self.assertEqual("PÓS-VENDA", erp_service.canonical_service_type("pós vendas"))

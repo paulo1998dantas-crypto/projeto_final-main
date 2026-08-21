@@ -3123,6 +3123,23 @@ async def erp_internal_correct_work_order_bank(
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
+
+@app.patch("/api/erp/internal/work-orders/{work_id}/historical-correction")
+async def erp_internal_correct_closed_work_order(
+    work_id: str,
+    request: Request,
+    data: dict = Body(...),
+):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    actor = erp_backend_actor(request)
+    if not actor: return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.correct_closed_work_order(conn, work_id, data, actor)
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
 @app.post("/api/erp/internal/work-orders/{work_id}/activate")
 async def erp_internal_activate(work_id: str, request: Request):
     if not erp_feature_enabled(): return erp_disabled_response()

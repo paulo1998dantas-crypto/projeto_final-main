@@ -40,6 +40,9 @@ WORK_ORDER_FIELDS = (
     "data_comercial_prevista",
 )
 WORK_ORDER_DATE_FIELDS = {"data_aprovacao", "data_comercial_prevista"}
+HISTORICAL_WORK_ORDER_FIELDS = tuple(
+    field for field in WORK_ORDER_FIELDS if field != "cliente_nome"
+)
 
 LEAD_TIME_DAYS = {"LE": 45, "LAE": 45, "LB": 30, "LAB": 30}
 VEHICLE_MODEL_TYPES = ("PACK", "STANDART", "ORIGINAL")
@@ -47,7 +50,7 @@ SERVICE_TYPES = (
     "TRANSFORMAÇÃO", "PÓS-VENDA", "INSTALAÇÃO_DE_ACESSÓRIO", "RETORNO", "OUTRO",
 )
 CLOSED_WORK_ORDER_STATUSES = frozenset(
-    {"FINALIZADA", "ENTREGUE", "RETIRADA", "CANCELADA", "ARQUIVADA"}
+    {"FINALIZADA", "ENTREGUE", "RETIRADA", "CANCELADA", "ARQUIVADA", "CONCLUIDA"}
 )
 
 # A sequência operacional é deliberadamente separada das colunas *_legacy.
@@ -954,10 +957,12 @@ def create_entry(conn, payload, actor):
 
 def update_vehicle_entry(
     conn, entry_id, payload, actor, allow_closed_type_correction=False,
+    audit_origin="MES",
 ):
     """Correct the arrival record and the physical vehicle without losing history."""
     current = _one(conn.execute(text("""
-        select e.*,v.chassi,v.marca,v.modelo,v.versao,v.mmv
+        select e.*,v.chassi,v.marca,v.modelo,v.versao,v.mmv,
+               v.chassi_completo,v.legacy_chassi_reduzido
           from erp_vehicle_entries e
           join erp_vehicles v on v.id=e.vehicle_id
          where e.id=:id
@@ -978,10 +983,12 @@ def update_vehicle_entry(
         key: str(payload.get(key) if key in payload else current.get(key) or "").strip()
         for key in ("marca", "modelo", "versao", "mmv")
     }
-    new_chassis = _normalize_chassis(payload.get("chassi", current.get("chassi")))
-    if not _is_complete_vin(new_chassis):
+    current_chassis = _normalize_chassis(current.get("chassi"))
+    new_chassis = _normalize_chassis(payload.get("chassi", current_chassis))
+    chassis_changed = new_chassis != current_chassis
+    if chassis_changed and not _is_complete_vin(new_chassis):
         raise ValueError("Informe o chassi completo com 17 caracteres.")
-    if new_chassis != current.get("chassi"):
+    if chassis_changed:
         conn.execute(
             text("select pg_advisory_xact_lock(hashtext(:key))"),
             {"key": f"erp_vehicle_vin:{new_chassis}"},
@@ -1005,9 +1012,10 @@ def update_vehicle_entry(
         "modelo_veicular": _vehicle_model_type(
             payload.get("modelo_veicular") if "modelo_veicular" in payload else current.get("modelo_veicular")
         ),
-        "tipo_preliminar": canonical_service_type(
-            payload.get("tipo_preliminar")
-            if "tipo_preliminar" in payload else current.get("tipo_preliminar")
+        "tipo_preliminar": (
+            canonical_service_type(payload.get("tipo_preliminar"))
+            if "tipo_preliminar" in payload
+            else current.get("tipo_preliminar")
         ),
     }
     if _token(entry_values["avarias"]) not in {"SIM", "NAO", "N/A"}:
@@ -1049,12 +1057,25 @@ def update_vehicle_entry(
     if comparable_before == comparable_after and not work_order_type_changed:
         return {"id": str(entry_id), "item_number": int(current["item_number"]), "replayed": True}
 
+    complete_chassis = _is_complete_vin(new_chassis)
+    legacy_chassis = (
+        None
+        if complete_chassis
+        else str(current.get("legacy_chassi_reduzido") or new_chassis or "").strip() or None
+    )
     conn.execute(text("""
         update erp_vehicles
            set chassi=:chassi,marca=:marca,modelo=:modelo,versao=:versao,mmv=:mmv,
-               chassi_completo=true,legacy_chassi_reduzido=null
+               chassi_completo=:chassi_completo,
+               legacy_chassi_reduzido=:legacy_chassi_reduzido
          where id=:vehicle_id
-    """), {"vehicle_id": current["vehicle_id"], "chassi": new_chassis, **vehicle_values})
+    """), {
+        "vehicle_id": current["vehicle_id"],
+        "chassi": new_chassis,
+        "chassi_completo": complete_chassis,
+        "legacy_chassi_reduzido": legacy_chassis,
+        **vehicle_values,
+    })
     conn.execute(text("""
         update erp_vehicle_entries
            set data_chegada=:data_chegada,cliente_nome=:cliente_nome,
@@ -1106,12 +1127,13 @@ def update_vehicle_entry(
         insert into erp_audit_events(
             entity_type,entity_id,action,actor,origin,before_data,after_data,reason
         ) values(
-            'VEHICLE_ENTRY',:id,'ENTRADA_VEICULO_ATUALIZADA',:actor,'MES',
+            'VEHICLE_ENTRY',:id,'ENTRADA_VEICULO_ATUALIZADA',:actor,:origin,
             cast(:before_data as jsonb),cast(:after_data as jsonb),:reason
         )
     """), {
         "id": entry_id,
         "actor": actor,
+        "origin": audit_origin,
         "before_data": json.dumps(before, default=str, ensure_ascii=False),
         "after_data": json.dumps(after, default=str, ensure_ascii=False),
         "reason": str(payload.get("motivo") or "Correcao dos dados informados na entrada do veiculo."),
@@ -1564,6 +1586,109 @@ def correct_work_order_bank(conn, work_id, payload, actor):
         "codigo_banco": bank_code,
         "conjunto_bancos": bank_description,
         "replayed": False,
+    }
+
+
+def correct_closed_work_order(conn, work_id, payload, actor):
+    """Correct historical O.S. and entry data without reopening production.
+
+    Status, stages, pointing events, delivery/finalization timestamps and
+    structural links are deliberately outside the correction whitelist.
+    """
+    reason = str(payload.get("motivo") or payload.get("reason") or "").strip()
+    if not reason:
+        raise ValueError("Informe o motivo da correção histórica da O.S.")
+
+    work_payload = payload.get("work_order") or {}
+    entry_payload = payload.get("entry") or {}
+    if not isinstance(work_payload, dict) or not isinstance(entry_payload, dict):
+        raise ValueError("Os dados da correção histórica são inválidos.")
+
+    reference = _one(conn.execute(text("""
+        select id,vehicle_entry_id,numero_os,status
+          from erp_work_orders
+         where id=:id
+    """), {"id": work_id}))
+    if not reference:
+        raise ValueError("O.S. não encontrada.")
+    if str(reference.get("status") or "").strip().upper() not in CLOSED_WORK_ORDER_STATUSES:
+        raise ValueError("Use a edição normal enquanto a O.S. estiver aberta ou em produção.")
+
+    entry_result = {"replayed": True}
+    if entry_payload:
+        entry_result = update_vehicle_entry(
+            conn,
+            reference["vehicle_entry_id"],
+            {**entry_payload, "motivo": reason},
+            actor,
+            audit_origin="SUPRIMENTOS",
+        )
+
+    work = _one(conn.execute(text("""
+        select *
+          from erp_work_orders
+         where id=:id
+         for update
+    """), {"id": work_id}))
+    if not work:
+        raise ValueError("O.S. não encontrada.")
+    if str(work.get("status") or "").strip().upper() not in CLOSED_WORK_ORDER_STATUSES:
+        raise ValueError("A O.S. mudou de situação. Atualize a tela e tente novamente.")
+
+    changed = {}
+    previous = {}
+    for name in HISTORICAL_WORK_ORDER_FIELDS:
+        if name not in work_payload:
+            continue
+        value = _work_field_value(name, work_payload[name])
+        if name == "tipo_servico":
+            value = canonical_service_type(value)
+        current = _date_value(work.get(name)) if name in WORK_ORDER_DATE_FIELDS else str(work.get(name) or "").strip()
+        if current != value:
+            previous[name] = work.get(name)
+            changed[name] = value
+
+    if changed:
+        assignments = ",".join(f"{name}=:{name}" for name in changed)
+        conn.execute(text(f"""
+            update erp_work_orders
+               set {assignments},updated_at=now(),version=version+1
+             where id=:id
+        """), {"id": work_id, **changed})
+
+        conn.execute(text("""
+            insert into erp_audit_events(
+                entity_type,entity_id,action,actor,origin,before_data,after_data,reason
+            ) values(
+                'WORK_ORDER',:id,'CORRECAO_HISTORICA_DADOS_OS',:actor,'SUPRIMENTOS',
+                cast(:before_data as jsonb),cast(:after_data as jsonb),:reason
+            )
+        """), {
+            "id": work_id,
+            "actor": actor,
+            "before_data": json.dumps(
+                {"status": work.get("status"), **previous},
+                default=str,
+                ensure_ascii=False,
+            ),
+            "after_data": json.dumps(
+                {"status": work.get("status"), **changed},
+                default=str,
+                ensure_ascii=False,
+            ),
+            "reason": reason,
+        })
+
+    replayed = not changed and bool(entry_result.get("replayed"))
+    if not replayed:
+        reconcile_purchase_order_allocations(conn, actor, "CORRECAO_HISTORICA_OS")
+    return {
+        "id": work_id,
+        "numero_os": work["numero_os"],
+        "status": work["status"],
+        "changed_fields": sorted(changed),
+        "entry_updated": not bool(entry_result.get("replayed")),
+        "replayed": replayed,
     }
 
 
