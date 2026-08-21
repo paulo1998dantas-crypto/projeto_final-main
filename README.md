@@ -106,3 +106,39 @@ especiais:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\executar_reconciliacao_mes_segura.ps1
 ```
+
+## Perfil Produção e tempos por etapa
+
+O perfil `PRODUCAO` possui somente `mes.dashboard.read` e
+`mes.stage.write`. Ao acessar o MES, esse usuário é direcionado para
+`/producao`, uma interface simplificada com busca de veículo, seleção da etapa
+e os comandos **Iniciar**, **Parar**, **Interromper** e **Finalizar**. Usuários
+que também tenham o perfil PCP continuam na interface completa.
+
+Cada novo início cria uma sessão produtiva independente. Por isso:
+
+- o primeiro início da etapa permanece como início canônico;
+- a conclusão mais recente passa a ser o término canônico;
+- o tempo produtivo total é a soma das sessões finalizadas;
+- paradas e interrupções são somadas separadamente e nunca entram no tempo
+  produtivo;
+- uma etapa concluída pode voltar para ajuste sem apagar o apontamento
+  anterior;
+- veículos aguardando O.S. e O.S. finalizadas aceitam apontamentos; entregues
+  e retirados permanecem bloqueados.
+
+A estrutura necessária está na migration aditiva
+`migrations/20260820_mes_production_profile_stage_pauses.sql`. Antes de
+ativá-la em produção:
+
+1. confirme backup restaurável e valide a migration em staging;
+2. aplique a migration sem executar reset, seed, drop ou truncate;
+3. publique o MES e o Estoque com o novo catálogo do perfil;
+4. atribua `PRODUCAO` somente aos operadores autorizados;
+5. teste iniciar, parar, retomar, finalizar e reabrir uma etapa concluída;
+6. confira no histórico que o primeiro início foi preservado e que os totais
+   produtivo e parado estão separados.
+
+O rollback operacional não exige remover tabelas: retire temporariamente o
+perfil dos usuários ou volte a versão da aplicação. As tabelas aditivas podem
+permanecer no banco, preservando o histórico já registrado.

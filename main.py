@@ -473,6 +473,47 @@ def permission_denied(api=False):
 def has_permission(user, permission):
     return authz.can(user, permission)
 
+
+def user_roles(user):
+    return {
+        authz.normalize_role(role)
+        for role in getattr(user, "roles", ())
+        if authz.normalize_role(role)
+    }
+
+
+def is_production_profile(user):
+    return "PRODUCAO" in user_roles(user)
+
+
+def is_production_only(user):
+    """Use the simplified console only when no management role is also active."""
+    return bool(
+        is_production_profile(user)
+        and not getattr(user, "is_admin", False)
+        and not has_permission(user, authz.MES_WORK_ORDERS_MANAGE)
+    )
+
+
+def can_access_production_console(user):
+    return bool(
+        user
+        and (getattr(user, "is_admin", False) or is_production_profile(user))
+        and has_permission(user, authz.MES_DASHBOARD_READ)
+        and has_permission(user, authz.MES_STAGE_WRITE)
+    )
+
+
+def format_elapsed_seconds(value):
+    seconds = max(0, int(value or 0))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}min"
+    if minutes:
+        return f"{minutes}min {seconds:02d}s"
+    return f"{seconds}s"
+
 def safe_str(value):
     if value is None or (hasattr(pd, "isna") and pd.isna(value)):
         return ""
@@ -1117,6 +1158,8 @@ async def home(
         return RedirectResponse(url="/login", status_code=303)
     if not has_permission(current_user, authz.MES_DASHBOARD_READ):
         return permission_denied()
+    if is_production_only(current_user):
+        return RedirectResponse(url="/producao", status_code=303)
     data_inicio_atual, data_fim_atual = intervalo_entrega_normalizado(entrega_inicio, entrega_fim)
     visao_param = safe_str(visao).lower()
     visao_atual = visao_param if visao_param in ["resumida", "completa", "gerencial", "geral"] else "resumida"
@@ -1292,6 +1335,8 @@ async def detalhes(
         return RedirectResponse(url="/login", status_code=303)
     if not has_permission(current_user, authz.MES_DASHBOARD_READ):
         return permission_denied()
+    if is_production_only(current_user):
+        return RedirectResponse(url="/producao", status_code=303)
     c_limpo = chassi.strip()
     user_name = get_user_name(request, db)
 
@@ -2400,6 +2445,173 @@ async def erp_vehicle_entry_stage(
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
+def prepare_production_detail(detail):
+    for stage in detail.get("stages", []):
+        stage["productive_duration"] = format_elapsed_seconds(
+            stage.get("total_productive_seconds")
+        )
+        stage["paused_duration"] = format_elapsed_seconds(
+            stage.get("total_paused_seconds")
+        )
+        stage["inicio_str"] = to_input_dt(stage.get("inicio"))
+        stage["termino_str"] = to_input_dt(stage.get("termino"))
+        stage["session_started_str"] = to_input_dt(
+            (stage.get("open_session") or {}).get("started_at")
+        )
+        stage["pause_started_str"] = to_input_dt(
+            (stage.get("open_pause") or {}).get("started_at")
+        )
+    detail["now_input"] = to_input_dt(datetime.datetime.now(LOCAL_TZ))
+    return detail
+
+
+@app.get("/producao", response_class=HTMLResponse)
+async def production_console(
+    request: Request,
+    q: str = "",
+    db: Session = Depends(database.get_db),
+):
+    if not erp_feature_enabled():
+        return HTMLResponse("Integração ERP desativada pela feature flag.", status_code=404)
+    user = require_login(request, db)
+    if not user:
+        return RedirectResponse(url="/login?next=/producao", status_code=303)
+    if (
+        not can_access_production_console(user)
+        or not has_permission(user, authz.MES_DASHBOARD_READ)
+    ):
+        return permission_denied()
+    with database.engine.connect() as conn:
+        cards = erp_service.list_production_targets(conn, search=q)
+    return templates.TemplateResponse(request, "producao.html", {
+        "request": request,
+        "current_user": user,
+        "cards": cards,
+        "search": q,
+    })
+
+
+@app.get("/producao/{target_kind}/{target_id}", response_class=HTMLResponse)
+async def production_stages(
+    request: Request,
+    target_kind: str,
+    target_id: str,
+    db: Session = Depends(database.get_db),
+):
+    if not erp_feature_enabled():
+        return HTMLResponse("Integração ERP desativada pela feature flag.", status_code=404)
+    user = require_login(request, db)
+    if not user:
+        return RedirectResponse(url="/login?next=/producao", status_code=303)
+    if (
+        not can_access_production_console(user)
+        or not has_permission(user, authz.MES_DASHBOARD_READ)
+    ):
+        return permission_denied()
+    try:
+        with database.engine.begin() as conn:
+            detail = prepare_production_detail(
+                erp_service.production_target_detail(conn, target_kind, target_id)
+            )
+    except erp_service.StageConflictError as exc:
+        return RedirectResponse(url="/producao", status_code=303)
+    except ValueError as exc:
+        return HTMLResponse(str(exc), status_code=404)
+    return templates.TemplateResponse(request, "producao_etapas.html", {
+        "request": request,
+        "current_user": user,
+        "detail": detail,
+    })
+
+
+@app.get(
+    "/producao/{target_kind}/{target_id}/apontar",
+    response_class=HTMLResponse,
+)
+async def production_stage_screen(
+    request: Request,
+    target_kind: str,
+    target_id: str,
+    stage_code: str = Query(...),
+    db: Session = Depends(database.get_db),
+):
+    if not erp_feature_enabled():
+        return HTMLResponse("Integração ERP desativada pela feature flag.", status_code=404)
+    user = require_login(request, db)
+    if not user:
+        return RedirectResponse(url="/login?next=/producao", status_code=303)
+    if (
+        not can_access_production_console(user)
+        or not has_permission(user, authz.MES_DASHBOARD_READ)
+    ):
+        return permission_denied()
+    try:
+        with database.engine.begin() as conn:
+            detail = prepare_production_detail(
+                erp_service.production_target_detail(conn, target_kind, target_id)
+            )
+    except erp_service.StageConflictError:
+        return RedirectResponse(url="/producao", status_code=303)
+    except ValueError as exc:
+        return HTMLResponse(str(exc), status_code=404)
+    stage = next(
+        (
+            item for item in detail["stages"]
+            if str(item.get("stage_code") or "").upper()
+            == str(stage_code or "").upper()
+        ),
+        None,
+    )
+    if not stage:
+        return HTMLResponse("Etapa não encontrada.", status_code=404)
+    if not stage.get("can_point"):
+        return HTMLResponse("Esta etapa não é aplicável.", status_code=409)
+    return templates.TemplateResponse(request, "producao_apontamento.html", {
+        "request": request,
+        "current_user": user,
+        "detail": detail,
+        "stage": stage,
+    })
+
+
+@app.post("/api/erp/producao/{target_kind}/{target_id}/commands")
+async def production_stage_command(
+    target_kind: str,
+    target_id: str,
+    request: Request,
+    data: dict = Body(...),
+    db: Session = Depends(database.get_db),
+):
+    if not erp_feature_enabled():
+        return erp_disabled_response()
+    user = require_login(request, db)
+    if not user:
+        return JSONResponse({"ok": False, "error": "Login necessário."}, status_code=401)
+    if (
+        not can_access_production_console(user)
+        or not has_permission(user, authz.MES_STAGE_WRITE)
+    ):
+        return permission_denied(api=True)
+    stage_code = str(data.get("stage_code") or "").strip()
+    if not stage_code:
+        return JSONResponse({"ok": False, "error": "Etapa não informada."}, status_code=400)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.execute_production_stage_command(
+                conn,
+                target_kind,
+                target_id,
+                stage_code,
+                data,
+                user.nome,
+            )
+        return {"ok": True, **result}
+    except erp_service.StageConflictError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
 @app.get("/gestao-os", response_class=HTMLResponse)
 async def erp_work_order_screen(request: Request, db: Session = Depends(database.get_db)):
     if not erp_feature_enabled(): return HTMLResponse("Integração ERP desativada pela feature flag.", status_code=404)
@@ -2407,6 +2619,8 @@ async def erp_work_order_screen(request: Request, db: Session = Depends(database
     if not user: return RedirectResponse(url="/login", status_code=303)
     if not has_permission(user, authz.MES_DASHBOARD_READ):
         return permission_denied()
+    if is_production_only(user):
+        return RedirectResponse(url="/producao", status_code=303)
     return templates.TemplateResponse(request, "gestao_os.html", {"request": request, "current_user": user})
 
 @app.get("/sequenciamento", response_class=HTMLResponse)

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MES | Apontar {{ stage.stage_code }}</title>
+<style>
+:root{--navy:#0f172a;--blue:#2563eb;--green:#059669;--orange:#d97706;--red:#dc2626;--line:#dbe3ec;--muted:#64748b;--bg:#f1f5f9}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#172033;font:15px Arial,sans-serif}main{max-width:860px;margin:auto;padding:18px}.btn{display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:10px 17px;border:1px solid #b8c5d3;border-radius:7px;background:#fff;color:#172033;font-weight:900;text-decoration:none;cursor:pointer}.btn.primary{background:var(--blue);border-color:#1d4ed8;color:#fff}.btn.success{background:var(--green);border-color:#047857;color:#fff}.btn.warning{background:var(--orange);border-color:#b45309;color:#fff}.btn.danger{background:var(--red);border-color:#b91c1c;color:#fff}.btn:disabled{opacity:.55;cursor:wait}.head{padding:17px;border-radius:10px 10px 0 0;background:var(--navy);color:#fff}.head-top{display:flex;justify-content:space-between;gap:12px}.head h1{margin:0;font-size:25px}.head p{margin:6px 0 0;color:#cbd5e1}.panel{padding:17px;border:1px solid var(--line);border-top:0;border-radius:0 0 10px 10px;background:#fff}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:16px}.metric{padding:11px;border-radius:8px;background:#f8fafc;border:1px solid var(--line)}.metric span{display:block;color:var(--muted);font-size:10px;font-weight:850;text-transform:uppercase}.metric strong{display:block;margin-top:4px;font-size:15px}.form{display:grid;grid-template-columns:1fr 1fr;gap:12px}.full{grid-column:1/-1}label{display:flex;flex-direction:column;gap:5px;color:#475569;font-size:12px;font-weight:800}input,textarea{width:100%;min-height:43px;padding:9px 11px;border:1px solid #bdcad8;border-radius:7px;font:inherit}textarea{min-height:90px;resize:vertical}.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:17px}.message{margin-bottom:12px;padding:10px 12px;border-radius:7px;background:#fee2e2;color:#991b1b;font-weight:700}.state{margin-bottom:15px;padding:11px 12px;border-radius:7px;background:#eff6ff;color:#1e40af;font-weight:800}.state.paused{background:#ffedd5;color:#9a3412}.state.running{background:#dcfce7;color:#166534}.help{margin-top:14px;color:var(--muted);font-size:12px;line-height:1.45}
+@media(max-width:650px){main{padding:10px}.head-top{flex-direction:column}.metrics,.form{grid-template-columns:1fr 1fr}.actions{display:grid;grid-template-columns:1fr 1fr}.actions .btn{width:100%}}
+</style>
+</head>
+<body>
+{% include "_portal_back.html" %}
+<main>
+  <header class="head"><div class="head-top"><div><h1>{{ stage.stage_code }}</h1><p>ITEM {{ detail.item_number }}{% if detail.numero_os %} · O.S. {{ detail.numero_os }}{% endif %} · {{ (detail.chassi or '')[-8:] }}</p></div><a class="btn" href="/producao/{{ detail.target_kind }}/{{ detail.target_id }}">Voltar às etapas</a></div></header>
+  <section class="panel">
+    <div id="message" class="message" hidden></div>
+    {% if stage.open_pause %}<div class="state paused">Etapa parada/interrompida desde {{ stage.pause_started_str }}. Use INICIAR para retomar.</div>{% elif stage.open_session %}<div class="state running">Sessão produtiva iniciada em {{ stage.session_started_str }}.</div>{% elif stage.input_code == 'S' %}<div class="state">Etapa concluída. Um novo INICIAR acrescentará uma sessão de ajuste sem apagar o histórico anterior.</div>{% else %}<div class="state">Etapa disponível para apontamento.</div>{% endif %}
+    <div class="metrics"><div class="metric"><span>Responsável atual</span><strong>{{ stage.responsavel or current_user.nome }}</strong></div><div class="metric"><span>Primeiro início</span><strong>{{ stage.inicio_str or '—' }}</strong></div><div class="metric"><span>Tempo produtivo acumulado</span><strong>{{ stage.productive_duration }}</strong></div><div class="metric"><span>Tempo parado acumulado</span><strong>{{ stage.paused_duration }}</strong></div></div>
+    <div class="form">
+      <label>Data/hora de início ou retomada<input id="inicio" type="datetime-local" value="{{ detail.now_input }}"></label>
+      <label>Data/hora de parada, interrupção ou finalização<input id="momento" type="datetime-local" value="{{ detail.now_input }}"></label>
+      <label class="full">Observação<textarea id="observacoes" placeholder="Informe o motivo da interrupção, do ajuste ou outra observação relevante."></textarea></label>
+    </div>
+    <div class="actions">
+      {% if not stage.open_session %}<button class="btn success" type="button" onclick="command('INICIAR')">{% if stage.open_pause %}INICIAR / RETOMAR{% elif stage.input_code == 'S' %}INICIAR NOVO AJUSTE{% else %}INICIAR{% endif %}</button>{% endif %}
+      {% if stage.open_session %}<button class="btn warning" type="button" onclick="command('PARAR')">PARAR</button><button class="btn danger" type="button" onclick="command('INTERROMPER')">INTERROMPER</button><button class="btn primary" type="button" onclick="command('FINALIZAR')">FINALIZAR</button>{% endif %}
+    </div>
+    <p class="help">Cada início/retomada cria uma sessão produtiva adicional. Paradas e interrupções são contabilizadas separadamente e nunca entram no tempo produtivo. O primeiro início da etapa é preservado; a última finalização atualiza o término da etapa.</p>
+  </section>
+</main>
+<script>
+const endpoint='/api/erp/producao/{{ detail.target_kind }}/{{ detail.target_id }}/commands';
+const stageCode={{ stage.stage_code|tojson }};
+const expected={{ stage.input_code|tojson }};
+const isCompleted={{ (stage.input_code == 'S')|tojson }};
+function key(){return globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random().toString(16).slice(2)}`}
+function show(text){const el=document.getElementById('message');el.textContent=text;el.hidden=!text}
+async function command(action){
+  if(action==='INICIAR'&&isCompleted&&!confirm('Esta etapa já foi concluída. Deseja iniciar uma nova sessão de ajuste sem apagar os apontamentos anteriores?'))return;
+  const buttons=[...document.querySelectorAll('button')];buttons.forEach(b=>b.disabled=true);show('');
+  const payload={action,stage_code:stageCode,expected_status:expected,idempotency_key:key(),observacoes:document.getElementById('observacoes').value};
+  if(action==='INICIAR')payload.inicio=document.getElementById('inicio').value;
+  else if(action==='FINALIZAR')payload.termino=document.getElementById('momento').value;
+  else payload.momento=document.getElementById('momento').value;
+  try{
+    const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const data=await response.json();
+    if(!response.ok||!data.ok)throw new Error(data.error||'Não foi possível registrar o apontamento.');
+    location.reload();
+  }catch(error){show(error.message);buttons.forEach(b=>b.disabled=false)}
+}
+</script>
+</body>
+</html>

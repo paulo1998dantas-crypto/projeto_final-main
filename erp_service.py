@@ -1,10 +1,11 @@
 """New operational O.S./MES domain. Legacy MES tables remain read-only compatible."""
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from functools import cmp_to_key
 import json
 from uuid import uuid4
 import re
 import unicodedata
+from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from erp_catalogs import (
     REQUIRED_WORK_ORDER_FIELDS, VENDEDORES, MERCADOS, TIPOS_VEICULO, LINHAS,
@@ -535,6 +536,17 @@ def _pre_os_stage_schema_ready(conn):
         return False
 
 
+def _stage_pause_schema_ready(conn):
+    """Keep application rollout compatible until the additive migration lands."""
+    try:
+        return bool(conn.execute(text(
+            "select to_regclass('public.erp_stage_time_pauses') is not null "
+            "and to_regclass('public.erp_stage_time_sessions') is not null"
+        )).scalar())
+    except (AttributeError, TypeError):
+        return False
+
+
 def _ensure_entry_stage_rows(conn, entry_id):
     if not _pre_os_stage_schema_ready(conn):
         return False
@@ -648,6 +660,21 @@ def _promote_entry_stage_pointings(conn, entry_id, work_id, actor):
                    updated_at=now()
              where id=:id
         """), {"target": target["id"], "actor": actor, "id": source["id"]})
+        if _stage_pause_schema_ready(conn):
+            conn.execute(text("""
+                update erp_stage_time_pauses
+                   set work_order_stage_id=:target,
+                       vehicle_entry_stage_id=null,
+                       updated_at=now()
+                 where vehicle_entry_stage_id=:source
+            """), {"target": target["id"], "source": source["id"]})
+            conn.execute(text("""
+                update erp_stage_time_sessions
+                   set work_order_stage_id=:target,
+                       vehicle_entry_stage_id=null,
+                       updated_at=now()
+                 where vehicle_entry_stage_id=:source
+            """), {"target": target["id"], "source": source["id"]})
         promoted += 1
     if promoted:
         pending = conn.execute(text("""
@@ -2011,6 +2038,45 @@ def list_work_orders(conn, search="", status="", limit=1000):
     return orders
 
 
+def list_production_targets(conn, search="", limit=1000):
+    """Return the intentionally narrow card source used by shop-floor users."""
+    targets = []
+    for row in list_work_orders(conn, search=search, limit=limit):
+        work_id = row.get("work_order_id")
+        status = str(row.get("status") if work_id else row.get("entry_status") or "").upper()
+        status_token = _token(status).replace(" ", "_")
+        if work_id:
+            if status_token not in {"ATIVA", "EM_PRODUCAO", "FINALIZADA"}:
+                continue
+            target_kind = "work"
+            target_id = str(work_id)
+            total = int(row.get("etapas_aplicaveis") or row.get("etapas_total") or 0)
+            completed = int(row.get("etapas_concluidas") or 0)
+        else:
+            if status_token in {"ENTREGUE", "RETIRADA", "CANCELADA", "ARQUIVADA"}:
+                continue
+            target_kind = "entry"
+            target_id = str(row["entry_id"])
+            total = len(STAGES)
+            completed = int(row.get("etapas_pre_os_concluidas") or 0)
+        vehicle_name = " ".join(
+            str(row.get(field) or "").strip()
+            for field in ("marca", "modelo", "versao")
+            if str(row.get(field) or "").strip()
+        )
+        targets.append({
+            **row,
+            "target_kind": target_kind,
+            "target_id": target_id,
+            "target_status": status or "AGUARDANDO O.S.",
+            "vehicle_name": vehicle_name or "Veículo não informado",
+            "progress_total": total,
+            "progress_completed": completed,
+            "progress_percent": int((completed / total) * 100) if total else 0,
+        })
+    return targets
+
+
 def vehicle_entry_stage_detail(conn, entry_id):
     entry = _one(conn.execute(text("""
         select e.*,v.chassi,v.marca,v.modelo,v.versao,v.mmv,
@@ -2118,8 +2184,10 @@ def update_vehicle_entry_stage(conn, entry_id, code, payload, actor):
     entry = _one(conn.execute(text("""
         select id,status from erp_vehicle_entries where id=:entry for update
     """), {"entry": entry_id}))
-    if entry and str(entry.get("status") or "").strip().upper() == "RETIRADA":
-        raise ValueError("Veiculo retirado sem O.S. nao pode receber novos apontamentos.")
+    if entry and _token(entry.get("status")) in {
+        "ENTREGUE", "RETIRADA", "CANCELADA", "ARQUIVADA"
+    }:
+        raise ValueError("Veiculo entregue, retirado, cancelado ou arquivado nao pode receber novos apontamentos.")
     if not entry:
         raise ValueError("Entrada de veículo não encontrada.")
     work = _one(conn.execute(text("""
@@ -2194,7 +2262,7 @@ def update_vehicle_entry_stage(conn, entry_id, code, payload, actor):
                status=:status,
                responsavel=:responsible,
                localizacao=:location,
-               inicio=:started,
+               inicio=coalesce(inicio,:started),
                termino=:finished,
                observacoes=:notes,
                version=version+1,
@@ -2712,7 +2780,7 @@ def update_stage_metadata(conn, work_id, code, payload, actor):
     return _stage_result(stage, work["status"], metadata_only=True)
 
 
-def update_stage(conn, work_id, code, payload, actor):
+def update_stage(conn, work_id, code, payload, actor, allow_finalized_stage_pointing=False):
     # Compatibility guard for pages served before the fields-only endpoint.
     # A delayed old autosave must never be allowed to regress a fresh S/P/N/A
     # production pointing.
@@ -2737,10 +2805,15 @@ def update_stage(conn, work_id, code, payload, actor):
 
     expected_raw = payload.get("expected_status")
     if expected_raw not in (None, ""):
-        expected = _stage_status_from_input(expected_raw)
-        if not expected:
-            raise ValueError("Status esperado da etapa invalido.")
-        if expected != stage["status"]:
+        expected_code = str(expected_raw).strip().upper()
+        if expected_code == "?":
+            expected_matches = stage_input_code(stage) == "?"
+        else:
+            expected = _stage_status_from_input(expected_raw)
+            if not expected:
+                raise ValueError("Status esperado da etapa invalido.")
+            expected_matches = expected == stage["status"]
+        if not expected_matches:
             raise StageConflictError(
                 "A etapa foi alterada por outro apontamento. Atualize a tela antes de salvar."
             )
@@ -2750,7 +2823,10 @@ def update_stage(conn, work_id, code, payload, actor):
     # production stage while the work order remains closed, though.
     post_release_pointing = (
         work["status"] == "FINALIZADA"
-        and _token(code) in POST_RELEASE_POINTING_STAGE_CODES
+        and (
+            _token(code) in POST_RELEASE_POINTING_STAGE_CODES
+            or allow_finalized_stage_pointing
+        )
     )
     if work["status"] in {"FINALIZADA", "ENTREGUE", "RETIRADA"} and not post_release_pointing:
         if new != stage["status"]:
@@ -2915,6 +2991,352 @@ def update_stage(conn, work_id, code, payload, actor):
         "aplicavel": new != "NÃO_APLICÁVEL",
     }
     return _stage_result(updated_stage, next_status)
+
+
+def _production_datetime(value, default=None):
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        raw = str(value or "").strip()
+        if not raw:
+            return default
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("Data/hora inválida para o apontamento.") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ZoneInfo("America/Sao_Paulo"))
+    return parsed.astimezone(timezone.utc)
+
+
+def _pause_stage_column(target_kind):
+    return (
+        "work_order_stage_id"
+        if str(target_kind or "").lower() == "work"
+        else "vehicle_entry_stage_id"
+    )
+
+
+def _pause_summary(conn, target_kind, stage_id):
+    if not _stage_pause_schema_ready(conn):
+        return {
+            "open_pause": None, "open_session": None,
+            "total_paused_seconds": 0, "total_productive_seconds": 0,
+        }
+    column = _pause_stage_column(target_kind)
+    open_pause = _one(conn.execute(text(f"""
+        select * from erp_stage_time_pauses
+         where {column}=:stage and ended_at is null
+         order by started_at desc
+         limit 1
+    """), {"stage": stage_id}))
+    total = conn.execute(text(f"""
+        select coalesce(sum(duration_seconds),0)
+          from erp_stage_time_pauses
+         where {column}=:stage and ended_at is not null
+    """), {"stage": stage_id}).scalar_one()
+    open_session = _one(conn.execute(text(f"""
+        select * from erp_stage_time_sessions
+         where {column}=:stage and ended_at is null
+         order by started_at desc
+         limit 1
+    """), {"stage": stage_id}))
+    productive = conn.execute(text(f"""
+        select coalesce(sum(productive_seconds),0)
+          from erp_stage_time_sessions
+         where {column}=:stage and ended_at is not null
+    """), {"stage": stage_id}).scalar_one()
+    return {
+        "open_pause": open_pause,
+        "open_session": open_session,
+        "total_paused_seconds": int(total or 0),
+        "total_productive_seconds": int(productive or 0),
+    }
+
+
+def production_target_detail(conn, target_kind, target_id):
+    kind = str(target_kind or "").strip().lower()
+    if kind == "work":
+        detail = work_order_detail(conn, target_id)
+        target = detail["work_order"]
+        status = str(target.get("status") or "").upper()
+        if _token(status).replace(" ", "_") not in {"ATIVA", "EM_PRODUCAO", "FINALIZADA"}:
+            raise ValueError("Esta O.S. não está disponível para apontamento da Produção.")
+        item = target.get("item_number")
+        os_number = target.get("numero_os")
+    elif kind == "entry":
+        detail = vehicle_entry_stage_detail(conn, target_id)
+        target = detail["entry"]
+        status = str(target.get("status") or "AGUARDANDO O.S.").upper()
+        if _token(status) in {"ENTREGUE", "RETIRADA", "CANCELADA", "ARQUIVADA"}:
+            raise ValueError("Este veículo não está disponível para apontamento.")
+        item = target.get("item_number")
+        os_number = None
+    else:
+        raise ValueError("Tipo de apontamento inválido.")
+
+    stages = detail["stages"]
+    for stage in stages:
+        stage.update(_pause_summary(conn, kind, stage["id"]))
+        stage["can_point"] = stage.get("input_code") != "N/A"
+    vehicle_name = " ".join(
+        str(target.get(field) or "").strip()
+        for field in ("marca", "modelo", "versao")
+        if str(target.get(field) or "").strip()
+    )
+    return {
+        "target_kind": kind,
+        "target_id": str(target_id),
+        "target": target,
+        "target_status": status,
+        "item_number": item,
+        "numero_os": os_number,
+        "chassi": target.get("chassi"),
+        "vehicle_name": vehicle_name or "Veículo não informado",
+        "stages": stages,
+    }
+
+
+def _production_locked_stage(conn, target_kind, target_id, stage_code):
+    kind = str(target_kind or "").strip().lower()
+    code = str(stage_code or "").strip().upper()
+    if kind == "work":
+        work, stage = _locked_work_and_stage(conn, target_id, code)
+        if _token(work["status"]).replace(" ", "_") not in {"ATIVA", "EM_PRODUCAO", "FINALIZADA"}:
+            raise ValueError("Esta O.S. não está disponível para apontamento da Produção.")
+        return kind, work, stage
+    if kind != "entry":
+        raise ValueError("Tipo de apontamento inválido.")
+    entry = _one(conn.execute(text("""
+        select id,status from erp_vehicle_entries where id=:entry for update
+    """), {"entry": target_id}))
+    if not entry:
+        raise ValueError("Entrada de veículo não encontrada.")
+    if _token(entry.get("status")) in {"ENTREGUE", "RETIRADA", "CANCELADA", "ARQUIVADA"}:
+        raise ValueError("Este veículo não está disponível para apontamento.")
+    work = _one(conn.execute(text("""
+        select id,numero_os from erp_work_orders
+         where vehicle_entry_id=:entry and is_current=true
+    """), {"entry": target_id}))
+    if work:
+        raise StageConflictError(
+            f"A O.S. {work.get('numero_os')} foi aberta. Atualize a tela e selecione novamente o card."
+        )
+    if not _ensure_entry_stage_rows(conn, target_id):
+        raise ValueError("A estrutura de apontamento antes da O.S. ainda não foi instalada.")
+    stage = _one(conn.execute(text("""
+        select * from erp_vehicle_entry_stages
+         where vehicle_entry_id=:entry and stage_code=:code
+         for update
+    """), {"entry": target_id, "code": code}))
+    if not stage:
+        raise ValueError("Etapa da entrada não encontrada.")
+    return kind, entry, stage
+
+
+def _production_event_replay(conn, target_kind, key):
+    if not key:
+        return False
+    table = (
+        "erp_work_order_stage_events"
+        if target_kind == "work"
+        else "erp_vehicle_entry_stage_events"
+    )
+    return bool(conn.execute(text(
+        f"select exists(select 1 from {table} where idempotency_key=:key)"
+    ), {"key": key}).scalar_one())
+
+
+def _close_stage_pause(conn, target_kind, stage_id, ended_at, actor):
+    summary = _pause_summary(conn, target_kind, stage_id)
+    pause = summary["open_pause"]
+    if not pause:
+        return False
+    if conn.execute(text("select cast(:ended as timestamptz) < cast(:started as timestamptz)"), {
+        "ended": ended_at, "started": pause["started_at"],
+    }).scalar_one():
+        raise ValueError("O fim da parada não pode ser anterior ao início.")
+    conn.execute(text("""
+        update erp_stage_time_pauses
+           set ended_at=:ended,
+               duration_seconds=greatest(
+                   0, floor(extract(epoch from (cast(:ended as timestamptz)-started_at)))::bigint
+               ),
+               ended_by=:actor,
+               updated_at=now()
+         where id=:id
+    """), {"ended": ended_at, "actor": actor, "id": pause["id"]})
+    return True
+
+
+def _open_stage_session(conn, target_kind, stage_id, started_at, actor, note, key):
+    summary = _pause_summary(conn, target_kind, stage_id)
+    if summary["open_session"]:
+        raise ValueError("Esta etapa já possui uma sessão produtiva em andamento.")
+    column = _pause_stage_column(target_kind)
+    conn.execute(text(f"""
+        insert into erp_stage_time_sessions(
+            {column},started_at,started_by,observation,idempotency_key
+        ) values(
+            :stage,:started,:actor,:note,:key
+        )
+    """), {
+        "stage": stage_id, "started": started_at, "actor": actor,
+        "note": note, "key": f"{key}:session" if key else None,
+    })
+
+
+def _close_stage_session(conn, target_kind, stage_id, ended_at, actor):
+    summary = _pause_summary(conn, target_kind, stage_id)
+    session = summary["open_session"]
+    if not session:
+        raise ValueError("Inicie a etapa antes de parar, interromper ou finalizar.")
+    if conn.execute(text("select cast(:ended as timestamptz) < cast(:started as timestamptz)"), {
+        "ended": ended_at, "started": session["started_at"],
+    }).scalar_one():
+        raise ValueError("O fim da sessão não pode ser anterior ao início.")
+    conn.execute(text("""
+        update erp_stage_time_sessions
+           set ended_at=:ended,
+               productive_seconds=greatest(
+                   0, floor(extract(epoch from (cast(:ended as timestamptz)-started_at)))::bigint
+               ),
+               ended_by=:actor,
+               updated_at=now()
+         where id=:id
+    """), {"ended": ended_at, "actor": actor, "id": session["id"]})
+
+
+def execute_production_stage_command(conn, target_kind, target_id, stage_code, payload, actor):
+    """Execute the simplified shop-floor commands using canonical MES stages."""
+    if not _stage_pause_schema_ready(conn):
+        raise ValueError("A migration de paradas da Produção ainda não foi aplicada.")
+    action = _token(payload.get("action")).replace(" ", "_")
+    if action not in {"INICIAR", "PARAR", "FINALIZAR", "INTERROMPER"}:
+        raise ValueError("Comando inválido. Use INICIAR, PARAR, FINALIZAR ou INTERROMPER.")
+    kind, target, stage = _production_locked_stage(
+        conn, target_kind, target_id, stage_code
+    )
+    key = str(payload.get("idempotency_key") or "").strip() or None
+    if _production_event_replay(conn, kind, key):
+        return {
+            "replayed": True,
+            "input_code": stage_input_code(stage),
+            **_pause_summary(conn, kind, stage["id"]),
+        }
+    expected = str(payload.get("expected_status") or "").strip().upper()
+    current = stage_input_code(stage)
+    if not expected or expected != current:
+        raise StageConflictError(
+            "A etapa foi alterada por outro apontamento. Atualize a tela antes de continuar."
+        )
+    if current == "N/A":
+        raise ValueError("Esta etapa não é aplicável.")
+
+    now = datetime.now(timezone.utc)
+    start_at = _production_datetime(payload.get("inicio"), now)
+    finish_at = _production_datetime(payload.get("termino"), now)
+    moment = _production_datetime(payload.get("momento"), now)
+    time_state = _pause_summary(conn, kind, stage["id"])
+    pause = time_state["open_pause"]
+    session = time_state["open_session"]
+
+    if action in {"PARAR", "INTERROMPER"}:
+        if current != "P":
+            raise ValueError("Inicie a etapa antes de registrar uma parada ou interrupção.")
+        if pause:
+            raise ValueError("Esta etapa já possui uma parada ou interrupção em aberto.")
+        _close_stage_session(conn, kind, stage["id"], moment, actor)
+        column = _pause_stage_column(kind)
+        pause_type = "PARADA" if action == "PARAR" else "INTERRUPCAO"
+        conn.execute(text(f"""
+            insert into erp_stage_time_pauses(
+                {column},pause_type,started_at,started_by,reason,idempotency_key
+            ) values(
+                :stage,:type,:started,:actor,:reason,:pause_key
+            )
+        """), {
+            "stage": stage["id"], "type": pause_type, "started": moment,
+            "actor": actor, "reason": str(payload.get("observacoes") or "").strip(),
+            "pause_key": f"{key}:pause" if key else None,
+        })
+        event_table = (
+            "erp_work_order_stage_events" if kind == "work"
+            else "erp_vehicle_entry_stage_events"
+        )
+        stage_column = (
+            "work_order_stage_id" if kind == "work"
+            else "vehicle_entry_stage_id"
+        )
+        conn.execute(text(f"""
+            insert into {event_table}(
+                {stage_column},action,status_anterior,novo_status,
+                operador,inicio,termino,localizacao,observacao,idempotency_key
+            ) values(
+                :stage,:action,:status,:status,
+                :actor,:inicio,:moment,:location,:note,:key
+            )
+        """), {
+            "stage": stage["id"], "action": pause_type,
+            "status": stage["status"], "actor": actor,
+            "inicio": stage.get("inicio"), "moment": moment,
+            "location": stage.get("localizacao"),
+            "note": str(payload.get("observacoes") or "").strip(), "key": key,
+        })
+        return {
+            "replayed": False,
+            "input_code": current,
+            **_pause_summary(conn, kind, stage["id"]),
+        }
+
+    if action == "INICIAR":
+        if session:
+            raise ValueError("Esta etapa já está em andamento.")
+        if pause:
+            _close_stage_pause(conn, kind, stage["id"], start_at, actor)
+        _open_stage_session(
+            conn, kind, stage["id"], start_at, actor,
+            str(payload.get("observacoes") or "").strip(), key,
+        )
+        input_code = "P"
+    else:
+        if pause:
+            raise ValueError("Retome a etapa antes de finalizá-la.")
+        _close_stage_session(conn, kind, stage["id"], finish_at, actor)
+        input_code = "S"
+
+    stage_payload = {
+        "input_code": input_code,
+        "expected_status": current,
+        "responsavel": actor,
+        "observacoes": str(payload.get("observacoes") or "").strip(),
+        "confirmed_status_change": True,
+        "idempotency_key": key,
+        "reopen_reason": (
+            "Reentrada produtiva para ajuste após conclusão anterior."
+            if current == "S" and action == "INICIAR" else ""
+        ),
+    }
+    if action == "INICIAR":
+        stage_payload["inicio"] = start_at
+    else:
+        stage_payload["inicio"] = _production_datetime(payload.get("inicio"), None)
+        stage_payload["termino"] = finish_at
+
+    if kind == "work":
+        result = update_stage(
+            conn,
+            target_id,
+            stage_code,
+            stage_payload,
+            actor,
+            allow_finalized_stage_pointing=True,
+        )
+    else:
+        result = update_vehicle_entry_stage(
+            conn, target_id, stage_code, stage_payload, actor
+        )
+    return {**result, **_pause_summary(conn, kind, stage["id"])}
 
 def update_work_order_location(conn, work_id, location, actor, idempotency_key=None):
     stage = _one(conn.execute(text("""

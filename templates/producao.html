@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MES | Produção</title>
+<style>
+:root{--navy:#0f172a;--blue:#2563eb;--cyan:#0891b2;--green:#059669;--line:#dbe3ec;--muted:#64748b;--bg:#f1f5f9}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#172033;font:14px Arial,sans-serif}main{max-width:1500px;margin:auto;padding:18px}.head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:14px}.head h1{margin:0;font-size:26px}.head p{margin:5px 0;color:var(--muted)}.user{display:flex;align-items:center;gap:9px;font-weight:800}.btn{display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:8px 14px;border:1px solid #b8c5d3;border-radius:7px;background:#fff;color:#172033;font-weight:800;text-decoration:none;cursor:pointer}.panel{border:1px solid var(--line);border-radius:10px;background:#fff;overflow:hidden}.search{display:grid;grid-template-columns:1fr auto;gap:8px;padding:12px;background:#f8fafc;border-bottom:1px solid var(--line)}input{min-width:0;min-height:44px;padding:9px 12px;border:1px solid #bdcad8;border-radius:7px;font:inherit}.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:11px;padding:12px}.card{display:block;padding:14px;border:1px solid var(--line);border-left:5px solid var(--cyan);border-radius:9px;background:#fff;color:inherit;text-decoration:none;transition:.15s ease}.card.entry{border-left-color:#f59e0b}.card:hover,.card:focus-visible{border-color:#60a5fa;box-shadow:0 6px 18px #0f172a18;transform:translateY(-1px);outline:0}.card-head{display:flex;justify-content:space-between;gap:8px;align-items:flex-start}.card h2{margin:0;font-size:17px}.badge{display:inline-flex;padding:4px 8px;border-radius:999px;background:#dcfce7;color:#166534;font-size:10px;font-weight:900}.chassi{margin-top:9px;font-size:20px;font-weight:900;letter-spacing:.3px}.vehicle{margin-top:4px;min-height:34px;color:#334155;font-weight:700}.meta{display:flex;justify-content:space-between;gap:8px;margin-top:9px;color:var(--muted);font-size:12px}.progress{height:8px;margin-top:11px;border-radius:999px;background:#e2e8f0;overflow:hidden}.progress span{display:block;height:100%;background:var(--green)}.progress-label{margin-top:5px;color:var(--muted);font-size:11px}.empty{padding:55px 20px;text-align:center;color:var(--muted)}
+@media(max-width:700px){main{padding:12px}.head{align-items:stretch;flex-direction:column}.user{justify-content:space-between}.search{grid-template-columns:1fr}.cards{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+{% include "_portal_back.html" %}
+<main>
+  <header class="head">
+    <div><h1>Apontamento da Produção</h1><p>Localize o veículo e selecione o card para registrar uma etapa.</p></div>
+    <div class="user"><span>{{ current_user.nome }}</span><form method="post" action="/logout"><button class="btn" type="submit">Sair</button></form></div>
+  </header>
+  <section class="panel">
+    <form class="search" method="get" action="/producao">
+      <input name="q" value="{{ search }}" type="search" autofocus placeholder="Buscar por chassi, ITEM, O.S., cliente ou veículo">
+      <button class="btn" type="submit">Buscar</button>
+    </form>
+    {% if cards %}
+    <div class="cards">
+      {% for card in cards %}
+      <a class="card {{ 'entry' if card.target_kind == 'entry' else '' }}" href="/producao/{{ card.target_kind }}/{{ card.target_id }}">
+        <div class="card-head"><h2>ITEM {{ card.item_number }}{% if card.numero_os %} · O.S. {{ card.numero_os }}{% endif %}</h2><span class="badge">{{ card.target_status }}</span></div>
+        <div class="chassi">{{ (card.chassi or 'CHASSI NÃO INFORMADO')[-8:] }}</div>
+        <div class="vehicle">{{ card.vehicle_name }}</div>
+        <div class="meta"><span>{{ card.cliente_nome or 'Cliente não informado' }}</span><span>{{ card.progress_percent }}%</span></div>
+        <div class="progress"><span style="width:{{ card.progress_percent }}%"></span></div>
+        <div class="progress-label">{{ card.progress_completed }}/{{ card.progress_total }} etapas concluídas</div>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}<div class="empty">Nenhum veículo disponível para apontamento.</div>{% endif %}
+  </section>
+</main>
+</body>
+</html>
