@@ -5,6 +5,9 @@ from erp_service import _stage_applicable
 
 
 class MesNotApplicableCatalogsTests(unittest.TestCase):
+    def test_catalogs_expose_sprinter_516_for_vehicle_entry(self):
+        self.assertIn("SPRINTER 516", payload()["modelos"])
+
     def test_catalogs_expose_not_applicable_for_controlled_os_fields(self):
         catalogs = payload()
         self.assertEqual(["tipo_servico"], catalogs["required_work_order_fields"])
