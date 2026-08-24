@@ -2091,7 +2091,7 @@ def list_work_orders(conn, search="", status="", limit=1000):
                e.cliente_nome as entry_client,e.observacoes as entry_notes,e.avarias,e.modelo_veicular,e.tipo_preliminar,
                v.id as vehicle_id,v.chassi,v.marca,v.modelo,v.versao,v.mmv,
                w.id as work_order_id,w.numero_os,w.tipo_servico,w.proposta_numero,
-                w.data_aprovacao,w.vendedor,w.mercado,e.cliente_nome as cliente_nome,w.municipio,w.uf,
+               w.data_aprovacao,w.vendedor,w.mercado,e.cliente_nome as cliente_nome,w.municipio,w.uf,
                w.tipo_veiculo,w.linha,w.transformacao_codigo,w.transformacao,w.codigo_banco,w.conjunto_bancos,
                w.acessibilidade,w.lotacao,w.ar_condicionado,w.tipo_sistema_ar,w.ar_quente,
                w.acessorio,w.plotagem,w.data_comercial_prevista,w.status,w.version,
@@ -2103,6 +2103,10 @@ def list_work_orders(conn, search="", status="", limit=1000):
                w.created_at,w.updated_at,
                f.id as forecast_id,f.codigo as forecast_codigo,f.status as forecast_status,
                seq.sequencia,seq.semana_planejada,seq.prioridade_manual,
+               latest_note.note as latest_note,
+               latest_note.actor as latest_note_actor,
+               latest_note.origin as latest_note_origin,
+               latest_note.created_at as latest_note_created_at,
                count(s.id) as etapas_total,
                count(s.id) filter(where s.aplicavel) as etapas_aplicaveis,
                count(s.id) filter(where s.status='CONCLUÍDA') as etapas_concluidas,
@@ -2112,12 +2116,28 @@ def list_work_orders(conn, search="", status="", limit=1000):
         left join erp_work_orders w on w.vehicle_entry_id=e.id and w.is_current=true
         left join suprimentos_forecasts f on f.work_order_id=w.id
         left join erp_work_order_sequences seq on seq.work_order_id=w.id and seq.ativo=true
+        left join lateral (
+            select notes.note,notes.actor,notes.origin,notes.created_at
+              from (
+                    select n.id,n.note,n.actor,n.origin,n.created_at
+                      from erp_work_order_notes n
+                     where n.work_order_id=w.id
+                    union all
+                    select n.id,n.note,n.actor,n.origin,n.created_at
+                      from erp_vehicle_entry_notes n
+                     where n.vehicle_entry_id=e.id
+              ) notes
+             order by notes.created_at desc,notes.id desc
+             limit 1
+        ) latest_note on true
         left join erp_work_order_stages s on s.work_order_id=w.id
         where (:status='' or coalesce(w.status,e.status)=:status)
           and (:search='%%' or concat_ws(' ',e.item_number,v.chassi,v.marca,v.modelo,
                e.cliente_nome,w.numero_os,w.cliente_nome,w.proposta_numero,w.linha,
-               w.transformacao) ilike :search)
-        group by e.id,v.id,w.id,f.id,f.codigo,f.status,seq.sequencia,seq.semana_planejada,seq.prioridade_manual
+               w.transformacao,latest_note.note) ilike :search)
+        group by e.id,v.id,w.id,f.id,f.codigo,f.status,
+                 seq.sequencia,seq.semana_planejada,seq.prioridade_manual,
+                 latest_note.note,latest_note.actor,latest_note.origin,latest_note.created_at
         order by
           case
             when w.status in ('ATIVA','EM_PRODUÇÃO') then 0
