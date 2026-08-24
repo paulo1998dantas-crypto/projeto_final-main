@@ -471,6 +471,20 @@ def _stage_applicable(code, work):
         or (code == "PLOTAGEM" and _token(work.get("plotagem")) in not_applicable)
     )
 
+
+def _can_recalculate_stage_applicability(work, stage):
+    """Allow field-derived applicability only before an explicit PCP choice.
+
+    Once a stage has been parametrized, its current value is an operational
+    decision.  Editing descriptive O.S. fields in Suprimentos must not turn a
+    manually selected N/A back into PENDENTE (or the reverse).
+    """
+    return (
+        work.get("stage_configuration_status") != "CONCLUIDA"
+        and not bool(stage.get("parametrizado"))
+    )
+
+
 def stage_input_code(stage):
     if not bool(stage.get("parametrizado")):
         return "?"
@@ -1449,10 +1463,12 @@ def update_work_order(conn, work_id, payload, actor):
     if not is_draft:
         for code, _, _ in STAGES:
             stage = _one(conn.execute(text("""
-                select id,aplicavel,status from erp_work_order_stages
+                select id,aplicavel,status,parametrizado from erp_work_order_stages
                 where work_order_id=:work and stage_code=:code for update
             """), {"work": work_id, "code": code}))
             if not stage:
+                continue
+            if not _can_recalculate_stage_applicability(work, stage):
                 continue
             applicable = _stage_applicable(code, fields)
             if bool(stage["aplicavel"]) == applicable:
