@@ -97,7 +97,7 @@ class MesStageWriteSafetyTests(unittest.TestCase):
 
         connection.execute.assert_not_called()
 
-    def test_finalized_work_order_cannot_have_a_stage_reopened_silently(self):
+    def test_finalized_work_order_still_requires_confirmation_for_a_prior_pointing(self):
         connection = Mock()
         work = {"status": "FINALIZADA", "vehicle_entry_id": "entry"}
         stage = {
@@ -106,12 +106,15 @@ class MesStageWriteSafetyTests(unittest.TestCase):
             "inicio": None,
             "termino": None,
         }
-        with patch.object(
-            erp_service,
-            "_locked_work_and_stage",
-            return_value=(work, stage),
+        with (
+            patch.object(
+                erp_service,
+                "_locked_work_and_stage",
+                return_value=(work, stage),
+            ),
+            patch.object(erp_service, "_has_operational_pointing", return_value=True),
         ):
-            with self.assertRaises(erp_service.StageConflictError):
+            with self.assertRaisesRegex(ValueError, "Confirme a alteracao"):
                 erp_service.update_stage(
                     connection,
                     "work-order",
@@ -122,8 +125,7 @@ class MesStageWriteSafetyTests(unittest.TestCase):
 
         connection.execute.assert_not_called()
 
-    def test_finalized_work_order_allows_only_accessory_or_plotting_pointings(self):
-        """LIBERAÇÃO finaliza o veículo sem bloquear os dois acabamentos finais."""
+    def test_finalized_work_order_allows_any_stage_pointing_without_reopening_work(self):
         connection = Mock()
         work = {"status": "FINALIZADA", "vehicle_entry_id": "entry"}
         stage = {
@@ -145,7 +147,7 @@ class MesStageWriteSafetyTests(unittest.TestCase):
             result = erp_service.update_stage(
                 connection,
                 "work-order",
-                "ACESSÓRIO",
+                "VIDROS",
                 {"input_code": "S", "expected_status": "N"},
                 "OPERADOR",
             )
@@ -153,6 +155,36 @@ class MesStageWriteSafetyTests(unittest.TestCase):
         self.assertEqual(result["status"], "CONCLUÍDA")
         self.assertEqual(result["work_order_status"], "FINALIZADA")
         self.assertTrue(connection.execute.called)
+
+    def test_delivered_or_withdrawn_work_order_rejects_new_stage_pointing(self):
+        for work_status in ("ENTREGUE", "RETIRADA"):
+            with self.subTest(work_status=work_status):
+                connection = Mock()
+                work = {"status": work_status, "vehicle_entry_id": "entry"}
+                stage = {
+                    "id": "stage",
+                    "status": erp_service._stage_status_from_input("N"),
+                    "inicio": None,
+                    "termino": None,
+                }
+                with patch.object(
+                    erp_service,
+                    "_locked_work_and_stage",
+                    return_value=(work, stage),
+                ):
+                    with self.assertRaisesRegex(
+                        erp_service.StageConflictError,
+                        "entregue ou retirado",
+                    ):
+                        erp_service.update_stage(
+                            connection,
+                            "work-order",
+                            "VIDROS",
+                            {"input_code": "S", "expected_status": "N"},
+                            "OPERADOR",
+                        )
+
+                connection.execute.assert_not_called()
 
     def test_reopening_clears_a_stale_finish_value_from_the_browser(self):
         connection = Mock()
@@ -365,6 +397,18 @@ class MesStageWriteSafetyTests(unittest.TestCase):
         self.assertGreaterEqual(
             source.count("data-input-code="),
             source.count("function renderStages()"),
+        )
+
+    def test_management_page_keeps_finalized_stages_editable(self):
+        template = Path(__file__).with_name("templates") / "gestao_os.html"
+        source = template.read_text(encoding="utf-8")
+        self.assertIn(
+            "const isClosedWork=work=>['ENTREGUE','RETIRADA','CANCELADA','ARQUIVADA'].includes(work.status);",
+            source,
+        )
+        self.assertIn(
+            "Produção finalizada: apontamentos e correções permanecem permitidos",
+            source,
         )
 
     def test_closing_form_starts_without_an_unsaved_finalization(self):

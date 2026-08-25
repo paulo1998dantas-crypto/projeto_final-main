@@ -2979,20 +2979,15 @@ def update_stage(conn, work_id, code, payload, actor, allow_finalized_stage_poin
                 "A etapa foi alterada por outro apontamento. Atualize a tela antes de salvar."
             )
 
-    # The technical history screen may correct its metadata after production
-    # is finalized, delivered or withdrawn.  It must never silently reopen a
-    # production stage while the work order remains closed, though.
-    post_release_pointing = (
-        work["status"] == "FINALIZADA"
-        and (
-            _token(code) in POST_RELEASE_POINTING_STAGE_CODES
-            or allow_finalized_stage_pointing
-        )
-    )
-    if work["status"] in {"FINALIZADA", "ENTREGUE", "RETIRADA"} and not post_release_pointing:
+    # FINALIZADA means that production was closed, not that its technical
+    # history became immutable.  Adjustments or late pointings remain allowed
+    # without reopening the work order.  Once the vehicle is delivered or
+    # withdrawn, only metadata corrections that keep the stage status intact
+    # are accepted.
+    if work["status"] in {"ENTREGUE", "RETIRADA"}:
         if new != stage["status"]:
             raise StageConflictError(
-                "A O.S. esta encerrada. Reabra a O.S. explicitamente antes de alterar o status de uma etapa."
+                "Veiculo entregue ou retirado nao pode receber novos apontamentos."
             )
         return update_stage_metadata(conn, work_id, code, payload, actor)
 
