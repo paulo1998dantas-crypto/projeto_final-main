@@ -150,6 +150,24 @@ class MesReportSemanticsTests(unittest.TestCase):
         self.assertEqual(row["OBSERVAÇÕES GERAIS"], "")
         self.assertEqual(row["PEDIDO DE COMPRAS"], "2724 | 2749 | PC LEGADO")
 
+    def test_multiple_individual_banks_remain_in_one_report_cell(self):
+        work = self.base_work_order()
+        work.update({
+            "codigo_banco": "10200001 / 10200003 / 10200007",
+            "conjunto_bancos": "BCO FIXO 3L / BCO RECLINÁVEL 3L / BCO FIXO 1L",
+        })
+
+        row = _report_row(work, {}, [], [], 0)
+
+        self.assertEqual(
+            row["COD. BCO"],
+            "10200001 / 10200003 / 10200007",
+        )
+        self.assertEqual(
+            row["CJ. BCO"],
+            "BCO FIXO 3L / BCO RECLINÁVEL 3L / BCO FIXO 1L",
+        )
+
     def test_standard_commercial_deadline_is_calculated_from_line(self):
         work = self.base_work_order()
         work["data_comercial_calculada"] = None
