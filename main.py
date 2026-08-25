@@ -2321,6 +2321,12 @@ async def erp_vehicle_entry(request: Request, data: dict = Body(...), db: Sessio
     ):
         return permission_denied(api=True)
     try:
+        data = dict(data)
+        data["idempotency_key"] = (
+            data.get("idempotency_key")
+            or request.headers.get("Idempotency-Key")
+            or None
+        )
         with database.engine.begin() as conn: result = erp_service.create_entry(conn, data, user.nome)
         return {"ok": True, **result}
     except ValueError as exc: return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
@@ -3064,6 +3070,12 @@ async def erp_internal_vehicle_entry(request: Request, data: dict = Body(...)):
     actor = erp_backend_actor(request)
     if not actor: return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
     try:
+        data = dict(data)
+        data["idempotency_key"] = (
+            data.get("idempotency_key")
+            or request.headers.get("Idempotency-Key")
+            or None
+        )
         with database.engine.begin() as conn:
             result = erp_service.create_entry(conn, data, actor)
         return {"ok": True, **result}

@@ -937,11 +937,86 @@ def create_entry(conn, payload, actor):
     chassi = _normalize_chassis(payload.get("chassi"))
     if not chassi: raise ValueError('Chassi completo e obrigatorio.')
     origin = _token(payload.get("origem") or "MANUAL")
+    idempotency_key = str(payload.get("idempotency_key") or "").strip() or None
+    if idempotency_key and len(idempotency_key) > 200:
+        raise ValueError("Chave de idempotencia invalida.")
     modelo_veicular = _vehicle_model_type(
         payload.get("modelo_veicular"),
         required=not origin.startswith("LEGACY"),
     )
     tipo_preliminar = canonical_service_type(payload.get("tipo_preliminar"))
+    duplicate_params = {
+        "chassi": chassi,
+        "arrival": payload.get("data_chegada"),
+        "client": str(payload.get("cliente_nome") or ""),
+        "origin": str(payload.get("origem") or "MANUAL"),
+        "notes": str(payload.get("observacoes") or ""),
+        "damage": str(payload.get("avarias") or ""),
+        "modelo_veicular": modelo_veicular,
+        "tipo_preliminar": tipo_preliminar,
+        "actor": actor,
+        "idempotency_key": idempotency_key,
+    }
+
+    # Uma mesma entrada fisica e serializada pelo chassi. Isso protege tanto a
+    # chave explicita enviada pelo navegador quanto clientes antigos que ainda
+    # repetem a requisicao depois de uma oscilacao de rede.
+    conn.execute(
+        text("select pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"erp_vehicle_entry:{chassi}"},
+    )
+    if idempotency_key:
+        existing = _one(conn.execute(text("""
+            select id,vehicle_id,item_number,tipo_preliminar
+              from erp_vehicle_entries
+             where idempotency_key=:idempotency_key
+        """), duplicate_params))
+        if existing:
+            return {
+                "id": str(existing["id"]),
+                "vehicle_id": str(existing["vehicle_id"]),
+                "item_number": int(existing["item_number"]),
+                "tipo_preliminar": existing.get("tipo_preliminar") or tipo_preliminar,
+                "replayed": True,
+            }
+
+    # Defesa adicional para versões antigas da tela: requisições idênticas do
+    # mesmo operador/chassi em até 30 segundos representam a mesma chegada.
+    existing = _one(conn.execute(text("""
+        select e.id,e.vehicle_id,e.item_number,e.tipo_preliminar
+          from erp_vehicle_entries e
+          join erp_vehicles v on v.id=e.vehicle_id
+         where v.chassi=:chassi
+           and e.created_at >= now() - interval '30 seconds'
+           and coalesce(e.cliente_nome,'')=:client
+           and coalesce(e.origem,'')=:origin
+           and coalesce(e.observacoes,'')=:notes
+           and coalesce(e.avarias,'')=:damage
+           and coalesce(e.modelo_veicular,'')=:modelo_veicular
+           and coalesce(e.tipo_preliminar,'')=:tipo_preliminar
+           and coalesce(e.criado_por,'')=:actor
+           and (
+                cast(:arrival as timestamptz) is null
+                or e.data_chegada=cast(:arrival as timestamptz)
+           )
+         order by e.created_at desc
+         limit 1
+    """), duplicate_params))
+    if existing:
+        if idempotency_key:
+            conn.execute(text("""
+                update erp_vehicle_entries
+                   set idempotency_key=:idempotency_key
+                 where id=:id and idempotency_key is null
+            """), {"id": existing["id"], "idempotency_key": idempotency_key})
+        return {
+            "id": str(existing["id"]),
+            "vehicle_id": str(existing["vehicle_id"]),
+            "item_number": int(existing["item_number"]),
+            "tipo_preliminar": existing.get("tipo_preliminar") or tipo_preliminar,
+            "replayed": True,
+        }
+
     vehicle, created = _resolve_vehicle(conn, chassi, payload)
     vehicle_id = str(vehicle["id"])
     if not created:
@@ -963,7 +1038,7 @@ def create_entry(conn, payload, actor):
                 text(f"update erp_vehicles set {assignments} where id=:id"),
                 {"id": vehicle_id, **changed},
             )
-    entry_id=_id(); row=_one(conn.execute(text("insert into erp_vehicle_entries(id,vehicle_id,data_chegada,cliente_id,cliente_nome,origem,observacoes,avarias,modelo_veicular,tipo_preliminar,criado_por,status) values(:id,:vehicle,:arrival,:client_id,:client,:origin,:notes,:damage,:modelo_veicular,:tipo_preliminar,:actor,'AGUARDANDO_O_S') returning item_number"),{'id':entry_id,'vehicle':vehicle_id,'arrival':payload.get('data_chegada') or datetime.utcnow(),'client_id':payload.get('cliente_id'),'client':str(payload.get('cliente_nome') or ''),'origin':str(payload.get('origem') or 'MANUAL'),'notes':str(payload.get('observacoes') or ''),'damage':str(payload.get('avarias') or ''),'modelo_veicular':modelo_veicular,'tipo_preliminar':tipo_preliminar,'actor':actor}))
+    entry_id=_id(); row=_one(conn.execute(text("insert into erp_vehicle_entries(id,vehicle_id,data_chegada,cliente_id,cliente_nome,origem,observacoes,avarias,modelo_veicular,tipo_preliminar,criado_por,status,idempotency_key) values(:id,:vehicle,:arrival,:client_id,:client,:origin,:notes,:damage,:modelo_veicular,:tipo_preliminar,:actor,'AGUARDANDO_O_S',:idempotency_key) returning item_number"),{'id':entry_id,'vehicle':vehicle_id,'arrival':payload.get('data_chegada') or datetime.utcnow(),'client_id':payload.get('cliente_id'),'client':str(payload.get('cliente_nome') or ''),'origin':str(payload.get('origem') or 'MANUAL'),'notes':str(payload.get('observacoes') or ''),'damage':str(payload.get('avarias') or ''),'modelo_veicular':modelo_veicular,'tipo_preliminar':tipo_preliminar,'actor':actor,'idempotency_key':idempotency_key}))
     _ensure_entry_stage_rows(conn, entry_id)
     reconcile_purchase_order_allocations(conn, actor, "ENTRADA_VEICULO")
     return {'id':entry_id,'vehicle_id':vehicle_id,'item_number':int(row['item_number']),'tipo_preliminar':tipo_preliminar}
