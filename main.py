@@ -2308,7 +2308,9 @@ async def erp_catalogs_api(request: Request, db: Session = Depends(database.get_
         return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
     if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE):
         return permission_denied(api=True)
-    return {"ok": True, **erp_catalogs.payload()}
+    catalogs = erp_catalogs.payload()
+    catalogs["clientes_recentes"] = erp_service.recent_entry_clients(db, limit=40)
+    return {"ok": True, **catalogs}
 
 @app.post("/api/erp/vehicle-entries")
 async def erp_vehicle_entry(request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):

@@ -69,11 +69,21 @@ class VehicleEntryIdempotencyTests(unittest.TestCase):
     def test_recent_identical_request_from_old_client_is_replayed(self):
         conn = _Connection(recent=True)
 
-        result = erp_service.create_entry(conn, _payload(), "CM")
+        payload = _payload()
+        payload.update({
+            "cliente_nome": "  Belisa   Transportes  ",
+            "observacoes": "veículo sem avarias",
+        })
+        result = erp_service.create_entry(conn, payload, "CM")
 
         self.assertEqual(result["id"], ENTRY_ID)
         self.assertTrue(result["replayed"])
         self.assertTrue(any("interval '30 seconds'" in sql for sql, _ in conn.statements))
+        recent_params = next(
+            params for sql, params in conn.statements if "interval '30 seconds'" in sql
+        )
+        self.assertEqual("BELISA TRANSPORTES", recent_params["client"])
+        self.assertEqual("VEÍCULO SEM AVARIAS", recent_params["notes"])
 
     def test_migration_uses_nullable_unique_idempotency_key(self):
         migration = (
@@ -84,6 +94,16 @@ class VehicleEntryIdempotencyTests(unittest.TestCase):
 
         self.assertIn("add column if not exists idempotency_key text", migration)
         self.assertIn("where idempotency_key is not null", migration)
+
+    def test_entry_form_suggests_recent_clients_without_requiring_catalog_match(self):
+        template = (
+            Path(__file__).parent / "templates" / "gestao_os.html"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('list="entry-client-suggestions"', template)
+        self.assertIn("state.catalogs.clientes_recentes", template)
+        self.assertIn("norm(name).includes(query)", template)
+        self.assertNotIn('name="cliente_nome" required', template)
 
 
 if __name__ == "__main__":

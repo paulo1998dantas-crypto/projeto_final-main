@@ -42,6 +42,26 @@ class FakeConnection:
 
 
 class VehicleChassisTests(unittest.TestCase):
+    def test_recent_clients_are_distinct_uppercase_and_limited(self):
+        class RecentClientsConnection:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, statement, params=None):
+                self.calls.append((" ".join(str(statement).split()).lower(), params or {}))
+                return FakeResult([
+                    {"cliente_nome": "CLIENTE RECENTE"},
+                    {"cliente_nome": "OUTRO CLIENTE"},
+                ])
+
+        conn = RecentClientsConnection()
+        clients = erp_service.recent_entry_clients(conn, limit=2)
+
+        self.assertEqual(["CLIENTE RECENTE", "OUTRO CLIENTE"], clients)
+        self.assertEqual(2, conn.calls[0][1]["limit"])
+        self.assertIn("group by upper", conn.calls[0][0])
+        self.assertIn("order by ultima_entrada desc", conn.calls[0][0])
+
     def test_vehicle_model_type_is_projected_in_card_and_detail_queries(self):
         self.assertIn("e.modelo_veicular", inspect.getsource(erp_service.active_cards))
         self.assertIn("e.modelo_veicular", inspect.getsource(erp_service.work_order_detail))
@@ -180,7 +200,13 @@ class VehicleChassisTests(unittest.TestCase):
 
         conn = UpdateConnection()
         result = erp_service.update_vehicle_entry(
-            conn, "entry-1", {"versao": "VITRÊ", "avarias": "NÃO", "modelo_veicular": "ORIGINAL"}, "PCP",
+            conn, "entry-1", {
+                "versao": "vitrê",
+                "cliente_nome": "  cliente   atualizado ",
+                "observacoes": "porta lateral revisada",
+                "avarias": "não",
+                "modelo_veicular": "ORIGINAL",
+            }, "PCP",
         )
 
         self.assertFalse(result["replayed"])
@@ -193,7 +219,12 @@ class VehicleChassisTests(unittest.TestCase):
             params for sql, params in conn.calls
             if sql.startswith("update erp_work_orders") and "cliente_nome=:cliente_nome" in sql
         )
-        self.assertEqual("CLIENTE", work_sync["cliente_nome"])
+        self.assertEqual("CLIENTE ATUALIZADO", work_sync["cliente_nome"])
+        entry_update = next(
+            params for sql, params in conn.calls
+            if sql.startswith("update erp_vehicle_entries")
+        )
+        self.assertEqual("PORTA LATERAL REVISADA", entry_update["observacoes"])
         self.assertEqual("FURGÃO", json.loads(audit["before_data"])["versao"])
         self.assertEqual("VITRÊ", json.loads(audit["after_data"])["versao"])
         self.assertEqual("PACK", json.loads(audit["before_data"])["modelo_veicular"])

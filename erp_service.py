@@ -82,6 +82,14 @@ def _normalize_chassis(value):
     return re.sub(r"[^A-Z0-9]", "", str(value or "").strip().upper())
 
 
+def _uppercase_entry_text(value, *, single_line=False):
+    """Canonical text written from the vehicle arrival form."""
+    normalized = str(value or "").strip().upper()
+    if single_line:
+        normalized = re.sub(r"\s+", " ", normalized)
+    return normalized
+
+
 def _is_complete_vin(value):
     return bool(re.fullmatch(r"[A-Z0-9]{17}", str(value or "")))
 
@@ -149,10 +157,10 @@ def _resolve_vehicle(conn, chassi, payload):
     vehicle = {
         "id": vehicle_id,
         "chassi": chassi,
-        "marca": str(payload.get("marca") or ""),
-        "modelo": str(payload.get("modelo") or ""),
-        "versao": str(payload.get("versao") or ""),
-        "mmv": str(payload.get("mmv") or ""),
+        "marca": _uppercase_entry_text(payload.get("marca"), single_line=True),
+        "modelo": _uppercase_entry_text(payload.get("modelo"), single_line=True),
+        "versao": _uppercase_entry_text(payload.get("versao"), single_line=True),
+        "mmv": _uppercase_entry_text(payload.get("mmv"), single_line=True),
         "chassi_completo": True,
         "legacy_chassi_reduzido": None,
     }
@@ -173,6 +181,24 @@ def _token(value):
         char for char in unicodedata.normalize("NFKD", str(value or "").strip().upper())
         if not unicodedata.combining(char)
     )
+
+
+def recent_entry_clients(conn, limit=40):
+    """Return a small optional catalog based only on the latest arrivals."""
+    safe_limit = max(1, min(int(limit or 40), 100))
+    return [
+        str(row._mapping["cliente_nome"])
+        for row in conn.execute(text("""
+            select upper(trim(regexp_replace(cliente_nome, '[[:space:]]+', ' ', 'g')))
+                   as cliente_nome,
+                   max(data_chegada) as ultima_entrada
+              from erp_vehicle_entries
+             where nullif(trim(cliente_nome),'') is not null
+             group by upper(trim(regexp_replace(cliente_nome, '[[:space:]]+', ' ', 'g')))
+             order by ultima_entrada desc nulls last, cliente_nome
+             limit :limit
+        """), {"limit": safe_limit})
+    ]
 
 
 def _vehicle_model_type(value, required=False):
@@ -936,22 +962,31 @@ def update_manual_sequence_priority(conn, work_id, priority, actor):
 def create_entry(conn, payload, actor):
     chassi = _normalize_chassis(payload.get("chassi"))
     if not chassi: raise ValueError('Chassi completo e obrigatorio.')
-    origin = _token(payload.get("origem") or "MANUAL")
+    origin = _uppercase_entry_text(payload.get("origem") or "MANUAL", single_line=True)
+    origin_token = _token(origin)
     idempotency_key = str(payload.get("idempotency_key") or "").strip() or None
     if idempotency_key and len(idempotency_key) > 200:
         raise ValueError("Chave de idempotencia invalida.")
     modelo_veicular = _vehicle_model_type(
         payload.get("modelo_veicular"),
-        required=not origin.startswith("LEGACY"),
+        required=not origin_token.startswith("LEGACY"),
     )
     tipo_preliminar = canonical_service_type(payload.get("tipo_preliminar"))
+    client = _uppercase_entry_text(payload.get("cliente_nome"), single_line=True)
+    notes = _uppercase_entry_text(payload.get("observacoes"))
+    damage = _uppercase_entry_text(payload.get("avarias"), single_line=True)
+    vehicle_payload = dict(payload)
+    for field in ("marca", "modelo", "versao", "mmv"):
+        vehicle_payload[field] = _uppercase_entry_text(
+            payload.get(field), single_line=True
+        )
     duplicate_params = {
         "chassi": chassi,
         "arrival": payload.get("data_chegada"),
-        "client": str(payload.get("cliente_nome") or ""),
-        "origin": str(payload.get("origem") or "MANUAL"),
-        "notes": str(payload.get("observacoes") or ""),
-        "damage": str(payload.get("avarias") or ""),
+        "client": client,
+        "origin": origin,
+        "notes": notes,
+        "damage": damage,
         "modelo_veicular": modelo_veicular,
         "tipo_preliminar": tipo_preliminar,
         "actor": actor,
@@ -1017,14 +1052,16 @@ def create_entry(conn, payload, actor):
             "replayed": True,
         }
 
-    vehicle, created = _resolve_vehicle(conn, chassi, payload)
+    vehicle, created = _resolve_vehicle(conn, chassi, vehicle_payload)
     vehicle_id = str(vehicle["id"])
     if not created:
         # O chassi identifica o veículo físico. Em uma nova passagem, os dados
         # informados no cadastro devem corrigir descrições antigas (PACK,
         # STANDARD etc.) sem apagar valores existentes quando o campo vier vazio.
         vehicle_fields = {
-            field: str(payload.get(field) or "").strip()
+            field: _uppercase_entry_text(
+                vehicle_payload.get(field), single_line=True
+            )
             for field in ("marca", "modelo", "versao", "mmv")
         }
         changed = {
@@ -1038,7 +1075,7 @@ def create_entry(conn, payload, actor):
                 text(f"update erp_vehicles set {assignments} where id=:id"),
                 {"id": vehicle_id, **changed},
             )
-    entry_id=_id(); row=_one(conn.execute(text("insert into erp_vehicle_entries(id,vehicle_id,data_chegada,cliente_id,cliente_nome,origem,observacoes,avarias,modelo_veicular,tipo_preliminar,criado_por,status,idempotency_key) values(:id,:vehicle,:arrival,:client_id,:client,:origin,:notes,:damage,:modelo_veicular,:tipo_preliminar,:actor,'AGUARDANDO_O_S',:idempotency_key) returning item_number"),{'id':entry_id,'vehicle':vehicle_id,'arrival':payload.get('data_chegada') or datetime.utcnow(),'client_id':payload.get('cliente_id'),'client':str(payload.get('cliente_nome') or ''),'origin':str(payload.get('origem') or 'MANUAL'),'notes':str(payload.get('observacoes') or ''),'damage':str(payload.get('avarias') or ''),'modelo_veicular':modelo_veicular,'tipo_preliminar':tipo_preliminar,'actor':actor,'idempotency_key':idempotency_key}))
+    entry_id=_id(); row=_one(conn.execute(text("insert into erp_vehicle_entries(id,vehicle_id,data_chegada,cliente_id,cliente_nome,origem,observacoes,avarias,modelo_veicular,tipo_preliminar,criado_por,status,idempotency_key) values(:id,:vehicle,:arrival,:client_id,:client,:origin,:notes,:damage,:modelo_veicular,:tipo_preliminar,:actor,'AGUARDANDO_O_S',:idempotency_key) returning item_number"),{'id':entry_id,'vehicle':vehicle_id,'arrival':payload.get('data_chegada') or datetime.utcnow(),'client_id':payload.get('cliente_id'),'client':client,'origin':origin,'notes':notes,'damage':damage,'modelo_veicular':modelo_veicular,'tipo_preliminar':tipo_preliminar,'actor':actor,'idempotency_key':idempotency_key}))
     _ensure_entry_stage_rows(conn, entry_id)
     reconcile_purchase_order_allocations(conn, actor, "ENTRADA_VEICULO")
     return {'id':entry_id,'vehicle_id':vehicle_id,'item_number':int(row['item_number']),'tipo_preliminar':tipo_preliminar}
@@ -1069,7 +1106,10 @@ def update_vehicle_entry(
         )
     }
     vehicle_values = {
-        key: str(payload.get(key) if key in payload else current.get(key) or "").strip()
+        key: _uppercase_entry_text(
+            payload.get(key) if key in payload else current.get(key),
+            single_line=True,
+        )
         for key in ("marca", "modelo", "versao", "mmv")
     }
     current_chassis = _normalize_chassis(current.get("chassi"))
@@ -1095,9 +1135,17 @@ def update_vehicle_entry(
         raise ValueError("A data e hora de chegada sao obrigatorias.")
     entry_values = {
         "data_chegada": arrival,
-        "cliente_nome": str(payload.get("cliente_nome") if "cliente_nome" in payload else current.get("cliente_nome") or "").strip(),
-        "observacoes": str(payload.get("observacoes") if "observacoes" in payload else current.get("observacoes") or "").strip(),
-        "avarias": str(payload.get("avarias") if "avarias" in payload else current.get("avarias") or "NAO").strip().upper(),
+        "cliente_nome": _uppercase_entry_text(
+            payload.get("cliente_nome") if "cliente_nome" in payload else current.get("cliente_nome"),
+            single_line=True,
+        ),
+        "observacoes": _uppercase_entry_text(
+            payload.get("observacoes") if "observacoes" in payload else current.get("observacoes")
+        ),
+        "avarias": _uppercase_entry_text(
+            payload.get("avarias") if "avarias" in payload else current.get("avarias") or "NAO",
+            single_line=True,
+        ),
         "modelo_veicular": _vehicle_model_type(
             payload.get("modelo_veicular") if "modelo_veicular" in payload else current.get("modelo_veicular")
         ),
