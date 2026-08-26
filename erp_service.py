@@ -1348,11 +1348,13 @@ def withdraw_vehicle_entry(conn, entry_id, actor, reason="", event_at=None):
 
 def create_work_order(conn, entry_id, payload, actor):
     documento_os_id = _optional_documento_os_id(payload)
+    # O saldo do Forecast pertence ao fluxo documental de Suprimentos: ele e
+    # consumido somente depois da emissao bem-sucedida do DOCX. A abertura
+    # operacional no MES apenas vincula o documento, a entrada e a O.S.
     entry=_one(conn.execute(text('select item_number,data_chegada,status,cliente_nome,tipo_preliminar from erp_vehicle_entries where id=:id for update'),{'id':entry_id}))
     if not entry: raise ValueError('Entrada de veiculo nao encontrada.')
     if str(entry.get('status') or '').strip().upper() == 'RETIRADA':
         raise ValueError('Veiculo retirado sem O.S. Nao e possivel abrir uma O.S. nesta entrada; registre uma nova entrada no retorno do veiculo.')
-    forecast_id=str(payload.get('forecast_id') or '').strip() or None
     current=_one(conn.execute(text("""
         select id,numero_os,status,revision_number,is_current,supersedes_work_order_id
         from erp_work_orders
@@ -1386,21 +1388,6 @@ def create_work_order(conn, entry_id, payload, actor):
                 _link_suprimentos_os_document(
                     conn, documento_os_id, current['id'], current['numero_os'], entry_id, actor
                 )
-            if forecast_id:
-                linked_forecast=_one(conn.execute(text("""
-                    select id,codigo from suprimentos_forecasts
-                    where work_order_id=:work_id
-                """), {'work_id': current['id']}))
-                if not linked_forecast or str(linked_forecast['id']) != forecast_id:
-                    raise ValueError('Esta entrada ja possui O.S.; o Forecast nao pode ser trocado apos a abertura.')
-                result = {
-                    'id':str(current['id']), 'numero_os':current['numero_os'],'replayed':True,
-                    'forecast_id':str(linked_forecast['id']),'forecast_codigo':linked_forecast['codigo'],
-                    'revision_number':int(current.get('revision_number') or 1),
-                }
-                if documento_os_id is not None:
-                    result['documento_os_id'] = documento_os_id
-                return result
             result = {
                 'id':str(current['id']),'numero_os':current['numero_os'],'replayed':True,
                 'revision_number':int(current.get('revision_number') or 1),
@@ -1408,21 +1395,6 @@ def create_work_order(conn, entry_id, payload, actor):
             if documento_os_id is not None:
                 result['documento_os_id'] = documento_os_id
             return result
-
-    forecast=None
-    if forecast_id:
-        forecast=_one(conn.execute(text("""
-            select id,codigo,status,vehicle_entry_id,work_order_id
-            from suprimentos_forecasts
-            where id=:id
-            for update
-        """), {'id':forecast_id}))
-        if not forecast:
-            raise ValueError('Forecast selecionado nao foi encontrado.')
-        if forecast['status'] != 'ATIVO':
-            raise ValueError('O Forecast selecionado nao esta ativo para alocacao.')
-        if forecast['vehicle_entry_id'] or forecast['work_order_id']:
-            raise ValueError('O Forecast selecionado ja esta vinculado a outra entrada ou O.S.')
 
     work_id=_id(); number=str(entry['item_number'])
     previous_work_id = current['id'] if current and create_replacement else None
@@ -1486,31 +1458,6 @@ def create_work_order(conn, entry_id, payload, actor):
             'work': work_id, 'previous': previous_work_id, 'number': number,
             'revision': revision_number, 'actor': actor,
         })
-    if forecast:
-        allocation=conn.execute(text("""
-            update suprimentos_forecasts
-               set status='CONVERTIDO',
-                   vehicle_entry_id=:entry_id,
-                   work_order_id=:work_id,
-                   convertido_at=now(),
-                   convertido_por=:actor,
-                   atualizado_por=:actor,
-                   updated_at=now(),
-                   version=version+1
-             where id=:forecast_id
-               and status='ATIVO'
-               and vehicle_entry_id is null
-               and work_order_id is null
-        """), {'forecast_id':forecast_id,'entry_id':entry_id,'work_id':work_id,'actor':actor})
-        if allocation.rowcount != 1:
-            raise ValueError('O Forecast foi alterado por outro usuario. Atualize a tela e tente novamente.')
-        conn.execute(text("""
-            insert into erp_audit_events(entity_type,entity_id,action,actor,origin,after_data)
-            values(
-                'FORECAST',:forecast_id,'ALOCADO_NA_ABERTURA_OS',:actor,'GESTAO_OS',
-                jsonb_build_object('vehicle_entry_id',:entry_id,'work_order_id',:work_id,'numero_os',:numero_os)
-            )
-        """), {'forecast_id':forecast_id,'entry_id':entry_id,'work_id':work_id,'numero_os':number,'actor':actor})
     if documento_os_id is not None:
         _link_suprimentos_os_document(
             conn, documento_os_id, work_id, number, entry_id, actor
@@ -1522,8 +1469,6 @@ def create_work_order(conn, entry_id, payload, actor):
         'supersedes_work_order_id':str(previous_work_id) if previous_work_id else None,
         'stage_configuration_status':'CONCLUIDA' if promoted_stages == len(STAGES) else 'PENDENTE',
         'promoted_pre_os_stages':promoted_stages,
-        'forecast_id':forecast_id,
-        'forecast_codigo':forecast['codigo'] if forecast else None,
     }
     if documento_os_id is not None:
         result['documento_os_id'] = documento_os_id

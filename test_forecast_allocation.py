@@ -19,8 +19,7 @@ class FakeResult:
 
 
 class ForecastConnection:
-    def __init__(self, forecast_status="ATIVO"):
-        self.forecast_status = forecast_status
+    def __init__(self):
         self.calls = []
 
     def execute(self, statement, params=None):
@@ -34,20 +33,13 @@ class ForecastConnection:
             })
         if "from erp_work_orders" in sql and "vehicle_entry_id=:id" in sql:
             return FakeResult()
-        if "from suprimentos_forecasts where id=:id for update" in sql:
-            return FakeResult({
-                "id": "forecast-1", "codigo": "FCT-00001", "status": self.forecast_status,
-                "vehicle_entry_id": None, "work_order_id": None,
-            })
-        if sql.startswith("update suprimentos_forecasts"):
-            return FakeResult(rowcount=1)
         return FakeResult()
 
 
 class ForecastAllocationTests(unittest.TestCase):
     @patch("erp_service._ensure_stage_rows")
     @patch("erp_service._id", return_value="work-1")
-    def test_allocates_active_forecast_without_matching_chassis(self, _new_id, _stages):
+    def test_legacy_forecast_payload_does_not_consume_during_allocation(self, _new_id, _stages):
         conn = ForecastConnection()
 
         result = erp_service.create_work_order(
@@ -58,16 +50,9 @@ class ForecastAllocationTests(unittest.TestCase):
         )
 
         self.assertFalse(result["replayed"])
-        self.assertEqual(result["forecast_id"], "forecast-1")
-        self.assertEqual(result["forecast_codigo"], "FCT-00001")
-        allocation = [
-            params for sql, params in conn.calls
-            if sql.startswith("update suprimentos_forecasts")
-        ]
-        self.assertEqual(len(allocation), 1)
-        self.assertEqual(allocation[0]["entry_id"], "entry-real-vehicle")
-        self.assertEqual(allocation[0]["work_id"], "work-1")
-        self.assertFalse(any("chassi" in sql for sql, _ in conn.calls if "suprimentos_forecasts" in sql))
+        self.assertNotIn("forecast_id", result)
+        self.assertNotIn("forecast_codigo", result)
+        self.assertFalse(any("suprimentos_forecasts" in sql for sql, _ in conn.calls))
         work_order_insert, work_order_params = next(
             (sql, params) for sql, params in conn.calls if sql.startswith("insert into erp_work_orders")
         )
@@ -80,16 +65,6 @@ class ForecastAllocationTests(unittest.TestCase):
         )
         self.assertIn("'aguardando_o_s'", history_insert)
         self.assertEqual(result["status"], "AGUARDANDO_O_S")
-
-    @patch("erp_service._ensure_stage_rows")
-    def test_rejects_non_active_forecast_before_creating_work_order(self, _stages):
-        conn = ForecastConnection(forecast_status="CONVERTIDO")
-
-        with self.assertRaisesRegex(ValueError, "nao esta ativo"):
-            erp_service.create_work_order(conn, "entry-1", {"forecast_id": "forecast-1"}, "PCP")
-
-        self.assertFalse(any(sql.startswith("insert into erp_work_orders") for sql, _ in conn.calls))
-
 
 if __name__ == "__main__":
     unittest.main()
