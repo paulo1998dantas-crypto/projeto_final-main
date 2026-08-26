@@ -2649,7 +2649,10 @@ async def exportar_controle_producao(request: Request, db: Session = Depends(dat
     user = require_login(request, db)
     if not user:
         return RedirectResponse(url="/login", status_code=303)
-    if not has_permission(user, authz.MES_EXPORTS_READ):
+    if not (
+        has_permission(user, authz.MES_CONTROL_EXPORT_READ)
+        or has_permission(user, authz.MES_EXPORTS_READ)
+    ):
         return permission_denied()
     with database.engine.connect() as conn:
         output, _, _ = erp_report.build_work_order_report(conn)

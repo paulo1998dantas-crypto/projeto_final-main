@@ -92,8 +92,10 @@
                 {% if current_user.can("mes.work_orders.manage") %}
                 <a href="/sequenciamento" class="rounded-md bg-blue-700 px-2.5 py-1.5 font-bold hover:bg-blue-600">Sequenciamento WIP</a>
                 {% endif %}
-                {% if current_user.can("mes.exports.read") %}
+                {% if current_user.can("mes.control_export.read") or current_user.can("mes.exports.read") %}
                 <a href="/exportar_controle_producao" class="rounded-md bg-emerald-600 px-2.5 py-1.5 font-bold hover:bg-emerald-500">Exportar Controle</a>
+                {% endif %}
+                {% if current_user.can("mes.exports.read") %}
                 <a href="/exportar_historico" class="rounded-md bg-emerald-700 px-2.5 py-1.5 font-bold hover:bg-emerald-600">Exportar Logs</a>
                 <a href="/exportar_tempos" class="rounded-md bg-indigo-600 px-2.5 py-1.5 font-bold hover:bg-indigo-500">Exportar Tempos</a>
                 {% endif %}
@@ -121,8 +123,10 @@
                 {% if current_user.can("mes.legacy.import") %}
                 <a href="/importar" class="bg-blue-600 px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold hover:bg-blue-700 transition">Importar</a>
                 {% endif %}
-                {% if current_user.can("mes.exports.read") %}
+                {% if current_user.can("mes.control_export.read") or current_user.can("mes.exports.read") %}
                 <a href="/exportar_controle_producao" class="bg-emerald-600 px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold hover:bg-emerald-700 transition">Exportar Controle</a>
+                {% endif %}
+                {% if current_user.can("mes.exports.read") %}
                 <a href="/exportar_historico" class="bg-emerald-700 px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold hover:bg-emerald-800 transition">Exportar Logs</a>
                 <a href="/exportar_tempos" class="bg-indigo-600 px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold hover:bg-indigo-700 transition">Exportar Tempos</a>
                 {% endif %}

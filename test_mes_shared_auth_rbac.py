@@ -57,6 +57,7 @@ class MesSharedAuthRbacTests(unittest.TestCase):
     def test_explicit_role_matrix(self):
         operador = authz._default_permissions({"OPERADOR"})
         self.assertIn(authz.MES_DASHBOARD_READ, operador)
+        self.assertIn(authz.MES_CONTROL_EXPORT_READ, operador)
         self.assertIn(authz.MES_EXPORTS_READ, operador)
         self.assertIn(authz.MES_STAGE_WRITE, operador)
         self.assertNotIn(authz.MES_WORK_ORDERS_MANAGE, operador)
@@ -65,11 +66,13 @@ class MesSharedAuthRbacTests(unittest.TestCase):
         for role in ("COMPRADOR",):
             permissions = authz._default_permissions({role})
             self.assertIn(authz.MES_DASHBOARD_READ, permissions)
+            self.assertIn(authz.MES_CONTROL_EXPORT_READ, permissions)
             self.assertIn(authz.MES_EXPORTS_READ, permissions)
             self.assertNotIn(authz.MES_STAGE_WRITE, permissions)
             self.assertNotIn(authz.MES_WORK_ORDERS_MANAGE, permissions)
         engineering = authz._default_permissions({"ENGENHARIA"})
         self.assertIn(authz.MES_DASHBOARD_READ, engineering)
+        self.assertIn(authz.MES_CONTROL_EXPORT_READ, engineering)
         self.assertIn(authz.MES_EXPORTS_READ, engineering)
         self.assertNotIn(authz.MES_WORK_ORDERS_MANAGE, engineering)
         self.assertNotIn(authz.MES_FINALIZE, engineering)
@@ -80,7 +83,14 @@ class MesSharedAuthRbacTests(unittest.TestCase):
         self.assertNotIn(authz.MES_USERS_MANAGE, pcp)
         self.assertEqual(
             authz._default_permissions({"FINANCEIRO"}),
-            frozenset({authz.MES_DASHBOARD_READ}),
+            frozenset({
+                authz.MES_DASHBOARD_READ,
+                authz.MES_CONTROL_EXPORT_READ,
+            }),
+        )
+        self.assertNotIn(
+            authz.MES_EXPORTS_READ,
+            authz._default_permissions({"FINANCEIRO"}),
         )
 
     def test_multiple_roles_union_permissions(self):
@@ -137,7 +147,6 @@ class MesSharedAuthRbacTests(unittest.TestCase):
             main.erp_location: "MES_STAGE_WRITE",
             main.erp_finalize: "MES_FINALIZE",
             main.erp_schedule: "MES_SCHEDULE_MANAGE",
-            main.exportar_controle_producao: "MES_EXPORTS_READ",
             main.exportar: "MES_EXPORTS_READ",
             main.exportar_tempos: "MES_EXPORTS_READ",
             main.pg_importar: "MES_LEGACY_IMPORT",
@@ -146,6 +155,22 @@ class MesSharedAuthRbacTests(unittest.TestCase):
         for endpoint, permission in expected.items():
             with self.subTest(endpoint=endpoint.__name__):
                 self.assertIn(permission, inspect.getsource(endpoint))
+
+        control_export_source = inspect.getsource(main.exportar_controle_producao)
+        self.assertIn("MES_CONTROL_EXPORT_READ", control_export_source)
+        self.assertIn("MES_EXPORTS_READ", control_export_source)
+
+    def test_financeiro_only_sees_daily_control_export(self):
+        with open("templates/gestao_os.html", encoding="utf-8") as template:
+            html = template.read()
+        self.assertIn(
+            'current_user.can("mes.control_export.read") or current_user.can("mes.exports.read")',
+            html,
+        )
+        self.assertIn(
+            '{% if current_user.can("mes.exports.read") %}<a class="btn success" href="/exportar_historico"',
+            html,
+        )
 
     def test_complete_route_inventory_is_protected(self):
         public_endpoints = {
