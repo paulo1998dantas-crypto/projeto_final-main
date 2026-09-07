@@ -69,6 +69,68 @@ def _coverage(source, children):
     return dict(result)
 
 
+def _leaf_requirements(source, amount, children):
+    """Return only leaf material requirements for a BOM source.
+
+    BOM parents are phantom items for O.S. fulfilment.  They can cover their
+    descendants when already empenhados, but technical close must not create a
+    BAIXA for the parent itself.
+    """
+    result = defaultdict(lambda: ZERO)
+
+    def visit(current, factor, ancestry):
+        if current in ancestry:
+            # Keep a malformed cycle finite and visible for manual correction.
+            result[current] += factor
+            return
+        components = children.get(current) or []
+        if not components:
+            result[current] += factor
+            return
+        for child, child_amount in components:
+            if child_amount > 0:
+                visit(child, factor * child_amount, ancestry | {current})
+
+    visit(source, quantity(amount), set())
+    return dict(result)
+
+
+def _normalize_required_composition(composition, children):
+    """Use the O.S. composition as demand while removing BOM render duplicates."""
+    raw = []
+    for line in composition:
+        if not isinstance(line, dict):
+            raise ValueError("Linha inválida na composição da O.S.")
+        item, amount = code(line.get("codigo")), quantity(line.get("qtd", line.get("quantidade")))
+        if item and amount > 0:
+            raw.append((item, amount))
+
+    bom_sources = {item for item, _ in raw if children.get(item)}
+    root_sources = set(bom_sources)
+    for source in bom_sources:
+        for other in bom_sources - {source}:
+            if source in _coverage(other, children):
+                root_sources.discard(source)
+                break
+    rendered_descendants = set()
+    for source in root_sources:
+        rendered_descendants.update(_coverage(source, children))
+
+    required = defaultdict(lambda: ZERO)
+    for item, amount in raw:
+        if item in root_sources:
+            for leaf, factor in _leaf_requirements(item, amount, children).items():
+                required[leaf] += factor
+        elif item in rendered_descendants:
+            # The application stores the parent's exploded children in the
+            # document too; those rows are presentation detail, not extra
+            # demand, whenever the source parent is present.
+            continue
+        else:
+            required[item] += amount
+    return required
+
+
 def _document(conn, table, work):
     # A document explicitly linked to another revision must never be borrowed.
     candidates = list(conn.execute(select(table).where(
@@ -104,20 +166,13 @@ def settle_work_order_materials(conn, work, actor, reason="", *, actor_user_id=N
         raise ValueError("Composição da O.S. inválida; não foi possível apurar os candidatos.") from exc
     if not isinstance(composition, list):
         raise ValueError("Composição da O.S. inválida; revise antes de concluir.")
-    required = defaultdict(lambda: ZERO)
-    for line in composition:
-        if not isinstance(line, dict):
-            raise ValueError("Linha inválida na composição da O.S.")
-        item, amount = code(line.get("codigo")), quantity(line.get("qtd", line.get("quantidade")))
-        if item and amount > 0:
-            required[item] += amount
-
     skus = {row["id"]: row for row in conn.execute(select(tables["skus"])).mappings()}
     children = defaultdict(list)
     for row in conn.execute(select(tables["bom_components"])).mappings():
         parent, child = skus.get(row["item_sku_id"]), skus.get(row["component_sku_id"])
         if parent and child:
             children[code(parent["sku"])].append((code(child["sku"]), quantity(row["quantidade"])))
+    required = _normalize_required_composition(composition, children)
     coverage_cache = {}
 
     def coverage(sku_id):
@@ -162,6 +217,11 @@ def settle_work_order_materials(conn, work, actor, reason="", *, actor_user_id=N
     for parent in parents:
         if parent["work_order_id"] is None:
             continue
+        # BOM parents are phantom items.  Their existing commitment still
+        # covers leaf demand above, but the parent itself is never debited.
+        parent_code = code(skus[parent["sku_id"]]["sku"])
+        if children.get(parent_code):
+            continue
         pending = max(ZERO, quantity(parent["quantidade"]) - quantity(consumed.get(parent["id"])))
         if pending:
             if parent["source_type"] == "PRODUCTION_ORDER":
@@ -187,6 +247,7 @@ def settle_work_order_materials(conn, work, actor, reason="", *, actor_user_id=N
     # single remaining-demand map prevents one kit from being consumed again
     # for every child row displayed by the material report.
     shared = [p for p in parents if p["work_order_id"] is None and skus[p["sku_id"]]["active"]]
+    shared = [p for p in shared if not children.get(code(skus[p["sku_id"]]["sku"]))]
     shared.sort(key=lambda p: (-len(coverage(p["sku_id"])), p["created_at"], p["id"]))
     for parent in shared:
         pending = max(ZERO, quantity(parent["quantidade"]) - quantity(consumed.get(parent["id"])))

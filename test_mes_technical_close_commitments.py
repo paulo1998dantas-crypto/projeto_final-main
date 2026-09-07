@@ -129,8 +129,9 @@ class TechnicalCloseCommitmentTests(unittest.TestCase):
         result = self.close()["auto_baixas"]
         rows = self.automatic()
         self.assertEqual(1, len(rows))
-        self.assertEqual(parent, rows[0]["related_movement_id"])
-        self.assertEqual(1, rows[0]["quantidade"])
+        self.assertEqual(leaf, rows[0]["related_movement_id"])
+        self.assertEqual(6, rows[0]["quantidade"])
+        self.assertEqual(1, result["candidatos_consumidos"])
         self.assertEqual([], result["pendencias_encerradas"])
 
     def test_linked_kit_covers_bom_and_does_not_consume_shared_pool_again(self):
@@ -138,7 +139,7 @@ class TechnicalCloseCommitmentTests(unittest.TestCase):
         parent = self.movement(1, sku=1)
         self.movement(20, work=None)
         self.close()
-        self.assertEqual([parent], [r["related_movement_id"] for r in self.automatic()])
+        self.assertEqual([], self.automatic())
 
     def test_stock_alone_is_not_a_candidate_and_residual_is_audited(self):
         self.composition(MP=6, OUTRO=4)
@@ -203,8 +204,8 @@ class TechnicalCloseCommitmentTests(unittest.TestCase):
         self.composition(MP=1)
         self.movement(1, sku=1, work=None)
         result = self.close()["auto_baixas"]
-        self.assertEqual(Decimal("0.166"), Decimal(str(self.automatic()[0]["quantidade"])))
-        self.assertEqual(Decimal("0.004"), Decimal(result["pendencias_encerradas"][0]["quantidade_pendente"]))
+        self.assertEqual([], self.automatic())
+        self.assertEqual(Decimal("1"), Decimal(result["pendencias_encerradas"][0]["quantidade_pendente"]))
 
     def test_a_kit_cannot_reconsume_an_already_covered_child(self):
         self.composition(PP=2, MP=6)
@@ -246,7 +247,7 @@ class TechnicalCloseCommitmentTests(unittest.TestCase):
         children_before = self.sql("select * from stock_balances where sku_id in (2,3) order by sku_id")
         history_before = self.sql("select * from movements where source_type='BACKFLUSH_CONSUMPTION' order by id")
         self.close()
-        self.assertEqual([(1, parent, 1)], [(r["sku_id"], r["related_movement_id"], r["quantidade"]) for r in self.automatic()])
+        self.assertEqual([], self.automatic())
         self.assertEqual(children_before, self.sql("select * from stock_balances where sku_id in (2,3) order by sku_id"))
         self.assertEqual(history_before, self.sql("select * from movements where source_type='BACKFLUSH_CONSUMPTION' order by id"))
 

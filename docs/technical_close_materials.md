@@ -8,8 +8,8 @@ Nova conclusão técnica disparada por Suprimentos (Gestão de O.S. ou históric
 
 1. Saldo de cada empenho vinculado = quantidade empenhada menos baixas ATIVAS relacionadas ao seu ID. Empenhos cancelados e baixas canceladas não entram na conta. Apenas esse saldo pode gerar nova BAIXA.
 2. Antes dos candidatos, abater da necessidade a cobertura dos empenhos da O.S. e das baixas diretas anteriores. Não contar novamente a baixa de um empenho já considerado.
-3. B.O.M. serve exclusivamente para cobertura da necessidade: consumir um conjunto/PP não gera lançamentos de seus filhos. Debita-se o SKU do empenho, sem novo backflush.
-4. Candidatos são empenhos ativos sem O.S., de SKU ativo, com saldo e cobertura da necessidade remanescente. Reservas `PRODUCTION_ORDER` não são saldo livre: pertencem ao fluxo de fabricação interna.
+3. Um SKU pai com B.O.M. é item fantasma para a O.S.: a necessidade e a expedição exibem somente as folhas da árvore. A B.O.M. serve para cobertura (um empenho/baixa histórica do pai pode cobrir as folhas), mas a conclusão técnica não gera BAIXA do pai nem dos filhos; só candidatos de SKU folha podem ser consumidos. Um SKU sem B.O.M. continua aparecendo e sendo baixável normalmente.
+4. Candidatos são empenhos ativos sem O.S., de SKU folha ativo, com saldo e cobertura da necessidade remanescente. Reservas `PRODUCTION_ORDER` não são saldo livre: pertencem ao fluxo de fabricação interna.
 5. Usar uma única necessidade residual ao distribuir candidatos. Priorizar conjuntos sobre filhos e FIFO por SKU. O empenho compartilhado permanece sem O.S.; somente sua BAIXA recebe o vínculo. Não consumir excedente; quantidades fracionárias são truncadas à precisão de estoque (0,001).
 6. Necessidade sem candidato é encerrada administrativamente e registrada na auditoria. Não inventar baixa, entrada ou empenho para zerá-la.
 7. Saldo físico negativo exige HTTP 409, lista de SKUs/saldos e confirmação explícita com token do plano. A confirmação se invalida quando mudam os consumos ou o saldo negativo apurado. Sem confirmação, nenhuma baixa/conclusão é persistida.
@@ -30,6 +30,8 @@ Nova conclusão técnica disparada por Suprimentos (Gestão de O.S. ou históric
 ## Arquivos relacionados
 
 MES: `erp_stock_closure.py`, `erp_service.py`, `main.py`, `test_mes_technical_close_commitments.py`, `test_mes_technical_close_api.py`.
+
+Estoque: `estoque_app/services/work_order_needs_service.py`, `estoque_app/services/erp_service.py`, `estoque_app/services/estoque_service.py`, `tests/test_work_order_needs.py`.
 
 Suprimentos (repositório irmão `modulo-suprimentos`): `compras_app/app.py`, `compras_app/static/technical_close.js`, templates `erp_gestao_os.html` e `index.html`, testes `test_technical_close_flow.py` e `technical_close.test.cjs`.
 
