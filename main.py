@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse,
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy import or_, func, cast, String, text, inspect
 import uvicorn
 from zoneinfo import ZoneInfo
@@ -3186,10 +3187,24 @@ async def erp_internal_technical_close(
                 work_id,
                 actor,
                 str(data.get("motivo") or data.get("reason") or ""),
+                actor_user_id=request.headers.get("X-ERP-Actor-ID") or None,
+                confirm_negative_stock=data.get("confirm_negative_stock") is True,
+                confirmation_token=data.get("confirmation_token"),
             )
         return {"ok": True, **result}
+    except erp_service.erp_stock_closure.NegativeStockConfirmationRequired as exc:
+        return JSONResponse(exc.payload, status_code=409)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except DBAPIError as exc:
+        sqlstate = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None)
+        if sqlstate not in {"40P01", "40001", "55P03"}:
+            raise
+        return JSONResponse({
+            "ok": False, "code": "STOCK_OPERATION_CONFLICT",
+            "error": "Há outra operação simultânea nestes materiais ou nesta O.S. "
+                     "Esta tentativa foi desfeita integralmente. Atualize e tente concluir novamente.",
+        }, status_code=409)
 
 @app.post("/api/erp/internal/work-orders/{work_id}/technical-reopen")
 async def erp_internal_technical_reopen(

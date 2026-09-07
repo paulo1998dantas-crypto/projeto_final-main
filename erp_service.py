@@ -1,6 +1,7 @@
 """New operational O.S./MES domain. Legacy MES tables remain read-only compatible."""
 from datetime import datetime, date, timedelta, timezone
 from functools import cmp_to_key
+import erp_stock_closure
 import json
 from uuid import uuid4
 import re
@@ -3657,74 +3658,74 @@ def finalize(conn, work_id, actor, delivered=False, notes='', target_status=None
     recalculate_work_order_sequences(conn, actor)
     return {"id": work_id, "status": status}
 
-def technical_close_work_order(conn, work_id, actor, reason=""):
-    """Conclude an O.S. in the management flow without deleting its history.
-
-    ``technical_status`` keeps the closure rationale, while the canonical
-    ``status`` becomes ``CONCLUIDA`` so all modules consistently stop offering
-    this O.S. for new commitments.  Its prior status is retained exclusively
-    for an explicit technical reopening.
-    """
+def technical_close_work_order(
+    conn, work_id, actor, reason="", *, actor_user_id=None,
+    confirm_negative_stock=False, confirmation_token=None,
+):
+    """Settle linked/shared commitments and close residual demand atomically."""
+    # NO KEY UPDATE permits the FK checks of concurrent manual BAIXAs.
+    # Parent movement locks serialize the actual material consumption.
     work = _one(conn.execute(text("""
-        select id,status,technical_status,technical_previous_status
-        from erp_work_orders
-        where id=:id
-        for update
+        select id,numero_os,status,technical_status,technical_previous_status
+        from erp_work_orders where id=:id for no key update
     """), {"id": work_id}))
     if not work:
         raise ValueError("O.S. não encontrada.")
-    if work["status"] == "CANCELADA":
-        raise ValueError("O.S. cancelada não pode receber conclusão técnica.")
+    if work["status"] in {"CANCELADA", "ARQUIVADA"}:
+        raise ValueError("O.S. cancelada ou arquivada não pode receber conclusão técnica.")
     if work.get("technical_status") == "CONCLUIDA":
+        # A retry must not consume a pool replenished after the original close.
         return {
-            "id": work_id,
-            "status": work["status"],
-            "technical_status": "CONCLUIDA",
-            "replayed": True,
+            "id": work_id, "status": work["status"],
+            "technical_status": "CONCLUIDA", "replayed": True,
+            "auto_baixas": {"baixas_criadas": 0, "candidatos_consumidos": 0,
+                           "pendencias_encerradas": [], "movement_ids": []},
         }
     reason = str(reason or "").strip()
+    settlement = erp_stock_closure.settle_work_order_materials(
+        conn, work, actor, reason, actor_user_id=actor_user_id,
+        confirm_negative_stock=confirm_negative_stock,
+        confirmation_token=confirmation_token,
+    )
     conn.execute(text("""
         update erp_work_orders
         set status='CONCLUIDA',
-            technical_previous_status=case
-                when status <> 'CONCLUIDA' then status
-                else technical_previous_status
-            end,
-            technical_status='CONCLUIDA',
-            technical_closed_at=now(),
-            technical_closed_by=:actor,
-            technical_close_reason=:reason,
-            updated_at=now(),
-            version=version+1
+            technical_previous_status=case when status <> 'CONCLUIDA' then status
+                else technical_previous_status end,
+            technical_status='CONCLUIDA',technical_closed_at=now(),
+            technical_closed_by=:actor,technical_close_reason=:reason,
+            updated_at=now(),version=version+1
         where id=:id
     """), {"id": work_id, "actor": actor, "reason": reason})
+    if settlement["document_id"]:
+        conn.execute(text("""
+            update suprimentos_documentos set status='concluido',updated_at=now()
+            where id=:id and tipo='os'
+        """), {"id": int(settlement["document_id"])})
     conn.execute(text("""
         insert into erp_work_order_status_history(
             work_order_id,status_anterior,novo_status,usuario,observacao
         ) values(:id,:old,'CONCLUIDA',:actor,:reason)
-    """), {
-        "id": work_id, "old": work["status"], "actor": actor,
-        "reason": reason,
-    })
+    """), {"id": work_id, "old": work["status"], "actor": actor, "reason": reason})
     conn.execute(text("""
         insert into erp_audit_events(
             entity_type,entity_id,action,actor,origin,before_data,after_data,reason
         ) values(
             'WORK_ORDER',:id,'CONCLUSAO_TECNICA',:actor,'SUPRIMENTOS',
             jsonb_build_object('status',cast(:old as text),'technical_status','ABERTA'),
-            jsonb_build_object('status','CONCLUIDA','technical_status','CONCLUIDA'),
-            :reason
+            cast(:after_data as jsonb),:reason
         )
     """), {
-        "id": work_id, "actor": actor, "old": work["status"],
-        "reason": reason,
+        "id": work_id, "actor": actor, "old": work["status"], "reason": reason,
+        "after_data": json.dumps({
+            "status": "CONCLUIDA", "technical_status": "CONCLUIDA",
+            "auto_baixas": settlement,
+        }, ensure_ascii=False),
     })
     recalculate_work_order_sequences(conn, actor)
     return {
-        "id": work_id,
-        "status": "CONCLUIDA",
-        "technical_status": "CONCLUIDA",
-        "replayed": False,
+        "id": work_id, "status": "CONCLUIDA", "technical_status": "CONCLUIDA",
+        "replayed": False, "auto_baixas": settlement,
     }
 
 def technical_reopen_work_order(conn, work_id, actor, reason=""):
@@ -3751,6 +3752,7 @@ def technical_reopen_work_order(conn, work_id, actor, reason=""):
     )
     if not restored_status:
         restored_status = "ATIVA"
+    erp_stock_closure.reopen_settled_document(conn, work_id)
     conn.execute(text("""
         update erp_work_orders
         set status=:status,
