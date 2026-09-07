@@ -3687,26 +3687,16 @@ def technical_close_work_order(
         confirm_negative_stock=confirm_negative_stock,
         confirmation_token=confirmation_token,
     )
+    # A conclusão técnica é um estado administrativo separado do estado
+    # operacional do veículo.  Nunca altere o status usado pelo card, pela
+    # exportação diária ou pelo fluxo de finalização/entrega.
     conn.execute(text("""
         update erp_work_orders
-        set status='CONCLUIDA',
-            technical_previous_status=case when status <> 'CONCLUIDA' then status
-                else technical_previous_status end,
-            technical_status='CONCLUIDA',technical_closed_at=now(),
+        set technical_status='CONCLUIDA',technical_closed_at=now(),
             technical_closed_by=:actor,technical_close_reason=:reason,
             updated_at=now(),version=version+1
         where id=:id
     """), {"id": work_id, "actor": actor, "reason": reason})
-    if settlement["document_id"]:
-        conn.execute(text("""
-            update suprimentos_documentos set status='concluido',updated_at=now()
-            where id=:id and tipo='os'
-        """), {"id": int(settlement["document_id"])})
-    conn.execute(text("""
-        insert into erp_work_order_status_history(
-            work_order_id,status_anterior,novo_status,usuario,observacao
-        ) values(:id,:old,'CONCLUIDA',:actor,:reason)
-    """), {"id": work_id, "old": work["status"], "actor": actor, "reason": reason})
     conn.execute(text("""
         insert into erp_audit_events(
             entity_type,entity_id,action,actor,origin,before_data,after_data,reason
@@ -3718,13 +3708,14 @@ def technical_close_work_order(
     """), {
         "id": work_id, "actor": actor, "old": work["status"], "reason": reason,
         "after_data": json.dumps({
-            "status": "CONCLUIDA", "technical_status": "CONCLUIDA",
+            "status": work["status"], "technical_status": "CONCLUIDA",
+            "operational_status_unchanged": True,
             "auto_baixas": settlement,
         }, ensure_ascii=False),
     })
     recalculate_work_order_sequences(conn, actor)
     return {
-        "id": work_id, "status": "CONCLUIDA", "technical_status": "CONCLUIDA",
+        "id": work_id, "status": work["status"], "technical_status": "CONCLUIDA",
         "replayed": False, "auto_baixas": settlement,
     }
 
@@ -3765,14 +3756,17 @@ def technical_reopen_work_order(conn, work_id, actor, reason=""):
             version=version+1
         where id=:id
     """), {"id": work_id, "status": restored_status})
-    conn.execute(text("""
-        insert into erp_work_order_status_history(
-            work_order_id,status_anterior,novo_status,usuario,observacao
-        ) values(:id,:old,:new,:actor,:reason)
-    """), {
-        "id": work_id, "old": work["status"], "new": restored_status,
-        "actor": actor, "reason": reason,
-    })
+    # Do not create a fake operational transition when only the technical
+    # flag changed.  The history table is reserved for card/export statuses.
+    if str(work["status"] or "").strip().upper() != restored_status:
+        conn.execute(text("""
+            insert into erp_work_order_status_history(
+                work_order_id,status_anterior,novo_status,usuario,observacao
+            ) values(:id,:old,:new,:actor,:reason)
+        """), {
+            "id": work_id, "old": work["status"], "new": restored_status,
+            "actor": actor, "reason": reason,
+        })
     conn.execute(text("""
         insert into erp_audit_events(
             entity_type,entity_id,action,actor,origin,before_data,after_data,reason

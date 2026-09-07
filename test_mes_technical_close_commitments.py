@@ -147,10 +147,23 @@ class TechnicalCloseCommitmentTests(unittest.TestCase):
         self.assertEqual([], self.automatic())
         self.assertEqual(2, len(result["auto_baixas"]["pendencias_encerradas"]))
         work = self.sql("select * from erp_work_orders")[0]
-        self.assertEqual(("CONCLUIDA", "CONCLUIDA"), (work["status"], work["technical_status"]))
-        self.assertEqual("concluido", self.sql("select status from suprimentos_documentos")[0]["status"])
+        self.assertEqual(("ATIVA", "CONCLUIDA"), (work["status"], work["technical_status"]))
+        self.assertEqual("emitido", self.sql("select status from suprimentos_documentos")[0]["status"])
+        self.assertEqual([], self.sql("select * from erp_work_order_status_history"))
         audit = json.loads(self.sql("select after_data from erp_audit_events")[0]["after_data"])
         self.assertEqual(result["auto_baixas"], audit["auto_baixas"])
+        self.assertEqual("ATIVA", audit["status"])
+        self.assertTrue(audit["operational_status_unchanged"])
+
+    def test_technical_close_preserves_finalized_and_delivered_statuses(self):
+        for status in ("FINALIZADA", "ENTREGUE", "RETIRADA"):
+            with self.subTest(status=status):
+                self.sql("update erp_work_orders set status=:status,technical_status='ABERTA'", status=status)
+                self.close()
+                work = self.sql("select status,technical_status from erp_work_orders")[0]
+                self.assertEqual((status, "CONCLUIDA"), (work["status"], work["technical_status"]))
+                self.assertEqual("emitido", self.sql("select status from suprimentos_documentos")[0]["status"])
+                self.sql("update erp_work_orders set technical_status='ABERTA'")
 
     def test_negative_requires_exact_confirmation_and_no_first_write(self):
         self.composition(MP=4)
@@ -188,7 +201,7 @@ class TechnicalCloseCommitmentTests(unittest.TestCase):
         result = self.close()
         self.assertTrue(result["replayed"])
         self.assertEqual(before, self.automatic())
-        self.assertEqual(1, len(self.sql("select * from erp_work_order_status_history")))
+        self.assertEqual(0, len(self.sql("select * from erp_work_order_status_history")))
 
     def test_failure_after_material_writes_rolls_everything_back(self):
         self.movement(5)

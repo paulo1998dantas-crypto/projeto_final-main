@@ -25,7 +25,7 @@ Nova conclusão técnica disparada por Suprimentos (Gestão de O.S. ou históric
 - Cada nova BAIXA conserva `related_movement_id`, `work_order_id`, operação UUID e chave idempotente; `source_type=TECHNICAL_CLOSE_AUTO_BAIXA`.
 - Auditoria `CONCLUSAO_TECNICA` inclui IDs das baixas, candidatos consumidos, quantidades, pendências encerradas e eventual confirmação de negativo.
 - Reabertura não estorna estoque. Restaura apenas o documento modificado pela conclusão registrada. Uma nova conclusão usa os saldos ainda pendentes.
-- O relatório de necessidade de Estoque já exclui `technical_status=CONCLUIDA`; o documento também passa a `concluido` para as consultas documentais.
+- O relatório de necessidade de Estoque já exclui `technical_status=CONCLUIDA`. A conclusão técnica não altera `erp_work_orders.status` nem o status do documento legado: o card, a exportação e o histórico operacional continuam mostrando FINALIZADA, ENTREGUE, RETIRADA etc.
 
 ## Arquivos relacionados
 
