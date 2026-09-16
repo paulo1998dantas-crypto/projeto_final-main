@@ -2368,6 +2368,35 @@ async def erp_update_vehicle_entry(
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
+@app.delete("/api/erp/vehicle-entries/{entry_id}")
+async def erp_delete_vehicle_entry(
+    entry_id: str,
+    request: Request,
+    data: dict = Body(default={}),
+    db: Session = Depends(database.get_db),
+):
+    """Delete only an erroneous entry that has not entered the O.S. flow."""
+    if not erp_feature_enabled(): return erp_disabled_response()
+    user = require_login(request, db)
+    if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not (
+        has_permission(user, authz.MES_WORK_ORDERS_MANAGE)
+        and has_permission(user, authz.MES_VEHICLE_ENTRIES_DELETE)
+    ):
+        return permission_denied(api=True)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.delete_vehicle_entry(
+                conn,
+                entry_id,
+                user.nome,
+                reason=data.get("motivo") or data.get("reason"),
+            )
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
 @app.post("/api/erp/vehicle-entries/{entry_id}/withdraw")
 async def erp_withdraw_vehicle_entry(
     entry_id: str,

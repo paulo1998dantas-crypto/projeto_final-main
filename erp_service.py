@@ -1347,6 +1347,163 @@ def withdraw_vehicle_entry(conn, entry_id, actor, reason="", event_at=None):
     }
 
 
+def delete_vehicle_entry(conn, entry_id, actor, reason=""):
+    """Delete an erroneous vehicle arrival before it enters the MES flow.
+
+    Physical vehicles are shared by multiple arrivals, so only the entry and
+    its untouched pre-O.S. scaffolding are removed. Any operational, planning,
+    purchasing, or productive relationship blocks the deletion and remains
+    available for the normal correction/withdrawal flows.
+    """
+    reason = str(reason or "").strip()
+    if not reason:
+        raise ValueError("Informe o motivo da exclusão da entrada.")
+
+    entry = _one(conn.execute(text("""
+        select e.*,v.chassi,v.marca,v.modelo,v.versao,v.mmv
+          from erp_vehicle_entries e
+          join erp_vehicles v on v.id=e.vehicle_id
+         where e.id=:id
+         for update
+    """), {"id": entry_id}))
+    if not entry:
+        raise ValueError("Entrada de veiculo nao encontrada.")
+
+    status = str(entry.get("status") or "").strip().upper()
+    if status != "AGUARDANDO_O_S":
+        raise ValueError(
+            "Somente entradas aguardando O.S. podem ser excluidas. "
+            "Use a correcao ou a retirada conforme o caso."
+        )
+
+    dependencies = _one(conn.execute(text("""
+        select
+            (select count(*) from erp_work_orders w
+              where w.vehicle_entry_id=:entry) as work_order_count,
+            (select count(*) from erp_purchase_orders p
+              where p.vehicle_entry_id=:entry) as purchase_order_count,
+            (select count(*) from erp_purchase_order_allocation_events a
+              where a.from_vehicle_entry_id=:entry
+                 or a.to_vehicle_entry_id=:entry) as allocation_count,
+            (select count(*) from suprimentos_forecasts f
+              where f.vehicle_entry_id=:entry) as forecast_count,
+            (select count(*) from erp_vehicle_entry_stage_events ev
+              join erp_vehicle_entry_stages s on s.id=ev.vehicle_entry_stage_id
+              where s.vehicle_entry_id=:entry) as stage_event_count,
+            (select count(*) from erp_stage_time_sessions ts
+              join erp_vehicle_entry_stages s on s.id=ts.vehicle_entry_stage_id
+              where s.vehicle_entry_id=:entry) as time_session_count,
+            (select count(*) from erp_stage_time_pauses tp
+              join erp_vehicle_entry_stages s on s.id=tp.vehicle_entry_stage_id
+              where s.vehicle_entry_id=:entry) as time_pause_count,
+            (select count(*) from erp_vehicle_entry_stages s
+              where s.vehicle_entry_id=:entry
+                and (s.parametrizado=true
+                  or s.status <> 'PENDENTE'
+                  or nullif(trim(coalesce(s.responsavel,'')),'') is not null
+                  or nullif(trim(coalesce(s.localizacao,'')),'') is not null
+                  or s.inicio is not null
+                  or s.termino is not null
+                  or nullif(trim(coalesce(s.observacoes,'')),'') is not null))
+              as stage_activity_count
+    """), {"entry": entry_id})) or {}
+    blocked = {
+        "O.S.": int(dependencies.get("work_order_count") or 0),
+        "pedidos de compra": int(dependencies.get("purchase_order_count") or 0),
+        "vinculos de compra": int(dependencies.get("allocation_count") or 0),
+        "forecast": int(dependencies.get("forecast_count") or 0),
+        "eventos de etapa": int(dependencies.get("stage_event_count") or 0),
+        "sessoes produtivas": int(dependencies.get("time_session_count") or 0),
+        "paradas": int(dependencies.get("time_pause_count") or 0),
+        "apontamentos de etapa": int(dependencies.get("stage_activity_count") or 0),
+    }
+    blocked = {label: count for label, count in blocked.items() if count}
+    if blocked:
+        details = ", ".join(f"{label}: {count}" for label, count in blocked.items())
+        raise ValueError(
+            "A entrada nao pode ser excluida porque possui vinculos operacionais: "
+            + details + "."
+        )
+
+    max_item_before = conn.execute(text(
+        "select max(item_number) from erp_vehicle_entries"
+    )).scalar()
+    sequence_last = conn.execute(text(
+        "select last_value from public.erp_vehicle_entries_item_number_seq"
+    )).scalar()
+
+    conn.execute(text("""
+        insert into erp_audit_events(
+            entity_type,entity_id,action,actor,origin,before_data,after_data,reason
+        ) values(
+            'VEHICLE_ENTRY',:id,'ENTRADA_VEICULO_EXCLUIDA',:actor,'MES',
+            cast(:before_data as jsonb),
+            jsonb_build_object(
+                'deleted',true,
+                'item_number',cast(:item_number as bigint),
+                'chassi',cast(:chassi as text)
+            ),
+            :reason
+        )
+    """), {
+        "id": entry_id,
+        "actor": actor,
+        "before_data": json.dumps(dict(entry), default=str, ensure_ascii=False),
+        "item_number": int(entry["item_number"]),
+        "chassi": entry.get("chassi") or "",
+        "reason": reason,
+    })
+
+    conn.execute(text("""
+        delete from erp_vehicle_entry_stage_events ev
+         using erp_vehicle_entry_stages s
+         where s.id=ev.vehicle_entry_stage_id
+           and s.vehicle_entry_id=:entry
+    """), {"entry": entry_id})
+    conn.execute(text(
+        "delete from erp_vehicle_entry_notes where vehicle_entry_id=:entry"
+    ), {"entry": entry_id})
+    conn.execute(text(
+        "delete from erp_vehicle_entry_stages where vehicle_entry_id=:entry"
+    ), {"entry": entry_id})
+    deleted = conn.execute(text(
+        "delete from erp_vehicle_entries where id=:entry"
+    ), {"entry": entry_id})
+    if deleted.rowcount != 1:
+        raise ValueError("A entrada nao foi excluida; atualize a tela e tente novamente.")
+
+    sequence_reused = False
+    if (
+        max_item_before is not None
+        and int(max_item_before) == int(entry["item_number"])
+        and sequence_last is not None
+        and int(sequence_last) == int(entry["item_number"])
+    ):
+        max_item_after = conn.execute(text(
+            "select max(item_number) from erp_vehicle_entries"
+        )).scalar()
+        conn.execute(text("""
+            select setval(
+                pg_get_serial_sequence('public.erp_vehicle_entries','item_number'),
+                :value,
+                :is_called
+            )
+        """), {
+            "value": int(max_item_after) if max_item_after is not None else 1,
+            "is_called": max_item_after is not None,
+        })
+        sequence_reused = True
+
+    return {
+        "id": str(entry_id),
+        "item_number": int(entry["item_number"]),
+        "chassi": entry.get("chassi"),
+        "status": "EXCLUIDA",
+        "sequence_reused": sequence_reused,
+        "replayed": False,
+    }
+
+
 def create_work_order(conn, entry_id, payload, actor):
     documento_os_id = _optional_documento_os_id(payload)
     # O saldo do Forecast pertence ao fluxo documental de Suprimentos: ele e
