@@ -3130,6 +3130,28 @@ async def erp_internal_update_vehicle_entry(entry_id: str, request: Request, dat
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
+
+@app.delete("/api/erp/internal/vehicle-entries/{entry_id}")
+async def erp_internal_delete_vehicle_entry(
+    entry_id: str,
+    request: Request,
+    data: dict = Body(default={}),
+):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    actor = erp_backend_actor(request)
+    if not actor: return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.delete_vehicle_entry(
+                conn,
+                entry_id,
+                actor,
+                reason=data.get("motivo") or data.get("reason"),
+            )
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
 @app.post("/api/erp/internal/vehicle-entries/{entry_id}/work-orders")
 async def erp_internal_work_order(entry_id: str, request: Request, data: dict = Body(...)):
     if not erp_feature_enabled(): return erp_disabled_response()
