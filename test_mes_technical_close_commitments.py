@@ -84,8 +84,11 @@ class TechnicalCloseCommitmentTests(unittest.TestCase):
             status="ATIVA" if active else "CANCELADA", created=created)[0]["id"]
 
     def close(self, **kwargs):
+        return self.close_work_order(WORK, **kwargs)
+
+    def close_work_order(self, work_id, **kwargs):
         with self.engine.begin() as conn:
-            return erp_service.technical_close_work_order(conn, WORK, "pcp", actor_user_id=1, **kwargs)
+            return erp_service.technical_close_work_order(conn, work_id, "pcp", actor_user_id=1, **kwargs)
 
     def automatic(self):
         return self.sql("select * from movements where source_type='TECHNICAL_CLOSE_AUTO_BAIXA' order by id")
@@ -100,6 +103,46 @@ class TechnicalCloseCommitmentTests(unittest.TestCase):
         self.assertEqual([(parent, 3)], [(r["related_movement_id"], r["quantidade"]) for r in rows])
         self.assertEqual(1, rows[0]["usuario_id"])
         self.assertEqual(97, self.sql("select saldo_atual from stock_balances where sku_id=3")[0]["saldo_atual"])
+
+    def test_multi_work_order_batch_consumes_only_each_orders_own_commitment(self):
+        self.sql(
+            "insert into erp_work_orders(id,numero_os,status,technical_status) "
+            "values(:id,'3101','FINALIZADA','ABERTA')",
+            id=OTHER,
+        )
+        self.sql(
+            "insert into suprimentos_documentos values(2,'os','3101',:id,'[]','emitido','2026-09-07')",
+            id=OTHER,
+        )
+        operation_id = str(uuid4())
+        first_parent = self.movement(2, work=WORK)
+        second_parent = self.movement(2, work=OTHER)
+        self.sql(
+            "update movements set operation_id=:operation,source_type='MULTI_WORK_ORDER_COMMITMENT' "
+            "where id in (:first,:second)",
+            operation=operation_id,
+            first=first_parent,
+            second=second_parent,
+        )
+
+        first_result = self.close()["auto_baixas"]
+        second_result = self.close_work_order(OTHER)["auto_baixas"]
+        rows = self.automatic()
+
+        self.assertEqual(1, first_result["empenhos_vinculados_baixados"])
+        self.assertEqual(1, second_result["empenhos_vinculados_baixados"])
+        self.assertEqual(
+            [(first_parent, WORK, 2), (second_parent, OTHER, 2)],
+            [
+                (row["related_movement_id"], row["work_order_id"], row["quantidade"])
+                for row in rows
+            ],
+        )
+        self.assertEqual(96, self.sql("select saldo_atual from stock_balances where sku_id=3")[0]["saldo_atual"])
+        self.assertEqual(
+            ("FINALIZADA", "CONCLUIDA"),
+            tuple(self.sql("select status,technical_status from erp_work_orders where id=:id", id=OTHER)[0].values()),
+        )
 
     def test_shared_fifo_proportional_preserves_parent_and_other_orders(self):
         self.composition(MP=5)

@@ -215,7 +215,10 @@ def settle_work_order_materials(conn, work, actor, reason="", *, actor_user_id=N
 
     commands = []
     for parent in parents:
-        if parent["work_order_id"] is None:
+        # The SQL candidate filter already scopes linked commitments to this
+        # O.S. Keep the same guard here so a malformed UUID representation can
+        # never make a batch child from another O.S. eligible for this close.
+        if parent["work_order_id"] is None or not same_uuid(parent["work_order_id"], work_id):
             continue
         # BOM parents are phantom items.  Their existing commitment still
         # covers leaf demand above, but the parent itself is never debited.
