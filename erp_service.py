@@ -1,5 +1,7 @@
 """New operational O.S./MES domain. Legacy MES tables remain read-only compatible."""
 from datetime import datetime, date, timedelta, timezone
+from collections import defaultdict
+from decimal import Decimal
 from functools import cmp_to_key
 import erp_stock_closure
 import json
@@ -77,6 +79,245 @@ DEFAULT_SEQUENCE_CRITERIA = [
 def _id(): return str(uuid4())
 def _one(result):
     row=result.first(); return dict(row._mapping) if row else None
+
+
+def _material_cockpit_quantity(value):
+    try:
+        return erp_stock_closure.quantity(value)
+    except (TypeError, ValueError):
+        return Decimal("0")
+
+
+def _material_cockpit_number(value):
+    return float(_material_cockpit_quantity(value))
+
+
+def _material_cockpit_date(value):
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    text_value = str(value or "").strip()
+    return text_value[:10] if text_value else None
+
+
+def _material_cockpit_document(conn, work):
+    return _one(conn.execute(text("""
+        select id,numero,status,composicao
+          from suprimentos_documentos
+         where tipo='os'
+           and (
+               erp_work_order_id=:work_id
+               or (erp_work_order_id is null and numero=:numero)
+           )
+         order by case when erp_work_order_id=:work_id then 0 else 1 end,
+                  updated_at desc,id desc
+         limit 1
+    """), {"work_id": work["id"], "numero": work["numero_os"]}))
+
+
+def work_order_material_cockpit(conn, work_id):
+    """Return a read-only material cockpit for one O.S.
+
+    The composition remains the source selected in Suprimentos.  Availability
+    follows the Stock rule (physical balance minus active EMPENHO/SAIDA,
+    already reduced by active BAIXA records). Purchase-order lines linked to
+    the O.S. provide the optional incoming forecast; this endpoint never
+    reserves, changes, or automatically replaces a component.
+    """
+    work = _one(conn.execute(text("""
+        select id,numero_os,vehicle_entry_id
+          from erp_work_orders
+         where id=:id
+    """), {"id": work_id}))
+    if not work:
+        raise ValueError("O.S. não encontrada.")
+
+    document = _material_cockpit_document(conn, work)
+    if not document:
+        return {
+            "work_order_id": str(work["id"]),
+            "numero_os": work["numero_os"],
+            "documento_encontrado": False,
+            "documento_numero": None,
+            "summary": {"total": 0, "atendidos": 0, "com_previsao": 0,
+                         "sem_previsao": 0, "faltante_total": 0},
+            "items": [],
+        }
+
+    raw_composition = document.get("composicao") or []
+    if isinstance(raw_composition, str):
+        try:
+            raw_composition = json.loads(raw_composition)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("A composição da O.S. está inválida.") from exc
+    if not isinstance(raw_composition, list):
+        raise ValueError("A composição da O.S. está inválida.")
+
+    composition = [row for row in raw_composition if isinstance(row, dict)]
+    requested_codes = []
+    for row in composition:
+        sku = erp_stock_closure.code(
+            row.get("codigo") or row.get("sku_selecionado") or row.get("sku_planejado")
+        )
+        if sku and sku not in requested_codes:
+            requested_codes.append(sku)
+
+    sku_rows = [dict(row) for row in conn.execute(text("""
+        select s.id,s.sku,s.descricao,s.unidade,s.active,
+               coalesce(b.saldo_atual,0) as saldo_atual
+          from skus s
+          left join stock_balances b on b.sku_id=s.id
+    """)).mappings()]
+    sku_by_code = {
+        erp_stock_closure.code(row.get("sku")): row
+        for row in sku_rows
+        if erp_stock_closure.code(row.get("sku"))
+    }
+    requested_ids = [sku_by_code[sku]["id"] for sku in requested_codes if sku in sku_by_code]
+    pending_by_sku = defaultdict(lambda: Decimal("0"))
+    if requested_ids:
+        bind_names = [f"sku_id_{index}" for index in range(len(requested_ids))]
+        bind_values = dict(zip(bind_names, requested_ids))
+        in_clause = ",".join(f":{name}" for name in bind_names)
+        movements = [dict(row) for row in conn.execute(text(f"""
+            select id,sku_id,tipo,quantidade,related_movement_id
+              from movements
+             where movement_status='ATIVA'
+               and tipo in ('EMPENHO','SAIDA','BAIXA')
+               and sku_id in ({in_clause})
+        """), bind_values).mappings()]
+        commitments_by_id = {
+            row["id"]: row for row in movements if row["tipo"] in {"EMPENHO", "SAIDA"}
+        }
+        consumed_by_parent = defaultdict(lambda: Decimal("0"))
+        for row in movements:
+            parent = commitments_by_id.get(row.get("related_movement_id"))
+            if row["tipo"] == "BAIXA" and parent:
+                consumed_by_parent[parent["id"]] += _material_cockpit_quantity(row["quantidade"])
+        for row in commitments_by_id.values():
+            pending_by_sku[row["sku_id"]] += max(
+                _material_cockpit_quantity(row["quantidade"])
+                - consumed_by_parent.get(row["id"], Decimal("0")),
+                Decimal("0"),
+            )
+
+    incoming_by_code = defaultdict(list)
+    incoming_rows = conn.execute(text("""
+        select l.sku_id,l.sku_codigo,l.quantidade_pedida,l.quantidade_recebida,
+               l.data_necessidade as linha_data_necessidade,
+               o.data_necessidade as pedido_data_necessidade,
+               o.numero_oc,o.fornecedor_nome,o.status as pedido_status,
+               l.status as linha_status
+          from erp_purchase_order_lines l
+          join erp_purchase_orders o on o.id=l.purchase_order_id
+         where (
+               o.work_order_id=:work_id
+               or o.vehicle_entry_id=:entry_id
+               or l.work_order_id=:work_id
+         )
+           and coalesce(o.status,'') in ('EMITIDA','PARCIALMENTE_RECEBIDA')
+           and coalesce(l.status,'') in ('PENDENTE','PARCIALMENTE_RECEBIDA')
+    """), {"work_id": work["id"], "entry_id": work["vehicle_entry_id"]}).mappings()
+    for row in incoming_rows:
+        pending = max(
+            _material_cockpit_quantity(row.get("quantidade_pedida"))
+            - _material_cockpit_quantity(row.get("quantidade_recebida")),
+            Decimal("0"),
+        )
+        sku = erp_stock_closure.code(row.get("sku_codigo"))
+        if not sku and row.get("sku_id"):
+            sku_row = next((item for item in sku_rows if item["id"] == row["sku_id"]), None)
+            sku = erp_stock_closure.code(sku_row.get("sku") if sku_row else "")
+        if not sku or pending <= 0:
+            continue
+        incoming_by_code[sku].append({
+            "numero_oc": row.get("numero_oc"),
+            "fornecedor": row.get("fornecedor_nome") or "Fornecedor não informado",
+            "quantidade": _material_cockpit_number(pending),
+            "previsao": _material_cockpit_date(
+                row.get("linha_data_necessidade") or row.get("pedido_data_necessidade")
+            ),
+            "status": row.get("linha_status") or row.get("pedido_status") or "PENDENTE",
+        })
+
+    items = []
+    counters = {"atendidos": 0, "com_previsao": 0, "sem_previsao": 0}
+    faltante_total = Decimal("0")
+    for index, row in enumerate(composition, start=1):
+        sku = erp_stock_closure.code(
+            row.get("codigo") or row.get("sku_selecionado") or row.get("sku_planejado")
+        )
+        required = max(_material_cockpit_quantity(row.get("qtd", row.get("quantidade"))), Decimal("0"))
+        sku_row = sku_by_code.get(sku)
+        physical = _material_cockpit_quantity(sku_row.get("saldo_atual") if sku_row else 0)
+        committed = pending_by_sku.get(sku_row["id"], Decimal("0")) if sku_row else Decimal("0")
+        available = physical - committed
+        shortage = max(required - available, Decimal("0"))
+        arrivals = sorted(
+            incoming_by_code.get(sku, []),
+            key=lambda item: (item.get("previsao") is None, item.get("previsao") or "9999-12-31"),
+        )
+        incoming = sum((_material_cockpit_quantity(item["quantidade"]) for item in arrivals), Decimal("0"))
+        forecast_dates = [item["previsao"] for item in arrivals if item.get("previsao")]
+        forecast = min(forecast_dates) if forecast_dates else None
+        if not sku_row:
+            status, status_label = "NAO_CADASTRADO", "SKU não cadastrado"
+            counters["sem_previsao"] += 1
+        elif available >= required:
+            status, status_label = "ATENDIDO", "Atendido"
+            counters["atendidos"] += 1
+        elif incoming > 0 and forecast:
+            status = "PREVISAO_TOTAL" if incoming >= shortage else "PREVISAO_PARCIAL"
+            status_label = "Cobertura programada" if incoming >= shortage else "Previsão parcial"
+            counters["com_previsao"] += 1
+        elif incoming > 0:
+            status, status_label = "PREVISAO_SEM_DATA", "Entrada sem data"
+            counters["sem_previsao"] += 1
+        elif available > 0:
+            status, status_label = "SALDO_PARCIAL", "Saldo parcial"
+            counters["sem_previsao"] += 1
+        else:
+            status, status_label = "SEM_PREVISAO", "Sem saldo e sem previsão"
+            counters["sem_previsao"] += 1
+        faltante_total += shortage
+        items.append({
+            "ordem": index,
+            "item": row.get("item") or "-",
+            "nivel": int(row.get("level") or 0),
+            "codigo": sku,
+            "descricao": row.get("descricao") or (sku_row.get("descricao") if sku_row else ""),
+            "unidade": row.get("unidade") or (sku_row.get("unidade") if sku_row else ""),
+            "necessario": _material_cockpit_number(required),
+            "saldo_atual": _material_cockpit_number(physical),
+            "saldo_empenhado": _material_cockpit_number(committed),
+            "saldo_disponivel": _material_cockpit_number(available),
+            "faltante": _material_cockpit_number(shortage),
+            "em_chegada": _material_cockpit_number(incoming),
+            "previsao_chegada": forecast,
+            "previsoes": arrivals,
+            "status": status,
+            "status_label": status_label,
+            "ativo": bool(sku_row.get("active")) if sku_row else False,
+            "sku_planejado": erp_stock_closure.code(row.get("sku_planejado")),
+            "sku_selecionado": erp_stock_closure.code(row.get("sku_selecionado") or sku),
+            "destino": row.get("setor") or "",
+        })
+    return {
+        "work_order_id": str(work["id"]),
+        "numero_os": work["numero_os"],
+        "documento_encontrado": True,
+        "documento_numero": document.get("numero"),
+        "documento_status": document.get("status"),
+        "summary": {
+            "total": len(items),
+            "atendidos": counters["atendidos"],
+            "com_previsao": counters["com_previsao"],
+            "sem_previsao": counters["sem_previsao"],
+            "faltante_total": _material_cockpit_number(faltante_total),
+        },
+        "items": items,
+    }
 
 
 def _normalize_chassis(value):

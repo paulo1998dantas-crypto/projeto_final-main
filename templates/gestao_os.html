@@ -20,7 +20,10 @@ dialog{width:min(1480px,98vw);max-height:96vh;border:0;border-radius:9px;padding
 .section{border:1px solid var(--line);border-radius:7px;margin-top:9px;overflow:hidden}.section-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 11px;background:#eef3f8}.section-head h3{margin:0;font-size:14px}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;font-size:11px}th{background:#f8fafc;color:#475569;text-transform:uppercase;font-size:9px}th,td{padding:7px 8px;border-bottom:1px solid #e8edf3;text-align:left;vertical-align:middle}.stage-table input,.stage-table select{min-width:125px;min-height:31px;font-size:11px}.stage-table .notes{min-width:180px}.stage-code{font-weight:850;color:#123d6a}.configuration-note{padding:8px 10px;border-radius:5px;background:#e0f2fe;color:#075985;font-weight:750}
 .lifecycle{display:grid;grid-template-columns:1fr 1fr;gap:9px;padding:11px}.form-row{display:grid;grid-template-columns:180px 1fr auto;gap:8px;align-items:end}.history{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:10px}.history-col{border:1px solid var(--line);border-radius:6px;overflow:hidden}.history-col h4{margin:0;padding:8px 9px;background:#f8fafc}.event{padding:7px 9px;border-top:1px solid #edf1f5;font-size:11px}.event:first-of-type{border-top:0}.event strong{display:block}.event small{color:var(--muted)}
 .relations{display:grid;grid-template-columns:minmax(300px,1fr) minmax(420px,1.5fr);gap:10px;padding:10px}.relation-col{border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#fff}.purchase-order-col{overflow:visible}.relation-col h4{margin:0;padding:9px;background:#f8fafc}.relation-form{display:flex;gap:7px;align-items:flex-end;padding:9px;border-top:1px solid #edf1f5}.relation-form label{flex:1}.po-row{display:grid;grid-template-columns:auto minmax(160px,1fr) auto;gap:8px;align-items:center;padding:9px;border-top:1px solid #edf1f5}.po-row:first-child{border-top:0}.po-row small{display:block;color:var(--muted);margin-top:2px}.signal{width:13px;height:13px;border-radius:50%;box-shadow:0 0 0 3px #fff,0 0 0 4px #cbd5e1}.signal.VERDE{background:#16a34a}.signal.VERMELHO{background:#dc2626}.po-actions{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}.purchase-picker{position:relative;flex:1;min-width:0}.purchase-picker-control{display:grid;grid-template-columns:minmax(180px,1fr) auto;gap:7px;margin-top:3px}.purchase-picker-control input{padding-right:30px}.purchase-search-results{position:absolute;z-index:40;top:calc(100% + 5px);left:0;right:0;max-height:300px;overflow:auto;border:1px solid #b7c5d4;border-radius:6px;background:#fff;box-shadow:0 14px 35px #0f172a30}.purchase-option{display:grid;width:100%;grid-template-columns:auto minmax(0,1fr) auto;gap:9px;align-items:center;padding:10px;border:0;border-top:1px solid #edf1f5;background:#fff;color:inherit;text-align:left;cursor:pointer}.purchase-option:first-child{border-top:0}.purchase-option:hover,.purchase-option.active{background:#eff6ff;outline:0}.purchase-option strong,.purchase-option small{display:block;overflow:hidden;text-overflow:ellipsis}.purchase-option small{margin-top:3px;color:var(--muted);white-space:normal}.purchase-option-action{color:#1d4ed8;font-size:11px;font-weight:850;white-space:nowrap}.purchase-picker-state{padding:12px;color:var(--muted)}.allocation-history{max-height:220px;overflow:auto}
+.card-material-footer{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;padding-top:8px;border-top:1px solid #edf1f5}.card-material-footer .btn{flex-shrink:0}
+.material-kpis{display:grid;grid-template-columns:repeat(5,minmax(110px,1fr));gap:8px;padding:10px}.material-kpi{padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:#f8fafc}.material-kpi span{display:block;color:var(--muted);font-size:9px;font-weight:850;text-transform:uppercase}.material-kpi strong{display:block;margin-top:4px;font-size:18px}.material-cockpit-status{display:inline-block;margin-top:3px;color:var(--muted);font-size:10px}.material-cockpit-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 10px 8px}.material-cockpit-note{color:var(--muted);font-size:10px}.material-table-wrap{overflow:auto;padding:0 10px 10px}.material-table{min-width:1120px}.material-table th{white-space:nowrap}.material-table td{vertical-align:top}.material-row-status{display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border-radius:999px;font-size:10px;font-weight:900;white-space:nowrap}.material-row-status.ok{background:#dcfce7;color:#166534}.material-row-status.forecast{background:#dbeafe;color:#1d4ed8}.material-row-status.partial{background:#fef3c7;color:#92400e}.material-row-status.missing{background:#fee2e2;color:#991b1b}.material-row-status.unknown{background:#e2e8f0;color:#475569}.material-number{font-weight:850;font-variant-numeric:tabular-nums;white-space:nowrap}.material-description{max-width:310px;font-weight:750}.material-description small,.material-arrival small{display:block;margin-top:3px;color:var(--muted);font-size:10px;font-weight:500;line-height:1.35}.material-arrival{min-width:190px}.material-arrival div+div{margin-top:5px;padding-top:5px;border-top:1px solid #edf1f5}.material-missing{color:#b42318;font-weight:850}.material-available{color:#166534}.material-negative{color:#b42318}
 @media(max-width:1000px){.metrics{grid-template-columns:repeat(2,1fr)}.head{flex-direction:column}.summary,.entry-grid{grid-template-columns:repeat(2,1fr)}.lifecycle,.history,.relations{grid-template-columns:1fr}.form-row{grid-template-columns:1fr}}
+@media(max-width:700px){.material-kpis{grid-template-columns:repeat(2,1fr)}.card-material-footer{align-items:stretch;flex-direction:column}}
 </style>
 </head>
 <body>
@@ -73,9 +76,14 @@ dialog{width:min(1480px,98vw);max-height:96vh;border:0;border-radius:9px;padding
 </dialog>
 
 <dialog id="detail-dialog">
-<header class="modal-head"><div><h2 id="detail-title">O.S.</h2><small id="detail-subtitle"></small></div><div class="actions">{% if current_user.can("mes.work_orders.manage") and current_user.can("mes.vehicle_entries.create") %}<button id="edit-entry-button" class="btn" type="button" onclick="editCurrentEntry()">Editar entrada</button>{% endif %}<button class="btn" type="button" onclick="detailDialog.close()">Fechar</button></div></header>
+<header class="modal-head"><div><h2 id="detail-title">O.S.</h2><small id="detail-subtitle"></small></div><div class="actions"><button id="materials-cockpit-button" class="btn success" type="button" onclick="openMaterialCockpitFromDetail()" hidden>Cockpit de materiais</button>{% if current_user.can("mes.work_orders.manage") and current_user.can("mes.vehicle_entries.create") %}<button id="edit-entry-button" class="btn" type="button" onclick="editCurrentEntry()">Editar entrada</button>{% endif %}<button class="btn" type="button" onclick="detailDialog.close()">Fechar</button></div></header>
 <div class="modal-body">
   <section id="summary" class="summary"></section>
+  <section id="materials-cockpit-section" class="section material-cockpit-section" hidden>
+    <header class="section-head"><div><h3>Cockpit de materiais da O.S.</h3><span id="materials-cockpit-status" class="material-cockpit-status">Consulta somente leitura.</span></div><button class="btn" type="button" onclick="loadMaterialCockpit()">Atualizar saldo</button></header>
+    <div id="materials-kpis" class="material-kpis"></div>
+    <div id="materials-cockpit-content"></div>
+  </section>
   <section class="section">
     <header class="section-head">
       <div><h3>Etapas produtivas</h3><span id="stage-help" class="muted">Os pré-requisitos são validados pelo backend.</span></div>
@@ -124,6 +132,7 @@ dialog{width:min(1480px,98vw);max-height:96vh;border:0;border-radius:9px;padding
 const state={orders:[],detail:null,catalogs:{},queryHandled:false};
 const canDeleteEntries={{ 'true' if current_user.can("mes.vehicle_entries.delete") else 'false' }};
 const purchasePickerState={timer:null,request:0,activeIndex:-1};
+const materialCockpitState={request:0};
 const detailDialog=document.getElementById('detail-dialog'),entryDialog=document.getElementById('entry-dialog');
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const norm=v=>String(v??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
@@ -311,6 +320,93 @@ function latestNotePreview(row){
   return `<div class="card-note"><span>Última observação</span><strong>${esc(note)}</strong>${meta?`<small>${esc(meta)}</small>`:''}</div>`;
 }
 
+function materialQuantity(value){
+  const number=Number(value||0);
+  return Number.isFinite(number)?number.toLocaleString('pt-BR',{maximumFractionDigits:3}):'0';
+}
+
+function materialStatusClass(status){
+  if(status==='ATENDIDO')return 'ok';
+  if(String(status||'').startsWith('PREVISAO'))return 'forecast';
+  if(status==='SALDO_PARCIAL')return 'partial';
+  if(status==='SEM_PREVISAO')return 'missing';
+  return 'unknown';
+}
+
+function materialStatusIcon(status){
+  if(status==='ATENDIDO')return '✓';
+  if(String(status||'').startsWith('PREVISAO'))return '⌛';
+  if(status==='SALDO_PARCIAL')return '!';
+  if(status==='SEM_PREVISAO')return '×';
+  return '?';
+}
+
+function renderMaterialCockpit(data){
+  const summary=data?.summary||{};
+  const kpis=document.getElementById('materials-kpis');
+  const content=document.getElementById('materials-cockpit-content');
+  const status=document.getElementById('materials-cockpit-status');
+  if(!kpis||!content)return;
+  if(!data?.documento_encontrado){
+    if(status)status.textContent='Nenhum documento de O.S. vinculado foi encontrado.';
+    kpis.innerHTML='';
+    content.innerHTML='<div class="empty">A O.S. ainda não possui uma composição vinculada no Suprimentos.</div>';
+    return;
+  }
+  if(status)status.textContent=`Documento ${data.documento_numero||'—'} · consulta atualizada agora · sem alterações de estoque`;
+  kpis.innerHTML=[
+    ['Componentes',summary.total||0,''],
+    ['Atendidos',summary.atendidos||0,'material-available'],
+    ['Com previsão',summary.com_previsao||0,''],
+    ['Sem previsão',summary.sem_previsao||0,'material-missing'],
+    ['Falta total',materialQuantity(summary.faltante_total||0),'material-missing'],
+  ].map(([label,value,klass])=>`<div class="material-kpi"><span>${label}</span><strong class="${klass}">${value}</strong></div>`).join('');
+  const rows=data.items||[];
+  if(!rows.length){
+    content.innerHTML='<div class="empty">A composição vinculada não possui componentes.</div>';
+    return;
+  }
+  content.innerHTML=`<div class="material-cockpit-toolbar"><span class="material-cockpit-note">Saldo disponível = físico − empenhos ativos. Baixas já realizadas não permanecem comprometidas.</span><span class="material-cockpit-note">Itens equivalentes continuam sendo escolhidos manualmente no Suprimentos.</span></div><div class="material-table-wrap"><table class="material-table"><thead><tr><th>Item pai</th><th>Componente</th><th>Necessário</th><th>Físico</th><th>Empenhado</th><th>Disponível</th><th>Em chegada</th><th>Previsão / situação</th></tr></thead><tbody>${rows.map(row=>{
+    const statusClass=materialStatusClass(row.status),icon=materialStatusIcon(row.status);
+    const planned=row.sku_planejado&&row.sku_planejado!==row.codigo?`Planejado: ${esc(row.sku_planejado)} · selecionado: ${esc(row.sku_selecionado||row.codigo)}`:'';
+    const arrivals=(row.previsoes||[]).map(item=>`<div><strong>O.C. ${esc(item.numero_oc||'—')} · ${esc(item.fornecedor||'Fornecedor não informado')}</strong><small>${item.previsao?`Previsão: ${esc(date(item.previsao))}`:'Sem data de chegada'} · ${materialQuantity(item.quantidade)} ${esc(row.unidade||'UN')}</small></div>`).join('');
+    const arrivalHtml=arrivals||`<span class="material-missing">Sem previsão de chegada</span>`;
+    return `<tr><td>${esc(row.item||'—')}</td><td class="material-description"><span>${esc(row.codigo||'Sem SKU')} · ${esc(row.descricao||'Sem descrição')}</span>${planned?`<small>${planned}</small>`:''}</td><td class="material-number">${materialQuantity(row.necessario)} ${esc(row.unidade||'')}</td><td class="material-number">${materialQuantity(row.saldo_atual)}</td><td class="material-number">${materialQuantity(row.saldo_empenhado)}</td><td class="material-number ${Number(row.saldo_disponivel||0)>0?'material-available':'material-negative'}">${materialQuantity(row.saldo_disponivel)}</td><td class="material-number">${materialQuantity(row.em_chegada)}</td><td class="material-arrival"><span class="material-row-status ${statusClass}"><span aria-hidden="true">${icon}</span>${esc(row.status_label||'—')}</span>${arrivalHtml}</td></tr>`;
+  }).join('')}</tbody></table></div>`;
+}
+
+async function loadMaterialCockpit(workId=state.detail?.work_order?.id){
+  const section=document.getElementById('materials-cockpit-section');
+  const status=document.getElementById('materials-cockpit-status');
+  if(!section||!workId)return;
+  section.hidden=false;
+  const request=++materialCockpitState.request;
+  if(status)status.textContent='Consultando composição, saldo e previsões...';
+  try{
+    const data=await api(`/api/erp/work-orders/${encodeURIComponent(workId)}/materials/cockpit`);
+    if(request!==materialCockpitState.request)return;
+    state.detail.material_cockpit=data;
+    renderMaterialCockpit(data);
+  }catch(error){
+    if(request!==materialCockpitState.request)return;
+    if(status)status.textContent='Não foi possível atualizar o cockpit.';
+    const content=document.getElementById('materials-cockpit-content');
+    if(content)content.innerHTML=`<div class="message error">${esc(error.message)}</div>`;
+  }
+}
+
+async function openMaterialCockpit(workId){
+  try{
+    await openDetail(workId);
+    await loadMaterialCockpit(workId);
+  }catch(error){message(error.message,true)}
+}
+
+function openMaterialCockpitFromDetail(){
+  const workId=state.detail?.work_order?.id;
+  if(workId)loadMaterialCockpit(workId);
+}
+
 function metrics(){
   const rows=state.orders;
   document.getElementById('m-entries').textContent=rows.filter(x=>!x.work_order_id&&rowOperationalStatus(x)==='AGUARDANDO O S').length;
@@ -347,7 +443,7 @@ function render(){
     if(!x.work_order_id){const pointed=Number(x.etapas_pre_os_apontadas||0),done=Number(x.etapas_pre_os_concluidas||0),withdrawn=rowOperationalStatus(x)==='RETIRADA',canDelete=canDeleteEntries&&!withdrawn&&rowOperationalStatus(x)==='AGUARDANDO O S';return `<article class="card entry" onclick="openEntryDetail('${x.entry_id}')"><div class="line"><h3>ITEM ${esc(x.item_number)}</h3><span class="badge ${withdrawn?'RETIRADA':''}">${withdrawn?'RETIRADA':'AGUARDANDO O.S.'}</span></div><strong>${esc(String(x.chassi||'').slice(-8))}</strong><div class="muted">${esc(x.entry_client||'Cliente nao informado')}</div><div class="line"><span>${esc([x.marca,x.modelo,x.versao].filter(Boolean).join(' ')||'Veiculo nao detalhado')}</span><span>${date(x.data_chegada)}</span></div><div class="progress"><span style="width:${Math.round(done*100/12)}%"></span></div><div class="line muted"><span>${pointed}/12 etapas apontadas antes da O.S.</span><span>${withdrawn?'Veiculo retirado':'Abrir card'}</span></div>${latestNotePreview(x)}${canDelete?`<div class="entry-actions"><span class="field-help">Lançamento sem O.S.</span><button class="btn danger compact" type="button" onclick="event.stopPropagation();deleteVehicleEntry('${esc(x.entry_id)}','${esc(x.item_number)}')">Excluir lançamento</button></div>`:''}</article>`;}
     const total=Number(x.etapas_aplicaveis||0),done=Number(x.etapas_concluidas||0),pct=total?Math.round(done*100/total):0;
     const vehicle=[x.marca,x.modelo,x.versao].filter(Boolean).join(' ')||'Veiculo nao detalhado';
-    return `<article class="card" onclick="openDetail('${x.work_order_id}')"><div class="line"><h3>ITEM ${esc(x.item_number)} · O.S. ${esc(x.numero_os)}</h3><span class="badge ${esc(x.status)}">${esc(displayStatus(x))}</span></div><strong>${esc(String(x.chassi||'').slice(-8))}</strong><div>${esc(vehicle)}</div><div class="muted">${esc(x.cliente_nome||x.entry_client||'Cliente nao informado')}</div><div class="line"><span>${esc(x.tipo_servico_grupo||'TRANSFORMAÇÃO')} · ${esc(x.linha||'—')}</span><span>${date(x.data_comercial_prevista)}</span></div><div class="progress"><span style="width:${pct}%"></span></div><div class="line muted"><span>${done}/${total} etapas concluidas</span></div>${latestNotePreview(x)}</article>`;
+    return `<article class="card" onclick="openDetail('${x.work_order_id}')"><div class="line"><h3>ITEM ${esc(x.item_number)} · O.S. ${esc(x.numero_os)}</h3><span class="badge ${esc(x.status)}">${esc(displayStatus(x))}</span></div><strong>${esc(String(x.chassi||'').slice(-8))}</strong><div>${esc(vehicle)}</div><div class="muted">${esc(x.cliente_nome||x.entry_client||'Cliente nao informado')}</div><div class="line"><span>${esc(x.tipo_servico_grupo||'TRANSFORMAÇÃO')} · ${esc(x.linha||'—')}</span><span>${date(x.data_comercial_prevista)}</span></div><div class="progress"><span style="width:${pct}%"></span></div><div class="line muted"><span>${done}/${total} etapas concluidas</span></div><div class="card-material-footer"><span class="field-help">Saldo, empenhos e previsão dos materiais</span><button class="btn success compact" type="button" onclick="event.stopPropagation();openMaterialCockpit('${esc(x.work_order_id)}')">Cockpit materiais</button></div>${latestNotePreview(x)}</article>`;
   }).join('');
 }
 
@@ -468,6 +564,10 @@ openDetail=async function(id){
   if(withdrawal)withdrawal.hidden=true;
   const relations=document.getElementById('work-relations-section');
   if(relations)relations.hidden=false;
+  const materialsButton=document.getElementById('materials-cockpit-button');
+  if(materialsButton)materialsButton.hidden=false;
+  const materialsSection=document.getElementById('materials-cockpit-section');
+  if(materialsSection)materialsSection.hidden=true;
   const historyTitle=document.getElementById('status-history-title');
   if(historyTitle)historyTitle.textContent='Status da O.S.';
   resetClosingForm();
@@ -497,6 +597,10 @@ async function openEntryDetail(entryId){
     if(lifecycle)lifecycle.hidden=true;
     const relations=document.getElementById('work-relations-section');
     if(relations)relations.hidden=false;
+    const materialsButton=document.getElementById('materials-cockpit-button');
+    if(materialsButton)materialsButton.hidden=true;
+    const materialsSection=document.getElementById('materials-cockpit-section');
+    if(materialsSection)materialsSection.hidden=true;
     const withdrawal=document.getElementById('entry-withdrawal-section');
     if(withdrawal){
       withdrawal.hidden=withdrawn;

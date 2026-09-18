@@ -2939,6 +2939,26 @@ async def erp_work_order_detail(work_id: str, request: Request, db: Session = De
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
 
+
+@app.get("/api/erp/work-orders/{work_id}/materials/cockpit")
+async def erp_work_order_material_cockpit(
+    work_id: str,
+    request: Request,
+    db: Session = Depends(database.get_db),
+):
+    if not erp_feature_enabled():
+        return erp_disabled_response()
+    user = require_login(request, db)
+    if not user:
+        return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_DASHBOARD_READ):
+        return permission_denied(api=True)
+    try:
+        with database.engine.connect() as conn:
+            return {"ok": True, **erp_service.work_order_material_cockpit(conn, work_id)}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+
 @app.put("/api/erp/work-orders/{work_id}")
 async def erp_update_work_order(work_id: str, request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
     if not erp_feature_enabled(): return erp_disabled_response()
