@@ -141,7 +141,8 @@ def work_order_material_cockpit(conn, work_id):
             "documento_encontrado": False,
             "documento_numero": None,
             "summary": {"total": 0, "atendidos": 0, "com_previsao": 0,
-                         "sem_previsao": 0, "faltante_total": 0},
+                         "sem_previsao": 0, "ha_saldo": 0, "empenho_parcial": 0,
+                         "faltante_total": 0, "em_transito_total": 0},
             "items": [],
         }
 
@@ -176,12 +177,13 @@ def work_order_material_cockpit(conn, work_id):
     }
     requested_ids = [sku_by_code[sku]["id"] for sku in requested_codes if sku in sku_by_code]
     pending_by_sku = defaultdict(lambda: Decimal("0"))
+    empenhado_na_os_by_sku = defaultdict(lambda: Decimal("0"))
     if requested_ids:
         bind_names = [f"sku_id_{index}" for index in range(len(requested_ids))]
         bind_values = dict(zip(bind_names, requested_ids))
         in_clause = ",".join(f":{name}" for name in bind_names)
         movements = [dict(row) for row in conn.execute(text(f"""
-            select id,sku_id,tipo,quantidade,related_movement_id
+            select id,sku_id,tipo,quantidade,related_movement_id,work_order_id
               from movements
              where movement_status='ATIVA'
                and tipo in ('EMPENHO','SAIDA','BAIXA')
@@ -201,6 +203,13 @@ def work_order_material_cockpit(conn, work_id):
                 - consumed_by_parent.get(row["id"], Decimal("0")),
                 Decimal("0"),
             )
+            if erp_stock_closure.same_uuid(row.get("work_order_id"), work["id"]):
+                # A linked BAIXA does not erase the fact that the material
+                # was reserved for this O.S.; only the global free balance
+                # excludes the already consumed quantity above.
+                empenhado_na_os_by_sku[row["sku_id"]] += _material_cockpit_quantity(
+                    row["quantidade"]
+                )
 
     incoming_by_code = defaultdict(list)
     incoming_rows = conn.execute(text("""
@@ -242,8 +251,15 @@ def work_order_material_cockpit(conn, work_id):
         })
 
     items = []
-    counters = {"atendidos": 0, "com_previsao": 0, "sem_previsao": 0}
+    counters = {
+        "atendidos": 0,
+        "com_previsao": 0,
+        "sem_previsao": 0,
+        "ha_saldo": 0,
+        "empenho_parcial": 0,
+    }
     faltante_total = Decimal("0")
+    em_transito_total = Decimal("0")
     for index, row in enumerate(composition, start=1):
         sku = erp_stock_closure.code(
             row.get("codigo") or row.get("sku_selecionado") or row.get("sku_planejado")
@@ -252,8 +268,14 @@ def work_order_material_cockpit(conn, work_id):
         sku_row = sku_by_code.get(sku)
         physical = _material_cockpit_quantity(sku_row.get("saldo_atual") if sku_row else 0)
         committed = pending_by_sku.get(sku_row["id"], Decimal("0")) if sku_row else Decimal("0")
+        empenhado_na_os = (
+            empenhado_na_os_by_sku.get(sku_row["id"], Decimal("0"))
+            if sku_row else Decimal("0")
+        )
         available = physical - committed
-        shortage = max(required - available, Decimal("0"))
+        # Global available balance is the amount free for a new empenho. The
+        # O.S.'s own linked commitment also covers this card's demand.
+        shortage = max(required - (available + empenhado_na_os), Decimal("0"))
         arrivals = sorted(
             incoming_by_code.get(sku, []),
             key=lambda item: (item.get("previsao") is None, item.get("previsao") or "9999-12-31"),
@@ -264,18 +286,21 @@ def work_order_material_cockpit(conn, work_id):
         if not sku_row:
             status, status_label = "NAO_CADASTRADO", "SKU não cadastrado"
             counters["sem_previsao"] += 1
-        elif available >= required:
-            status, status_label = "ATENDIDO", "Atendido"
+        elif required > 0 and empenhado_na_os >= required:
+            status, status_label = "ATENDIDO", "Atendido — empenhado na O.S."
             counters["atendidos"] += 1
+        elif empenhado_na_os > 0:
+            status, status_label = "EMPENHO_PARCIAL", "Empenho parcial na O.S."
+            counters["empenho_parcial"] += 1
+        elif available > 0:
+            status, status_label = "HA_SALDO", "Há saldo"
+            counters["ha_saldo"] += 1
         elif incoming > 0 and forecast:
             status = "PREVISAO_TOTAL" if incoming >= shortage else "PREVISAO_PARCIAL"
             status_label = "Cobertura programada" if incoming >= shortage else "Previsão parcial"
             counters["com_previsao"] += 1
         elif incoming > 0:
             status, status_label = "PREVISAO_SEM_DATA", "Entrada sem data"
-            counters["sem_previsao"] += 1
-        elif available > 0:
-            status, status_label = "SALDO_PARCIAL", "Saldo parcial"
             counters["sem_previsao"] += 1
         else:
             status, status_label = "SEM_PREVISAO", "Sem saldo e sem previsão"
@@ -291,6 +316,7 @@ def work_order_material_cockpit(conn, work_id):
             "necessario": _material_cockpit_number(required),
             "saldo_atual": _material_cockpit_number(physical),
             "saldo_empenhado": _material_cockpit_number(committed),
+            "empenhado_na_os": _material_cockpit_number(empenhado_na_os),
             "saldo_disponivel": _material_cockpit_number(available),
             "faltante": _material_cockpit_number(shortage),
             "em_chegada": _material_cockpit_number(incoming),
@@ -303,6 +329,13 @@ def work_order_material_cockpit(conn, work_id):
             "sku_selecionado": erp_stock_closure.code(row.get("sku_selecionado") or sku),
             "destino": row.get("setor") or "",
         })
+    # The same SKU can appear in more than one exploded composition line;
+    # the KPI must count each incoming purchase line once.
+    em_transito_total = sum(
+        (_material_cockpit_quantity(item["quantidade"])
+         for arrivals in incoming_by_code.values() for item in arrivals),
+        Decimal("0"),
+    )
     return {
         "work_order_id": str(work["id"]),
         "numero_os": work["numero_os"],
@@ -314,7 +347,10 @@ def work_order_material_cockpit(conn, work_id):
             "atendidos": counters["atendidos"],
             "com_previsao": counters["com_previsao"],
             "sem_previsao": counters["sem_previsao"],
+            "ha_saldo": counters["ha_saldo"],
+            "empenho_parcial": counters["empenho_parcial"],
             "faltante_total": _material_cockpit_number(faltante_total),
+            "em_transito_total": _material_cockpit_number(em_transito_total),
         },
         "items": items,
     }
