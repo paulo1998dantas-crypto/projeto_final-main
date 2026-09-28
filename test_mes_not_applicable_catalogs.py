@@ -1,7 +1,7 @@
 import unittest
 
 from erp_catalogs import payload
-from erp_service import _stage_applicable
+from erp_service import _invalid_controlled_work_order_fields, _stage_applicable
 
 
 class MesNotApplicableCatalogsTests(unittest.TestCase):
@@ -39,6 +39,15 @@ class MesNotApplicableCatalogsTests(unittest.TestCase):
         self.assertFalse(_stage_applicable("BCO", {"conjunto_bancos": "N/A"}))
         self.assertFalse(_stage_applicable("ACESSÓRIO", {"acessorio": "N/A"}))
         self.assertFalse(_stage_applicable("PLOTAGEM", {"plotagem": "N/A"}))
+
+    def test_free_text_air_system_type_is_accepted_for_work_order(self):
+        self.assertEqual(
+            [],
+            _invalid_controlled_work_order_fields({
+                "tipo_sistema_ar": "SEGUNDO COMPRESSOR COM TIPO PERSONALIZADO",
+                "ar_condicionado": "CLIM",
+            }),
+        )
 
 
 if __name__ == "__main__":

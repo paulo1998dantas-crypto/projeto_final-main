@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from erp_catalogs import (
     REQUIRED_WORK_ORDER_FIELDS, VENDEDORES, MERCADOS, TIPOS_VEICULO, LINHAS,
-    AR_FORNECEDORES, AR_TIPOS, SIM_NAO, TRANSFORMACOES,
+    AR_FORNECEDORES, SIM_NAO, TRANSFORMACOES,
 )
 
 STAGES = [
@@ -2211,6 +2211,37 @@ def correct_closed_work_order(conn, work_id, payload, actor):
     }
 
 
+def _invalid_controlled_work_order_fields(work):
+    controlled = {
+        "vendedor": VENDEDORES,
+        "mercado": MERCADOS,
+        "tipo_veiculo": TIPOS_VEICULO,
+        "linha": LINHAS,
+        "ar_quente": SIM_NAO,
+    }
+    invalid = [
+        field for field, options in controlled.items()
+        if str(work.get(field) or "").strip()
+        and _token(work.get(field)) not in {_token(option) for option in options}
+    ]
+    if (
+        str(work.get("ar_condicionado") or "").strip()
+        and _token(work.get("ar_condicionado")) not in {_token(option) for option in AR_FORNECEDORES}
+    ):
+        invalid.append("ar_condicionado")
+    transformations = {str(code): description for code, description in TRANSFORMACOES}
+    transformation_code = str(work.get("transformacao_codigo") or "").strip()
+    transformation_description = str(work.get("transformacao") or "").strip()
+    if transformation_code or transformation_description:
+        if (
+            transformation_code not in transformations
+            or _token(transformations.get(transformation_code, ""))
+               != _token(transformation_description)
+        ):
+            invalid.append("transformacao")
+    return invalid
+
+
 def activate_work_order(conn, work_id, actor):
     work=_one(conn.execute(text('select * from erp_work_orders where id=:id for update'),{'id':work_id}))
     if not work: raise ValueError('O.S. nao encontrada.')
@@ -2235,34 +2266,7 @@ def activate_work_order(conn, work_id, actor):
         missing.append("ar_condicionado")
     if missing:
         raise ValueError("Campos obrigatórios pendentes para ativar: " + ", ".join(missing) + ".")
-    controlled = {
-        "vendedor": VENDEDORES,
-        "mercado": MERCADOS,
-        "tipo_veiculo": TIPOS_VEICULO,
-        "linha": LINHAS,
-        "tipo_sistema_ar": AR_TIPOS,
-        "ar_quente": SIM_NAO,
-    }
-    invalid = [
-        field for field, options in controlled.items()
-        if str(work.get(field) or "").strip()
-        and _token(work.get(field)) not in {_token(option) for option in options}
-    ]
-    if (
-        str(work.get("ar_condicionado") or "").strip()
-        and _token(work.get("ar_condicionado")) not in {_token(option) for option in AR_FORNECEDORES}
-    ):
-        invalid.append("ar_condicionado")
-    transformations = {str(code): description for code, description in TRANSFORMACOES}
-    transformation_code = str(work.get("transformacao_codigo") or "").strip()
-    transformation_description = str(work.get("transformacao") or "").strip()
-    if transformation_code or transformation_description:
-        if (
-            transformation_code not in transformations
-            or _token(transformations.get(transformation_code, ""))
-               != _token(transformation_description)
-        ):
-            invalid.append("transformacao")
+    invalid = _invalid_controlled_work_order_fields(work)
     if invalid:
         raise ValueError("Valores fora das listas controladas: " + ", ".join(invalid) + ".")
     has_started = bool(conn.execute(text("""
