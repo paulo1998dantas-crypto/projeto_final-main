@@ -14,6 +14,12 @@ class MesNotApplicableCatalogsTests(unittest.TestCase):
             payload()["ar_tipos"],
         )
 
+    def test_catalogs_expose_second_compressor_hot_air_antibacterial_box_type(self):
+        self.assertIn(
+            "SEGUNDO COMPRESSOR COM CONDENSADOR DE TETO AR QUENTE E CAIXA ANTIBACTERICIDA",
+            payload()["ar_tipos"],
+        )
+
     def test_catalogs_expose_not_applicable_for_controlled_os_fields(self):
         catalogs = payload()
         self.assertEqual(["tipo_servico"], catalogs["required_work_order_fields"])
