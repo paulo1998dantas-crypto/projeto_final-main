@@ -485,13 +485,13 @@ function renderStages(){
   const configurationActions=document.getElementById('configuration-actions');
   if(!canStageWrite){
     if(configurationActions)configurationActions.hidden=true;
-    header.innerHTML=`<tr><th>Etapa</th><th>Feito?</th><th>Responsavel</th><th>Inicio</th><th>Fim</th>${entryMode?'':'<th>Tempo de setup (h)</th><th>Tempo parado total informado (h)</th>'}<th>Observacoes</th></tr>`;
+    header.innerHTML=`<tr><th>Etapa</th><th>Feito?</th><th>Responsavel</th><th>Inicio</th><th>Fim</th>${entryMode?'':'<th>Tempo de setup (h)</th><th>Tempo de produção (h)</th>'}<th>Observacoes</th></tr>`;
     help.textContent='Consulta resumida das etapas e do historico completo de alteracoes.';
-    document.getElementById('stage-rows').innerHTML=stages.map(s=>`<tr><td><span class="stage-code">${esc(s.stage_code)}</span></td><td><span class="badge ${esc(s.status)}">${esc(stageResult(s))}</span></td><td>${esc(s.responsavel||'—')}</td><td>${esc(datetime(s.inicio))}</td><td>${esc(datetime(s.termino))}</td>${entryMode?'':`<td>${esc(manualHours(s.setup_time_hours))}</td><td>${esc(manualHours(s.total_stopped_time_hours))}</td>`}<td>${esc(s.observacoes||'—')}</td></tr>`).join('');
+    document.getElementById('stage-rows').innerHTML=stages.map(s=>`<tr><td><span class="stage-code">${esc(s.stage_code)}</span></td><td><span class="badge ${esc(s.status)}">${esc(stageResult(s))}</span></td><td>${esc(s.responsavel||'—')}</td><td>${esc(datetime(s.inicio))}</td><td>${esc(datetime(s.termino))}</td>${entryMode?'':`<td>${esc(manualHours(s.setup_time_hours))}</td><td>${esc(manualHours(s.production_time_hours))}</td>`}<td>${esc(s.observacoes||'—')}</td></tr>`).join('');
     return;
   }
   if(configurationActions)configurationActions.hidden=!canManage||!configuring;
-  header.innerHTML=`<tr><th>Etapa</th><th>Status</th><th>Responsavel</th><th>Localizacao</th><th>Inicio</th><th>Termino</th>${entryMode?'':'<th>Tempo de setup (h)</th><th>Tempo parado total informado (h)</th><th></th>'}<th>Observacoes</th><th></th></tr>`;
+  header.innerHTML=`<tr><th>Etapa</th><th>Status</th><th>Responsavel</th><th>Localizacao</th><th>Inicio</th><th>Termino</th>${entryMode?'':'<th>Tempo de setup (h)</th><th>Tempo de produção (h)</th><th></th>'}<th>Observacoes</th><th></th></tr>`;
   help.textContent=entryMode
     ?closed
       ?'Veículo retirado sem O.S.: histórico preservado e novos apontamentos bloqueados.'
@@ -501,13 +501,13 @@ function renderStages(){
       :work.status==='FINALIZADA'
         ?'Produção finalizada: apontamentos e correções permanecem permitidos até a entrega ou retirada.'
         :closed?'Historico tecnico: datas podem ser corrigidas sem reabrir a O.S.':'';
-  if(!entryMode)help.textContent+=(help.textContent?' ':'')+'Tempos de setup e parado são informados manualmente em horas decimais; não alteram o cálculo da etapa nem as observações.';
+  if(!entryMode)help.textContent+=(help.textContent?' ':'')+'Tempos de setup e de produção são informados manualmente em horas decimais; não alteram o apontamento nem as observações.';
   document.getElementById('stage-rows').innerHTML=stages.map(s=>{
     const hasPointing=Boolean(s.has_operational_pointing);
     const fieldsLocked=closed||(configuring&&!hasPointing);
     const actionAllowed=!closed&&(entryMode||!configuring||hasPointing);
     const origin=hasPointing&&configuring?'<br><small class="muted">Apontada antes da O.S.</small>':'';
-    return `<tr data-stage="${esc(s.stage_code)}" data-input-code="${esc(s.input_code||'?')}" data-has-operational-pointing="${hasPointing?'1':'0'}"><td><span class="stage-code">${esc(s.stage_code)}</span>${origin}<br><span class="badge ${esc(s.status)}">${esc(s.input_code||'?')} · ${esc(s.status.replaceAll('_',' '))}</span></td><td><select class="stage-status" ${closed?'disabled':''}>${stageInputs.map(([value,label])=>`<option value="${value}" ${value===(s.input_code||'?')?'selected':''}>${label}</option>`).join('')}</select></td><td><input class="stage-owner" value="${esc(s.responsavel||'')}" ${fieldsLocked?'disabled':''}></td><td><input class="stage-location" value="${esc(s.localizacao||'')}" ${fieldsLocked?'disabled':''}></td><td><input class="stage-start" type="datetime-local" value="${esc(inputDatetime(s.inicio))}" ${hardLocked?'disabled':''}></td><td><input class="stage-finish" type="datetime-local" value="${esc(inputDatetime(s.termino))}" ${hardLocked?'disabled':''}></td>${entryMode?'':`<td><input class="manual-time stage-setup-time" type="number" min="0" step="0.01" inputmode="decimal" value="${esc(s.setup_time_hours??'')}" placeholder="0,00" ${hardLocked?'disabled':''}></td><td><input class="manual-time stage-total-stopped-time" type="number" min="0" step="0.01" inputmode="decimal" value="${esc(s.total_stopped_time_hours??'')}" placeholder="0,00" ${hardLocked?'disabled':''}></td><td><button class="btn manual-time-action" type="button" ${hardLocked?'disabled':''} onclick="saveManualStageTimes(this)">Salvar tempos</button></td>`}<td><input class="stage-note notes" value="${esc(s.observacoes||'')}" ${fieldsLocked?'disabled':''}></td><td>${actionAllowed?`<button class="btn primary" ${hardLocked?'disabled':''} type="button" onclick="saveStage(this)">${hasPointing?'Corrigir':'Salvar'}</button>`:'—'}</td></tr>`;
+    return `<tr data-stage="${esc(s.stage_code)}" data-input-code="${esc(s.input_code||'?')}" data-has-operational-pointing="${hasPointing?'1':'0'}"><td><span class="stage-code">${esc(s.stage_code)}</span>${origin}<br><span class="badge ${esc(s.status)}">${esc(s.input_code||'?')} · ${esc(s.status.replaceAll('_',' '))}</span></td><td><select class="stage-status" ${closed?'disabled':''}>${stageInputs.map(([value,label])=>`<option value="${value}" ${value===(s.input_code||'?')?'selected':''}>${label}</option>`).join('')}</select></td><td><input class="stage-owner" value="${esc(s.responsavel||'')}" ${fieldsLocked?'disabled':''}></td><td><input class="stage-location" value="${esc(s.localizacao||'')}" ${fieldsLocked?'disabled':''}></td><td><input class="stage-start" type="datetime-local" value="${esc(inputDatetime(s.inicio))}" ${hardLocked?'disabled':''}></td><td><input class="stage-finish" type="datetime-local" value="${esc(inputDatetime(s.termino))}" ${hardLocked?'disabled':''}></td>${entryMode?'':`<td><input class="manual-time stage-setup-time" type="number" min="0" step="0.01" inputmode="decimal" value="${esc(s.setup_time_hours??'')}" placeholder="0,00" ${hardLocked?'disabled':''}></td><td><input class="manual-time stage-production-time" type="number" min="0" step="0.01" inputmode="decimal" value="${esc(s.production_time_hours??'')}" placeholder="0,00" ${hardLocked?'disabled':''}></td><td><button class="btn manual-time-action" type="button" ${hardLocked?'disabled':''} onclick="saveManualStageTimes(this)">Salvar tempos</button></td>`}<td><input class="stage-note notes" value="${esc(s.observacoes||'')}" ${fieldsLocked?'disabled':''}></td><td>${actionAllowed?`<button class="btn primary" ${hardLocked?'disabled':''} type="button" onclick="saveStage(this)">${hasPointing?'Corrigir':'Salvar'}</button>`:'—'}</td></tr>`;
   }).join('');
 }
 
@@ -522,7 +522,7 @@ async function saveManualStageTimes(button){
   const work=state.detail?.work_order;
   if(!work)return;
   const setup=row.querySelector('.stage-setup-time').value;
-  const stopped=row.querySelector('.stage-total-stopped-time').value;
+  const production=row.querySelector('.stage-production-time').value;
   const parseHours=(raw,label)=>{
     if(raw==='')return null;
     const value=Number(String(raw).replace(',','.'));
@@ -535,7 +535,7 @@ async function saveManualStageTimes(button){
   try{
     payload={
       setup_time_hours:parseHours(setup,'Tempo de setup'),
-      total_stopped_time_hours:parseHours(stopped,'Tempo parado total'),
+      production_time_hours:parseHours(production,'Tempo de produção'),
       idempotency_key:crypto.randomUUID()
     };
   }catch(error){message(error.message,true);return}

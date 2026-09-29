@@ -921,7 +921,9 @@ def _promote_entry_stage_pointings(conn, entry_id, work_id, actor):
                    localizacao=:location,
                    inicio=:started,
                    termino=:finished,
-                   observacoes=:notes
+                   observacoes=:notes,
+                   setup_time_hours=:setup_hours,
+                   production_time_hours=:production_hours
              where id=:id
         """), {
             "id": target["id"],
@@ -932,6 +934,8 @@ def _promote_entry_stage_pointings(conn, entry_id, work_id, actor):
             "started": source.get("inicio"),
             "finished": source.get("termino"),
             "notes": source.get("observacoes") or "",
+            "setup_hours": source.get("setup_time_hours"),
+            "production_hours": source.get("production_time_hours"),
         })
         events = [dict(row._mapping) for row in conn.execute(text("""
             select * from erp_vehicle_entry_stage_events
@@ -946,10 +950,11 @@ def _promote_entry_stage_pointings(conn, entry_id, work_id, actor):
                 insert into erp_work_order_stage_events(
                     work_order_stage_id,action,status_anterior,novo_status,
                     operador,inicio,termino,localizacao,observacao,
-                    idempotency_key,created_at
+                    setup_time_hours,production_time_hours,idempotency_key,created_at
                 ) values(
                     :stage,'APONTAMENTO_PRE_OS',:old,:new,:actor,
-                    :started,:finished,:location,:note,:key,:created_at
+                    :started,:finished,:location,:note,:setup_hours,:production_hours,
+                    :key,:created_at
                 )
                 on conflict(idempotency_key) do nothing
                 returning id
@@ -958,6 +963,8 @@ def _promote_entry_stage_pointings(conn, entry_id, work_id, actor):
                 "new": event["novo_status"], "actor": event["operador"],
                 "started": event.get("inicio"), "finished": event.get("termino"),
                 "location": event.get("localizacao"), "note": event.get("observacao") or "",
+                "setup_hours": event.get("setup_time_hours"),
+                "production_hours": event.get("production_time_hours"),
                 "key": transfer_key, "created_at": event["created_at"],
             }))
             if inserted:
@@ -3411,7 +3418,7 @@ def _stage_result(stage, work_status, *, replayed=False, metadata_only=False, ch
 
 
 def update_stage_metadata(conn, work_id, code, payload, actor):
-    """Persist stage fields without altering status, applicability or setup.
+    """Persist stage fields without altering status, applicability or observations.
 
     This is intentionally a distinct domain operation from a production
     pointing.  It is safe to call from ``blur`` handlers on a mobile browser.
@@ -3439,11 +3446,18 @@ def update_stage_metadata(conn, work_id, code, payload, actor):
     values["setup_time_hours"] = _manual_hours_value(
         payload, "setup_time_hours", stage.get("setup_time_hours"), "Tempo de setup"
     )
+    values["production_time_hours"] = _manual_hours_value(
+        payload,
+        "production_time_hours",
+        stage.get("production_time_hours"),
+        "Tempo de produção",
+    )
+    # Keep values submitted by already-open tabs during a rolling deployment.
     values["total_stopped_time_hours"] = _manual_hours_value(
         payload,
         "total_stopped_time_hours",
         stage.get("total_stopped_time_hours"),
-        "Tempo parado total",
+        "Tempo parado total (legado)",
     )
     conn.execute(text("""
         update erp_work_order_stages
@@ -3454,6 +3468,7 @@ def update_stage_metadata(conn, work_id, code, payload, actor):
             observacoes=:observacoes,
             bloqueio_motivo=:bloqueio_motivo,
             setup_time_hours=:setup_time_hours,
+            production_time_hours=:production_time_hours,
             total_stopped_time_hours=:total_stopped_time_hours
         where id=:id
     """), {"id": stage["id"], **values})
@@ -3461,11 +3476,11 @@ def update_stage_metadata(conn, work_id, code, payload, actor):
         insert into erp_work_order_stage_events(
             work_order_stage_id,action,status_anterior,novo_status,operador,
             inicio,termino,localizacao,observacao,setup_time_hours,
-            total_stopped_time_hours,idempotency_key
+            production_time_hours,total_stopped_time_hours,idempotency_key
         ) values(
             :stage,'METADADOS',:status,:status,:actor,
             :inicio,:termino,:location,:note,:setup_time_hours,
-            :total_stopped_time_hours,:key
+            :production_time_hours,:total_stopped_time_hours,:key
         )
     """), {
         "stage": stage["id"],
@@ -3476,10 +3491,76 @@ def update_stage_metadata(conn, work_id, code, payload, actor):
         "location": values["localizacao"],
         "note": "Dados operacionais atualizados sem alterar o status da etapa.",
         "setup_time_hours": values["setup_time_hours"],
+        "production_time_hours": values["production_time_hours"],
         "total_stopped_time_hours": values["total_stopped_time_hours"],
         "key": idempotency_key,
     })
     return _stage_result(stage, work["status"], metadata_only=True)
+
+
+def update_production_manual_times(conn, target_kind, target_id, code, payload, actor):
+    """Save manually informed setup/production hours without changing pointing state."""
+    kind, target, stage = _production_locked_stage(conn, target_kind, target_id, code)
+    key = str(payload.get("idempotency_key") or "").strip() or None
+    if _production_event_replay(conn, kind, key):
+        return {
+            "replayed": True,
+            "metadata_only": True,
+            "input_code": stage_input_code(stage),
+            "status": stage.get("status"),
+        }
+    setup_hours = _manual_hours_value(
+        payload, "setup_time_hours", stage.get("setup_time_hours"), "Tempo de setup"
+    )
+    production_hours = _manual_hours_value(
+        payload,
+        "production_time_hours",
+        stage.get("production_time_hours"),
+        "Tempo de produção",
+    )
+    if kind == "work":
+        stage_table = "erp_work_order_stages"
+        event_table = "erp_work_order_stage_events"
+        stage_fk = "work_order_stage_id"
+    else:
+        stage_table = "erp_vehicle_entry_stages"
+        event_table = "erp_vehicle_entry_stage_events"
+        stage_fk = "vehicle_entry_stage_id"
+    conn.execute(text(f"""
+        update {stage_table}
+           set setup_time_hours=:setup_hours,
+               production_time_hours=:production_hours,
+               updated_at=now()
+         where id=:stage
+    """), {
+        "setup_hours": setup_hours,
+        "production_hours": production_hours,
+        "stage": stage["id"],
+    })
+    status = stage.get("status") or stage_input_code(stage)
+    conn.execute(text(f"""
+        insert into {event_table}(
+            {stage_fk},action,status_anterior,novo_status,operador,
+            observacao,setup_time_hours,production_time_hours,idempotency_key
+        ) values(
+            :stage,'TEMPOS_MANUAIS',:status,:status,:actor,:note,
+            :setup_hours,:production_hours,:key
+        )
+    """), {
+        "stage": stage["id"],
+        "status": status,
+        "actor": actor,
+        "note": "Tempos de setup e produção informados manualmente; apontamento e observações preservados.",
+        "setup_hours": setup_hours,
+        "production_hours": production_hours,
+        "key": key,
+    })
+    return {
+        "replayed": False,
+        "metadata_only": True,
+        "input_code": stage_input_code(stage),
+        "status": stage.get("status"),
+    }
 
 
 def update_stage(conn, work_id, code, payload, actor, allow_finalized_stage_pointing=False):
@@ -3906,9 +3987,13 @@ def _close_stage_session(conn, target_kind, stage_id, ended_at, actor):
 
 def execute_production_stage_command(conn, target_kind, target_id, stage_code, payload, actor):
     """Execute the simplified shop-floor commands using canonical MES stages."""
+    action = _token(payload.get("action")).replace(" ", "_")
+    if action == "SALVAR_TEMPOS":
+        return update_production_manual_times(
+            conn, target_kind, target_id, stage_code, payload, actor
+        )
     if not _stage_pause_schema_ready(conn):
         raise ValueError("A migration de paradas da Produção ainda não foi aplicada.")
-    action = _token(payload.get("action")).replace(" ", "_")
     if action not in {"INICIAR", "PARAR", "FINALIZAR", "INTERROMPER"}:
         raise ValueError("Comando inválido. Use INICIAR, PARAR, FINALIZAR ou INTERROMPER.")
     kind, target, stage = _production_locked_stage(

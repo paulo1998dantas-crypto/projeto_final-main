@@ -29,6 +29,7 @@ class MesStageWriteSafetyTests(unittest.TestCase):
             "observacoes": "OBSERVAÇÃO ORIGINAL",
             "bloqueio_motivo": "",
             "setup_time_hours": None,
+            "production_time_hours": None,
             "total_stopped_time_hours": None,
         }
 
@@ -45,7 +46,7 @@ class MesStageWriteSafetyTests(unittest.TestCase):
                 connection,
                 "work-order",
                 "PREP",
-                {"setup_time_hours": "1,50", "total_stopped_time_hours": "0.75"},
+                {"setup_time_hours": "1,50", "production_time_hours": "0.75"},
                 "PAULO",
             )
 
@@ -53,13 +54,74 @@ class MesStageWriteSafetyTests(unittest.TestCase):
         event_sql, event_params = connection.calls[1]
         self.assertIn("setup_time_hours=:setup_time_hours", update_sql)
         self.assertEqual(Decimal("1.50"), update_params["setup_time_hours"])
-        self.assertEqual(Decimal("0.75"), update_params["total_stopped_time_hours"])
+        self.assertEqual(Decimal("0.75"), update_params["production_time_hours"])
         self.assertEqual("OBSERVAÇÃO ORIGINAL", update_params["observacoes"])
         self.assertNotIn("status=", update_sql)
         self.assertIn("setup_time_hours", event_sql)
         self.assertEqual(update_params["setup_time_hours"], event_params["setup_time_hours"])
-        self.assertEqual(update_params["total_stopped_time_hours"], event_params["total_stopped_time_hours"])
+        self.assertEqual(update_params["production_time_hours"], event_params["production_time_hours"])
+        self.assertIsNone(update_params["total_stopped_time_hours"])
         self.assertTrue(result["metadata_only"])
+
+    def test_production_manual_times_save_without_touching_pointing_for_work_and_entry(self):
+        stage = {
+            "id": "stage",
+            "status": "EM_ANDAMENTO",
+            "setup_time_hours": None,
+            "production_time_hours": None,
+        }
+
+        class Connection:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, statement, params=None):
+                self.calls.append((" ".join(str(statement).split()).lower(), params or {}))
+
+        for kind, stage_table, event_table, stage_fk in (
+            ("work", "erp_work_order_stages", "erp_work_order_stage_events", "work_order_stage_id"),
+            ("entry", "erp_vehicle_entry_stages", "erp_vehicle_entry_stage_events", "vehicle_entry_stage_id"),
+        ):
+            with self.subTest(kind=kind):
+                connection = Connection()
+                with (
+                    patch.object(erp_service, "_production_locked_stage", return_value=(kind, {"status": "ATIVA"}, stage)),
+                    patch.object(erp_service, "_production_event_replay", return_value=False),
+                ):
+                    result = erp_service.update_production_manual_times(
+                        connection,
+                        kind,
+                        "target",
+                        "PREP",
+                        {"setup_time_hours": "1,25", "production_time_hours": "2.5", "idempotency_key": "key"},
+                        "PAULO",
+                    )
+
+                update_sql, update_params = connection.calls[0]
+                event_sql, event_params = connection.calls[1]
+                self.assertIn(f"update {stage_table}", update_sql)
+                self.assertIn("setup_time_hours=:setup_hours", update_sql)
+                self.assertIn("production_time_hours=:production_hours", update_sql)
+                self.assertNotIn("status=", update_sql)
+                self.assertNotIn("inicio=", update_sql)
+                self.assertNotIn("observacoes=", update_sql)
+                self.assertEqual(Decimal("1.25"), update_params["setup_hours"])
+                self.assertEqual(Decimal("2.50"), update_params["production_hours"])
+                self.assertIn(f"insert into {event_table}", event_sql)
+                self.assertIn(stage_fk, event_sql)
+                self.assertIn("'tempos_manuais'", event_sql)
+                self.assertEqual(update_params["setup_hours"], event_params["setup_hours"])
+                self.assertEqual(update_params["production_hours"], event_params["production_hours"])
+                self.assertTrue(result["metadata_only"])
+
+    def test_production_screen_exposes_manual_setup_and_production_inputs(self):
+        template = Path(__file__).with_name("templates") / "producao_apontamento.html"
+        source = template.read_text(encoding="utf-8")
+        self.assertIn('id="setup-time"', source)
+        self.assertIn('id="production-time"', source)
+        self.assertIn("Tempo de Setup (h)", source)
+        self.assertIn("Tempo de Produção (h)", source)
+        self.assertIn("SALVAR_TEMPOS", source)
 
     def test_manual_duration_rejects_negative_values_before_writing(self):
         work = {"status": "EM_PRODUÇÃO", "vehicle_entry_id": "entry"}
