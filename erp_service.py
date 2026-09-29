@@ -155,14 +155,17 @@ def work_order_material_cockpit(conn, work_id):
     if not isinstance(raw_composition, list):
         raise ValueError("A composição da O.S. está inválida.")
 
-    composition = [row for row in raw_composition if isinstance(row, dict)]
-    requested_codes = []
+    composition = [dict(row) for row in raw_composition if isinstance(row, dict)]
+    # The Suprimentos snapshot can contain both a BOM parent and its already
+    # exploded descendants. Normalize it the same way as technical close:
+    # BOM parents are phantom rows and only their leaf materials are demand.
+    normalized_composition = []
     for row in composition:
         sku = erp_stock_closure.code(
             row.get("codigo") or row.get("sku_selecionado") or row.get("sku_planejado")
         )
-        if sku and sku not in requested_codes:
-            requested_codes.append(sku)
+        if sku:
+            normalized_composition.append({**row, "codigo": sku})
 
     sku_rows = [dict(row) for row in conn.execute(text("""
         select s.id,s.sku,s.descricao,s.unidade,s.active,
@@ -175,12 +178,67 @@ def work_order_material_cockpit(conn, work_id):
         for row in sku_rows
         if erp_stock_closure.code(row.get("sku"))
     }
-    requested_ids = [sku_by_code[sku]["id"] for sku in requested_codes if sku in sku_by_code]
+    sku_by_id = {row["id"]: row for row in sku_rows}
+    children = defaultdict(list)
+    for row in conn.execute(text("""
+        select parent.sku as parent_sku,component.sku as component_sku,
+               bom.quantidade
+          from bom_components bom
+          join skus parent on parent.id=bom.item_sku_id
+          join skus component on component.id=bom.component_sku_id
+    """)).mappings():
+        parent = erp_stock_closure.code(row.get("parent_sku"))
+        component = erp_stock_closure.code(row.get("component_sku"))
+        amount = _material_cockpit_quantity(row.get("quantidade"))
+        if parent and component and amount > 0:
+            children[parent].append((component, amount))
+
+    required_by_code = erp_stock_closure._normalize_required_composition(
+        normalized_composition, children,
+    )
+    requested_codes = list(required_by_code)
+    # A commitment can be on a BOM parent instead of the leaf material shown
+    # in the cockpit. Include every BOM ancestor that covers a requested leaf.
+    coverage_codes = set(requested_codes)
+    while True:
+        ancestors = {
+            parent for parent, components in children.items()
+            if parent not in coverage_codes
+            and any(component in coverage_codes for component, _ in components)
+        }
+        if not ancestors:
+            break
+        coverage_codes.update(ancestors)
+    coverage_ids = [
+        sku_by_code[sku]["id"] for sku in coverage_codes if sku in sku_by_code
+    ]
+    parent_display_by_code = defaultdict(list)
+    metadata_by_code = {}
+    for row in composition:
+        sku = erp_stock_closure.code(
+            row.get("codigo") or row.get("sku_selecionado") or row.get("sku_planejado")
+        )
+        if sku and sku not in children:
+            metadata_by_code.setdefault(sku, row)
+        item = str(row.get("item") or "").strip()
+        if item:
+            item_code = erp_stock_closure.code(item)
+            # Do not leak a BOM kit SKU into the visible parent column. A
+            # readable description is useful context; the material rows stay
+            # focused on the actual leaf SKUs.
+            item_row = sku_by_code.get(item_code)
+            item_label = item_row.get("descricao") if item_row and item_code in children else item
+            if item_label:
+                for leaf in requested_codes:
+                    if leaf == sku or leaf in erp_stock_closure._leaf_requirements(sku, 1, children):
+                        if item_label not in parent_display_by_code[leaf]:
+                            parent_display_by_code[leaf].append(item_label)
+
     pending_by_sku = defaultdict(lambda: Decimal("0"))
     empenhado_na_os_by_sku = defaultdict(lambda: Decimal("0"))
-    if requested_ids:
-        bind_names = [f"sku_id_{index}" for index in range(len(requested_ids))]
-        bind_values = dict(zip(bind_names, requested_ids))
+    if coverage_ids:
+        bind_names = [f"sku_id_{index}" for index in range(len(coverage_ids))]
+        bind_values = dict(zip(bind_names, coverage_ids))
         in_clause = ",".join(f":{name}" for name in bind_names)
         movements = [dict(row) for row in conn.execute(text(f"""
             select id,sku_id,tipo,quantidade,related_movement_id,work_order_id
@@ -192,24 +250,49 @@ def work_order_material_cockpit(conn, work_id):
         commitments_by_id = {
             row["id"]: row for row in movements if row["tipo"] in {"EMPENHO", "SAIDA"}
         }
-        consumed_by_parent = defaultdict(lambda: Decimal("0"))
-        for row in movements:
-            parent = commitments_by_id.get(row.get("related_movement_id"))
-            if row["tipo"] == "BAIXA" and parent:
-                consumed_by_parent[parent["id"]] += _material_cockpit_quantity(row["quantidade"])
+        commitment_ids = list(commitments_by_id)
+        linked_baixas = []
+        if commitment_ids:
+            related_names = [f"movement_id_{index}" for index in range(len(commitment_ids))]
+            related_values = dict(zip(related_names, commitment_ids))
+            related_clause = ",".join(f":{name}" for name in related_names)
+            linked_baixas = [dict(row) for row in conn.execute(text(f"""
+                select id,sku_id,tipo,quantidade,related_movement_id,work_order_id
+                  from movements
+                 where movement_status='ATIVA' and tipo='BAIXA'
+                   and related_movement_id in ({related_clause})
+            """), related_values).mappings()]
+        baixas_by_parent = defaultdict(list)
+        for baixa in linked_baixas:
+            if baixa.get("related_movement_id") in commitments_by_id:
+                baixas_by_parent[baixa["related_movement_id"]].append(baixa)
         for row in commitments_by_id.values():
-            pending_by_sku[row["sku_id"]] += max(
-                _material_cockpit_quantity(row["quantidade"])
-                - consumed_by_parent.get(row["id"], Decimal("0")),
-                Decimal("0"),
+            source_sku = sku_by_id.get(row["sku_id"])
+            source_code = erp_stock_closure.code(source_sku.get("sku") if source_sku else "")
+            if not source_code:
+                continue
+            gross = erp_stock_closure._leaf_requirements(
+                source_code, _material_cockpit_quantity(row["quantidade"]), children,
             )
+            remaining = dict(gross)
+            for baixa in baixas_by_parent.get(row["id"], []):
+                baixa_sku = sku_by_id.get(baixa["sku_id"])
+                baixa_code = erp_stock_closure.code(baixa_sku.get("sku") if baixa_sku else "")
+                consumed = erp_stock_closure._leaf_requirements(
+                    baixa_code, _material_cockpit_quantity(baixa["quantidade"]), children,
+                ) if baixa_code else {}
+                for leaf, amount in consumed.items():
+                    if leaf in remaining:
+                        remaining[leaf] = max(Decimal("0"), remaining[leaf] - amount)
+            for leaf, amount in remaining.items():
+                if leaf in sku_by_code:
+                    pending_by_sku[sku_by_code[leaf]["id"]] += amount
             if erp_stock_closure.same_uuid(row.get("work_order_id"), work["id"]):
-                # A linked BAIXA does not erase the fact that the material
-                # was reserved for this O.S.; only the global free balance
-                # excludes the already consumed quantity above.
-                empenhado_na_os_by_sku[row["sku_id"]] += _material_cockpit_quantity(
-                    row["quantidade"]
-                )
+                # Keep the full allocation visible for this O.S. after its
+                # linked BAIXA: the materials remain attended by this kit.
+                for leaf, amount in gross.items():
+                    if leaf in sku_by_code:
+                        empenhado_na_os_by_sku[sku_by_code[leaf]["id"]] += amount
 
     incoming_by_code = defaultdict(list)
     incoming_rows = conn.execute(text("""
@@ -260,11 +343,9 @@ def work_order_material_cockpit(conn, work_id):
     }
     faltante_total = Decimal("0")
     em_transito_total = Decimal("0")
-    for index, row in enumerate(composition, start=1):
-        sku = erp_stock_closure.code(
-            row.get("codigo") or row.get("sku_selecionado") or row.get("sku_planejado")
-        )
-        required = max(_material_cockpit_quantity(row.get("qtd", row.get("quantidade"))), Decimal("0"))
+    for index, (sku, required) in enumerate(required_by_code.items(), start=1):
+        row = metadata_by_code.get(sku, {})
+        required = max(_material_cockpit_quantity(required), Decimal("0"))
         sku_row = sku_by_code.get(sku)
         physical = _material_cockpit_quantity(sku_row.get("saldo_atual") if sku_row else 0)
         committed = pending_by_sku.get(sku_row["id"], Decimal("0")) if sku_row else Decimal("0")
@@ -308,7 +389,7 @@ def work_order_material_cockpit(conn, work_id):
         faltante_total += shortage
         items.append({
             "ordem": index,
-            "item": row.get("item") or "-",
+            "item": " · ".join(parent_display_by_code.get(sku, [])) or "-",
             "nivel": int(row.get("level") or 0),
             "codigo": sku,
             "descricao": row.get("descricao") or (sku_row.get("descricao") if sku_row else ""),

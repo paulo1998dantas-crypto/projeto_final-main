@@ -21,6 +21,7 @@ class MaterialCockpitTests(unittest.TestCase):
                 "create table suprimentos_documentos(id integer primary key, tipo text, numero text, erp_work_order_id text, composicao text, status text, updated_at text)",
                 "create table skus(id integer primary key, sku text, descricao text, unidade text, active boolean)",
                 "create table stock_balances(id integer primary key, sku_id integer, saldo_atual numeric)",
+                "create table bom_components(id integer primary key,item_sku_id integer,component_sku_id integer,quantidade numeric)",
                 "create table movements(id integer primary key, sku_id integer, tipo text, quantidade numeric, related_movement_id integer, work_order_id text, movement_status text)",
                 "create table erp_purchase_orders(id integer primary key, work_order_id text, vehicle_entry_id text, data_necessidade text, numero_oc text, fornecedor_nome text, status text)",
                 "create table erp_purchase_order_lines(id integer primary key, purchase_order_id integer, sku_id integer, sku_codigo text, quantidade_pedida numeric, quantidade_recebida numeric, data_necessidade text, status text, work_order_id text)",
@@ -85,6 +86,86 @@ class MaterialCockpitTests(unittest.TestCase):
         self.assertEqual(1, result["summary"]["ha_saldo"])
         self.assertEqual(1, result["summary"]["empenho_parcial"])
         self.assertEqual(5.0, result["summary"]["em_transito_total"])
+
+    def test_bom_commitment_and_baixa_are_reflected_on_leaf_materials(self):
+        with self.engine.begin() as conn:
+            conn.execute(text("delete from movements"))
+            conn.execute(text("""
+                insert into skus values
+                  (5,'CJ-100','Conjunto pai','CJ',1),
+                  (6,'CJ-200','Subconjunto intermediário','CJ',1),
+                  (7,'2001','Material A','UN',1),
+                  (8,'2002','Material B','UN',1),
+                  (9,'CJ-DIRETO','Conjunto sem BOM','CJ',1)
+            """))
+            conn.execute(text("""
+                insert into stock_balances(sku_id,saldo_atual) values
+                  (5,0),(6,0),(7,10),(8,10),(9,10)
+            """))
+            conn.execute(text("""
+                insert into bom_components values
+                  (1,5,6,1),(2,6,7,2),(3,6,8,3)
+            """))
+            composition = [
+                {"item": "CJ-100", "codigo": "CJ-100", "qtd": 1, "level": 0},
+                {"item": "CJ-100", "codigo": "CJ-200", "qtd": 1, "level": 1},
+                {"item": "CJ-200", "codigo": "2001", "qtd": 2, "level": 2},
+                {"item": "CJ-200", "codigo": "2002", "qtd": 3, "level": 2},
+                {"item": "CJ-DIRETO", "codigo": "CJ-DIRETO", "qtd": 1, "level": 0},
+            ]
+            conn.execute(text("update suprimentos_documentos set composicao=:value where id=1"),
+                         {"value": json.dumps(composition)})
+            conn.execute(text("""
+                insert into movements values
+                  (10,5,'EMPENHO',1,null,:work,'ATIVA'),
+                  (11,7,'BAIXA',2,10,:work,'ATIVA'),
+                  (12,9,'EMPENHO',1,null,:work,'ATIVA')
+            """), {"work": WORK})
+
+        with self.engine.connect() as conn:
+            result = erp_service.work_order_material_cockpit(conn, WORK)
+
+        rows = {row["codigo"]: row for row in result["items"]}
+        self.assertEqual({"2001", "2002", "CJ-DIRETO"}, set(rows))
+        self.assertNotIn("CJ-100", rows)
+        self.assertNotIn("CJ-200", rows)
+        self.assertNotIn("CJ-100", rows["2001"]["item"])
+        self.assertEqual(2.0, rows["2001"]["necessario"])
+        self.assertEqual(3.0, rows["2002"]["necessario"])
+        self.assertEqual(2.0, rows["2001"]["empenhado_na_os"])
+        self.assertEqual(3.0, rows["2002"]["empenhado_na_os"])
+        self.assertEqual(0.0, rows["2001"]["saldo_empenhado"])
+        self.assertEqual(3.0, rows["2002"]["saldo_empenhado"])
+        self.assertEqual("ATENDIDO", rows["2001"]["status"])
+        self.assertEqual("ATENDIDO", rows["2002"]["status"])
+        self.assertEqual("ATENDIDO", rows["CJ-DIRETO"]["status"])
+
+    def test_bom_commitment_from_another_work_order_reduces_leaf_free_balance(self):
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                insert into skus values
+                  (5,'CJ-100','Conjunto pai','CJ',1),
+                  (7,'2001','Material A','UN',1)
+            """))
+            conn.execute(text("insert into stock_balances(sku_id,saldo_atual) values(7,10)"))
+            conn.execute(text("insert into bom_components values(1,5,7,4)"))
+            conn.execute(text("""
+                update suprimentos_documentos set composicao=:value where id=1
+            """), {"value": json.dumps([
+                {"item": "CJ-100", "codigo": "CJ-100", "qtd": 1, "level": 0},
+            ])})
+            conn.execute(text("insert into movements values(10,5,'EMPENHO',1,null,:work,'ATIVA')"),
+                         {"work": OTHER})
+
+        with self.engine.connect() as conn:
+            result = erp_service.work_order_material_cockpit(conn, WORK)
+
+        self.assertEqual(1, len(result["items"]))
+        row = result["items"][0]
+        self.assertEqual("2001", row["codigo"])
+        self.assertEqual(4.0, row["saldo_empenhado"])
+        self.assertEqual(6.0, row["saldo_disponivel"])
+        self.assertEqual("HA_SALDO", row["status"])
 
 
 if __name__ == "__main__":
