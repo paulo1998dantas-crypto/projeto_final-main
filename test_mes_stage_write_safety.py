@@ -7,6 +7,7 @@ the canonical ERP stage row.
 import asyncio
 import datetime
 import inspect
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -16,6 +17,65 @@ import erp_service
 
 
 class MesStageWriteSafetyTests(unittest.TestCase):
+    def test_manual_duration_metadata_is_saved_without_changing_notes_or_status(self):
+        work = {"status": "EM_PRODUÇÃO", "vehicle_entry_id": "entry"}
+        stage = {
+            "id": "stage",
+            "status": "EM_ANDAMENTO",
+            "inicio": datetime.datetime(2026, 9, 1, 8),
+            "termino": None,
+            "responsavel": "OPERADOR",
+            "localizacao": "LINHA",
+            "observacoes": "OBSERVAÇÃO ORIGINAL",
+            "bloqueio_motivo": "",
+            "setup_time_hours": None,
+            "total_stopped_time_hours": None,
+        }
+
+        class Connection:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, statement, params=None):
+                self.calls.append((" ".join(str(statement).split()).lower(), params or {}))
+
+        connection = Connection()
+        with patch.object(erp_service, "_locked_work_and_stage", return_value=(work, stage)):
+            result = erp_service.update_stage_metadata(
+                connection,
+                "work-order",
+                "PREP",
+                {"setup_time_hours": "1,50", "total_stopped_time_hours": "0.75"},
+                "PAULO",
+            )
+
+        update_sql, update_params = connection.calls[0]
+        event_sql, event_params = connection.calls[1]
+        self.assertIn("setup_time_hours=:setup_time_hours", update_sql)
+        self.assertEqual(Decimal("1.50"), update_params["setup_time_hours"])
+        self.assertEqual(Decimal("0.75"), update_params["total_stopped_time_hours"])
+        self.assertEqual("OBSERVAÇÃO ORIGINAL", update_params["observacoes"])
+        self.assertNotIn("status=", update_sql)
+        self.assertIn("setup_time_hours", event_sql)
+        self.assertEqual(update_params["setup_time_hours"], event_params["setup_time_hours"])
+        self.assertEqual(update_params["total_stopped_time_hours"], event_params["total_stopped_time_hours"])
+        self.assertTrue(result["metadata_only"])
+
+    def test_manual_duration_rejects_negative_values_before_writing(self):
+        work = {"status": "EM_PRODUÇÃO", "vehicle_entry_id": "entry"}
+        stage = {"id": "stage", "status": "PENDENTE", "observacoes": "MANTER"}
+        connection = Mock()
+        with patch.object(erp_service, "_locked_work_and_stage", return_value=(work, stage)):
+            with self.assertRaisesRegex(ValueError, "Tempo de setup"):
+                erp_service.update_stage_metadata(
+                    connection,
+                    "work-order",
+                    "PREP",
+                    {"setup_time_hours": -1},
+                    "PAULO",
+                )
+        connection.execute.assert_not_called()
+
     def test_old_mobile_autosave_is_routed_to_metadata_only(self):
         expected = {"metadata_only": True}
         with patch.object(

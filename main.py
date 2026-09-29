@@ -1934,7 +1934,8 @@ def _erp_history_export_rows():
                    concat_ws(' ',nullif(trim(v.marca),''),nullif(trim(v.modelo),''),
                              nullif(trim(v.versao),'')) as modelo,
                    s.stage_code,ev.action,ev.status_anterior,ev.novo_status,
-                   ev.operador,ev.inicio,ev.termino,ev.localizacao,ev.created_at
+                   ev.operador,ev.inicio,ev.termino,ev.localizacao,
+                   ev.setup_time_hours,ev.total_stopped_time_hours,ev.created_at
               from erp_work_order_stage_events ev
               join erp_work_order_stages s on s.id=ev.work_order_stage_id
               join erp_work_orders w on w.id=s.work_order_id
@@ -1956,6 +1957,8 @@ def _erp_history_export_rows():
                 "INICIO": to_excel_dt(row["inicio"]),
                 "TERMINO": to_excel_dt(row["termino"]),
                 "LOCALIZACAO": row["localizacao"],
+                "TEMPO DE SETUP (H)": row["setup_time_hours"],
+                "TEMPO PARADO TOTAL INFORMADO (H)": row["total_stopped_time_hours"],
                 "DATA": to_excel_dt(row["created_at"]),
                 "ORIGEM": "ERP",
             }
@@ -1969,7 +1972,8 @@ def _erp_time_export_rows():
             select e.item_number,w.numero_os,v.chassi,
                    concat_ws(' ',nullif(trim(v.marca),''),nullif(trim(v.modelo),''),
                              nullif(trim(v.versao),'')) as modelo,
-                   s.stage_code,s.status,s.responsavel,s.inicio,s.termino,s.localizacao
+                   s.stage_code,s.status,s.responsavel,s.inicio,s.termino,s.localizacao,
+                   s.setup_time_hours,s.total_stopped_time_hours
               from erp_work_order_stages s
               join erp_work_orders w on w.id=s.work_order_id
               join erp_vehicle_entries e on e.id=w.vehicle_entry_id
@@ -1988,6 +1992,8 @@ def _erp_time_export_rows():
                 "INICIO": to_excel_dt(row["inicio"]),
                 "TERMINO": to_excel_dt(row["termino"]),
                 "LOCALIZACAO": row["localizacao"],
+                "TEMPO DE SETUP (H)": row["setup_time_hours"],
+                "TEMPO PARADO TOTAL INFORMADO (H)": row["total_stopped_time_hours"],
                 "ORIGEM": "ERP",
             }
             for row in rows
@@ -2005,7 +2011,8 @@ async def exportar(request: Request, db: Session = Depends(database.get_db)):
         columns = [
             "ITEM", "O.S.", "CHASSI", "MODELO", "ETAPA", "AÇÃO",
             "STATUS ANTERIOR", "STATUS", "RESPONSAVEL", "INICIO",
-            "TERMINO", "LOCALIZACAO", "DATA", "ORIGEM",
+            "TERMINO", "LOCALIZACAO", "TEMPO DE SETUP (H)",
+            "TEMPO PARADO TOTAL INFORMADO (H)", "DATA", "ORIGEM",
         ]
         return _xlsx_response(
             _erp_history_export_rows(),
@@ -2054,7 +2061,8 @@ async def exportar_tempos(request: Request, db: Session = Depends(database.get_d
     if erp_feature_enabled() and inspect(database.engine).has_table("erp_work_order_stages"):
         columns = [
             "ITEM", "O.S.", "CHASSI", "MODELO", "ETAPA", "STATUS",
-            "RESPONSAVEL", "INICIO", "TERMINO", "LOCALIZACAO", "ORIGEM",
+            "RESPONSAVEL", "INICIO", "TERMINO", "LOCALIZACAO",
+            "TEMPO DE SETUP (H)", "TEMPO PARADO TOTAL INFORMADO (H)", "ORIGEM",
         ]
         return _xlsx_response(
             _erp_time_export_rows(),

@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import unittest
+from decimal import Decimal
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
@@ -65,6 +66,8 @@ class MesOperationalExportTests(unittest.TestCase):
             "inicio": datetime(2026, 7, 30, 10, tzinfo=timezone.utc),
             "termino": datetime(2026, 7, 30, 11, tzinfo=timezone.utc),
             "localizacao": "Linha",
+            "setup_time_hours": 1.5,
+            "total_stopped_time_hours": 2.25,
             "created_at": datetime(2026, 7, 30, 11, tzinfo=timezone.utc),
         }])
 
@@ -73,6 +76,8 @@ class MesOperationalExportTests(unittest.TestCase):
 
         self.assertEqual(rows[0]["ITEM"], 3110)
         self.assertEqual(rows[0]["STATUS"], "CONCLUÍDA")
+        self.assertEqual(rows[0]["TEMPO DE SETUP (H)"], 1.5)
+        self.assertEqual(rows[0]["TEMPO PARADO TOTAL INFORMADO (H)"], 2.25)
         self.assertEqual(rows[0]["ORIGEM"], "ERP")
         self.assertIsNone(rows[0]["DATA"].tzinfo)
         self.assertIn("erp_work_order_stage_events", engine.connection.sql)
@@ -90,6 +95,8 @@ class MesOperationalExportTests(unittest.TestCase):
             "inicio": None,
             "termino": None,
             "localizacao": "Linha",
+            "setup_time_hours": 0.75,
+            "total_stopped_time_hours": None,
         }])
 
         with patch.object(main.database, "engine", engine):
@@ -97,6 +104,8 @@ class MesOperationalExportTests(unittest.TestCase):
 
         self.assertEqual(rows[0]["ETAPA"], "VIDROS")
         self.assertEqual(rows[0]["STATUS"], "EM_ANDAMENTO")
+        self.assertEqual(rows[0]["TEMPO DE SETUP (H)"], 0.75)
+        self.assertIsNone(rows[0]["TEMPO PARADO TOTAL INFORMADO (H)"])
         self.assertEqual(rows[0]["ORIGEM"], "ERP")
         self.assertIn("erp_work_order_stages", engine.connection.sql)
         self.assertIn("erp_vehicle_entries", engine.connection.sql)
@@ -106,6 +115,19 @@ class MesOperationalExportTests(unittest.TestCase):
             source = inspect.getsource(endpoint)
             self.assertIn("require_login(request, db)", source)
             self.assertIn('RedirectResponse(url="/login", status_code=303)', source)
+
+    def test_manual_duration_is_written_as_a_numeric_excel_value(self):
+        response = main._xlsx_response(
+            [{"TEMPO DE SETUP (H)": Decimal("1.50")}],
+            ["TEMPO DE SETUP (H)"],
+            "logs.xlsx",
+        )
+        payload = asyncio.run(self._response_bytes(response))
+        workbook = load_workbook(BytesIO(payload), read_only=True)
+        cell = workbook.active["A2"]
+        self.assertEqual(cell.value, 1.5)
+        self.assertEqual(cell.data_type, "n")
+        workbook.close()
 
     def test_zero_erp_events_export_headers_without_legacy_schema(self):
         class _Inspector:
@@ -134,7 +156,8 @@ class MesOperationalExportTests(unittest.TestCase):
             [
                 "ITEM", "O.S.", "CHASSI", "MODELO", "ETAPA", "AÇÃO",
                 "STATUS ANTERIOR", "STATUS", "RESPONSAVEL", "INICIO",
-                "TERMINO", "LOCALIZACAO", "DATA", "ORIGEM",
+                "TERMINO", "LOCALIZACAO", "TEMPO DE SETUP (H)",
+                "TEMPO PARADO TOTAL INFORMADO (H)", "DATA", "ORIGEM",
             ],
         )
 
@@ -164,7 +187,8 @@ class MesOperationalExportTests(unittest.TestCase):
             headers,
             [
                 "ITEM", "O.S.", "CHASSI", "MODELO", "ETAPA", "STATUS",
-                "RESPONSAVEL", "INICIO", "TERMINO", "LOCALIZACAO", "ORIGEM",
+                "RESPONSAVEL", "INICIO", "TERMINO", "LOCALIZACAO",
+                "TEMPO DE SETUP (H)", "TEMPO PARADO TOTAL INFORMADO (H)", "ORIGEM",
             ],
         )
 

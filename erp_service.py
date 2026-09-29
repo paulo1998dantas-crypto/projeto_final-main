@@ -1,7 +1,7 @@
 """New operational O.S./MES domain. Legacy MES tables remain read-only compatible."""
 from datetime import datetime, date, timedelta, timezone
 from collections import defaultdict
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import cmp_to_key
 import erp_stock_closure
 import json
@@ -3380,6 +3380,25 @@ def _metadata_value(payload, field, current):
     return value
 
 
+def _manual_hours_value(payload, field, current, label):
+    """Parse a manually reported duration, stored as non-negative decimal hours."""
+    if field not in payload:
+        return current
+    raw = payload.get(field)
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        value = Decimal(str(raw).strip().replace(",", "."))
+    except (InvalidOperation, ValueError):
+        raise ValueError(f"{label}: informe um número de horas válido.") from None
+    if not value.is_finite() or value < 0 or value > Decimal("99999999.99"):
+        raise ValueError(f"{label}: informe horas entre 0 e 99.999.999,99.")
+    try:
+        return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        raise ValueError(f"{label}: informe horas com até duas casas decimais.") from None
+
+
 def _stage_result(stage, work_status, *, replayed=False, metadata_only=False, changed=True):
     return {
         "replayed": replayed,
@@ -3417,6 +3436,15 @@ def update_stage_metadata(conn, work_id, code, payload, actor):
         field: _metadata_value(payload, field, stage.get(field))
         for field in ("responsavel", "localizacao", "inicio", "termino", "observacoes", "bloqueio_motivo")
     }
+    values["setup_time_hours"] = _manual_hours_value(
+        payload, "setup_time_hours", stage.get("setup_time_hours"), "Tempo de setup"
+    )
+    values["total_stopped_time_hours"] = _manual_hours_value(
+        payload,
+        "total_stopped_time_hours",
+        stage.get("total_stopped_time_hours"),
+        "Tempo parado total",
+    )
     conn.execute(text("""
         update erp_work_order_stages
         set responsavel=:responsavel,
@@ -3424,16 +3452,20 @@ def update_stage_metadata(conn, work_id, code, payload, actor):
             inicio=:inicio,
             termino=:termino,
             observacoes=:observacoes,
-            bloqueio_motivo=:bloqueio_motivo
+            bloqueio_motivo=:bloqueio_motivo,
+            setup_time_hours=:setup_time_hours,
+            total_stopped_time_hours=:total_stopped_time_hours
         where id=:id
     """), {"id": stage["id"], **values})
     conn.execute(text("""
         insert into erp_work_order_stage_events(
             work_order_stage_id,action,status_anterior,novo_status,operador,
-            inicio,termino,localizacao,observacao,idempotency_key
+            inicio,termino,localizacao,observacao,setup_time_hours,
+            total_stopped_time_hours,idempotency_key
         ) values(
             :stage,'METADADOS',:status,:status,:actor,
-            :inicio,:termino,:location,:note,:key
+            :inicio,:termino,:location,:note,:setup_time_hours,
+            :total_stopped_time_hours,:key
         )
     """), {
         "stage": stage["id"],
@@ -3443,6 +3475,8 @@ def update_stage_metadata(conn, work_id, code, payload, actor):
         "termino": values["termino"],
         "location": values["localizacao"],
         "note": "Dados operacionais atualizados sem alterar o status da etapa.",
+        "setup_time_hours": values["setup_time_hours"],
+        "total_stopped_time_hours": values["total_stopped_time_hours"],
         "key": idempotency_key,
     })
     return _stage_result(stage, work["status"], metadata_only=True)
