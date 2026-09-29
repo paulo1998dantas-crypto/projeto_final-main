@@ -1,6 +1,9 @@
+import asyncio
 import json
 import unittest
 from datetime import date
+from pathlib import Path
+from unittest.mock import patch
 
 import erp_service
 
@@ -148,6 +151,67 @@ class WorkOrderHistoricalCorrectionTests(unittest.TestCase):
         self.assertFalse(any(
             sql.startswith("update erp_work_orders") for sql, _ in conn.calls
         ))
+
+    def test_authenticated_historical_correction_route_requires_manage_permission(self):
+        import main
+
+        user = type("User", (), {"nome": "OPERADOR"})()
+        with (
+            patch.object(main, "erp_feature_enabled", return_value=True),
+            patch.object(main, "require_login", return_value=user),
+            patch.object(main, "has_permission", return_value=False),
+        ):
+            response = asyncio.run(main.erp_correct_historical_work_order(
+                "work-3119", object(), {"motivo": "Ajuste"}, object()
+            ))
+
+        self.assertEqual(403, response.status_code)
+
+    def test_authenticated_route_calls_audited_closed_order_correction(self):
+        import main
+
+        user = type("User", (), {"nome": "PAULO"})()
+        connection = object()
+
+        class FakeTransaction:
+            def __enter__(self):
+                return connection
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+        payload = {
+            "motivo": "Correção histórica conferida.",
+            "work_order": {"mercado": "LICITAÇÃO"},
+        }
+        expected = {"id": "work-3119", "changed_fields": ["mercado"]}
+        with (
+            patch.object(main, "erp_feature_enabled", return_value=True),
+            patch.object(main, "require_login", return_value=user),
+            patch.object(main, "has_permission", return_value=True),
+            patch.object(main.database.engine, "begin", return_value=FakeTransaction()),
+            patch.object(
+                main.erp_service,
+                "correct_closed_work_order",
+                return_value=expected,
+            ) as correct,
+        ):
+            response = asyncio.run(main.erp_correct_historical_work_order(
+                "work-3119", object(), payload, object()
+            ))
+
+        self.assertEqual({"ok": True, **expected}, response)
+        correct.assert_called_once_with(connection, "work-3119", payload, "PAULO")
+
+    def test_management_screen_exposes_historical_edit_and_audit_trail(self):
+        source = (Path(__file__).parent / "templates" / "gestao_os.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Corrigir dados históricos", source)
+        self.assertIn("/historical-correction", source)
+        self.assertIn("status e ciclo de produção serão preservados", source)
+        self.assertIn("historical_corrections", source)
+        self.assertIn("Mercado", source)
 
 
 if __name__ == "__main__":

@@ -3078,6 +3078,15 @@ def work_order_detail(conn, work_id):
          order by e.created_at desc,e.id desc
          limit 500
     """), {"id": work_id, "entry_id": work["vehicle_entry_id"]}).mappings()]
+    historical_corrections = [dict(row) for row in conn.execute(text("""
+        select id,actor,created_at,before_data,after_data,reason
+          from erp_audit_events
+         where entity_type='WORK_ORDER'
+           and entity_id=:id
+           and action='CORRECAO_HISTORICA_DADOS_OS'
+         order by created_at desc,id desc
+         limit 200
+    """), {"id": work_id}).mappings()]
     return {
         "work_order": work,
         "stages": stages,
@@ -3088,6 +3097,7 @@ def work_order_detail(conn, work_id):
         "notes": notes,
         "purchase_orders": purchase_orders,
         "purchase_allocation_history": purchase_allocation_history,
+        "historical_corrections": historical_corrections,
     }
 
 def configure_stages(conn, work_id, payload, actor):

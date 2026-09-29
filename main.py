@@ -3012,6 +3012,29 @@ async def erp_update_work_order(work_id: str, request: Request, data: dict = Bod
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
 
+@app.patch("/api/erp/work-orders/{work_id}/historical-correction")
+async def erp_correct_historical_work_order(
+    work_id: str,
+    request: Request,
+    data: dict = Body(...),
+    db: Session = Depends(database.get_db),
+):
+    """Allow managers to correct whitelisted fields on closed O.S. records."""
+    if not erp_feature_enabled():
+        return erp_disabled_response()
+    user = require_login(request, db)
+    if not user:
+        return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE):
+        return permission_denied(api=True)
+    try:
+        with database.engine.begin() as conn:
+            result = erp_service.correct_closed_work_order(conn, work_id, data, user.nome)
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+
 @app.post("/api/erp/work-orders/{work_id}/notes")
 async def erp_add_work_order_note(
     work_id: str,
