@@ -831,7 +831,7 @@ def _link_suprimentos_os_document(
                 'WORK_ORDER',:work_id,'SUPRIMENTOS_DOCUMENT_LINKED',:actor,'SUPRIMENTOS',
                 jsonb_build_object(
                     'documento_os_id',cast(:document_id as bigint),
-                    'documento_numero',:document_number
+                    'documento_numero',cast(:document_number as text)
                 )
             )
         """), {

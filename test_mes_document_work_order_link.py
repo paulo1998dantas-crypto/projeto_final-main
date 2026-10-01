@@ -179,6 +179,12 @@ class MesDocumentWorkOrderLinkTests(unittest.TestCase):
         self.assertIn("=:work_id_text", conflict_query[0])
         self.assertEqual(conflict_query[1]["work_id_uuid"], WORK_ID)
         self.assertEqual(conflict_query[1]["work_id_text"], WORK_ID)
+        audit_query = next(
+            (sql, params) for sql, params in conn.calls
+            if sql.startswith("insert into erp_audit_events")
+        )
+        self.assertIn("cast(:document_number as text)", audit_query[0])
+        self.assertEqual(audit_query[1]["document_number"], "JI - 3113")
 
     def test_rejects_document_already_linked_to_another_work_order(self):
         conn = StateConnection(document_link=OTHER_WORK_ID)
