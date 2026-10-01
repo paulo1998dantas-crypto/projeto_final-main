@@ -783,14 +783,15 @@ def _link_suprimentos_os_document(
           from public.suprimentos_documentos
          where id<>:document_id
            and (
-                erp_work_order_id=cast(:work_id as uuid)
-                or dados->>'erp_work_order_id'=:work_id
+                erp_work_order_id=cast(:work_id_uuid as uuid)
+                or dados->>'erp_work_order_id'=:work_id_text
            )
          limit 1
          for update
     """), {
         "document_id": documento_os_id,
-        "work_id": str(work_id),
+        "work_id_uuid": str(work_id),
+        "work_id_text": str(work_id),
     }))
     if conflict:
         raise ValueError(

@@ -112,7 +112,10 @@ class StateConnection:
                 if document["id"] == params["document_id"]:
                     continue
                 json_link = (document.get("dados") or {}).get("erp_work_order_id")
-                if document.get("erp_work_order_id") == params["work_id"] or json_link == params["work_id"]:
+                if (
+                    document.get("erp_work_order_id") == params["work_id_uuid"]
+                    or json_link == params["work_id_text"]
+                ):
                     return FakeResult({"id": document["id"], "numero": document["numero"]})
             return FakeResult()
         if "from public.suprimentos_documentos" in sql and "where id=:document_id" in sql:
@@ -168,6 +171,14 @@ class MesDocumentWorkOrderLinkTests(unittest.TestCase):
         self.assertIn(WORK_ID, conn.work_orders)
         self.assertEqual(conn.documents[42]["erp_work_order_id"], WORK_ID)
         self.assertEqual(conn.documents[42]["dados"]["erp_work_order_id"], WORK_ID)
+        conflict_query = next(
+            (sql, params) for sql, params in conn.calls
+            if "where id<>:document_id" in sql
+        )
+        self.assertIn("cast(:work_id_uuid as uuid)", conflict_query[0])
+        self.assertIn("=:work_id_text", conflict_query[0])
+        self.assertEqual(conflict_query[1]["work_id_uuid"], WORK_ID)
+        self.assertEqual(conflict_query[1]["work_id_text"], WORK_ID)
 
     def test_rejects_document_already_linked_to_another_work_order(self):
         conn = StateConnection(document_link=OTHER_WORK_ID)
