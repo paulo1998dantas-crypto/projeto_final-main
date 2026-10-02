@@ -43,6 +43,24 @@ WORK_ORDER_FIELDS = (
     "data_comercial_prevista",
 )
 WORK_ORDER_DATE_FIELDS = {"data_aprovacao", "data_comercial_prevista"}
+WORK_ORDER_CHOICE_OPTIONS = {
+    "acessibilidade": ("DPM ELEVITTA", "DPM FOCA", "NÃO", "FECHADA", "BI PARTIDA"),
+    "acessorio": ("SJ", "INSTALL TECH", "NÃO", "OUTROS"),
+    "plotagem": ("SIM", "NÃO"),
+}
+WORK_ORDER_CHOICE_ALIASES = {
+    "acessibilidade": {
+        "DPM ELEVITA": "DPM ELEVITTA", "FOCA": "DPM FOCA",
+        "PTA ABERTA": "BI PARTIDA", "ABERTA": "BI PARTIDA",
+        "PTA BI PARTIDA": "BI PARTIDA", "PTA FECHADA": "FECHADA",
+        "SIM": "FECHADA", "-": "NÃO", "N/A": "NÃO",
+    },
+    "acessorio": {
+        "INSTAL TECH": "INSTALL TECH", "INSTALL-TECH": "INSTALL TECH",
+        "OUTRO": "OUTROS", "-": "NÃO", "N/A": "NÃO",
+    },
+    "plotagem": {"S": "SIM", "N": "NÃO", "-": "NÃO", "N/A": "NÃO"},
+}
 HISTORICAL_WORK_ORDER_FIELDS = tuple(
     field for field in WORK_ORDER_FIELDS if field != "cliente_nome"
 )
@@ -663,7 +681,30 @@ def _date_value(value):
     except ValueError:
         return None
 
+def _work_choice_key(value):
+    decomposed = unicodedata.normalize("NFKD", str(value or "").strip()).upper()
+    return " ".join("".join(char for char in decomposed if not unicodedata.combining(char)).split())
+
+
+def _canonical_work_order_choice(name, value):
+    key = _work_choice_key(value)
+    if not key or key in {"-", "N/A", "NA"}:
+        return "NÃO"
+    options = {_work_choice_key(option): option for option in WORK_ORDER_CHOICE_OPTIONS[name]}
+    aliases = {
+        _work_choice_key(alias): target
+        for alias, target in WORK_ORDER_CHOICE_ALIASES.get(name, {}).items()
+    }
+    canonical = aliases.get(key) or options.get(key)
+    if not canonical:
+        allowed = ", ".join(WORK_ORDER_CHOICE_OPTIONS[name])
+        raise ValueError(f"Opção inválida para {name}: selecione uma destas opções: {allowed}.")
+    return canonical
+
+
 def _work_field_value(name, value):
+    if name in WORK_ORDER_CHOICE_OPTIONS:
+        return _canonical_work_order_choice(name, value)
     if name in WORK_ORDER_DATE_FIELDS:
         return _date_value(value)
     return str(value or "").strip()
@@ -3161,11 +3202,11 @@ def work_order_detail(conn, work_id):
          limit 500
     """), {"id": work_id, "entry_id": work["vehicle_entry_id"]}).mappings()]
     historical_corrections = [dict(row) for row in conn.execute(text("""
-        select id,actor,created_at,before_data,after_data,reason
+        select id,actor,action,created_at,before_data,after_data,reason
           from erp_audit_events
          where entity_type='WORK_ORDER'
            and entity_id=:id
-           and action='CORRECAO_HISTORICA_DADOS_OS'
+           and action in ('CORRECAO_HISTORICA_DADOS_OS','PADRONIZACAO_OPCOES_OS')
          order by created_at desc,id desc
          limit 200
     """), {"id": work_id}).mappings()]
