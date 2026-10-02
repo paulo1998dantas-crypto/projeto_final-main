@@ -46,7 +46,11 @@ class MesStageWriteSafetyTests(unittest.TestCase):
                 connection,
                 "work-order",
                 "PREP",
-                {"setup_time_hours": "1,50", "production_time_hours": "0.75"},
+                {
+                    "setup_time_hours": "1,50",
+                    "production_time_hours": "0.75",
+                    "total_stopped_time_hours": "0,25",
+                },
                 "PAULO",
             )
 
@@ -55,12 +59,13 @@ class MesStageWriteSafetyTests(unittest.TestCase):
         self.assertIn("setup_time_hours=:setup_time_hours", update_sql)
         self.assertEqual(Decimal("1.50"), update_params["setup_time_hours"])
         self.assertEqual(Decimal("0.75"), update_params["production_time_hours"])
+        self.assertEqual(Decimal("0.25"), update_params["total_stopped_time_hours"])
         self.assertEqual("OBSERVAÇÃO ORIGINAL", update_params["observacoes"])
         self.assertNotIn("status=", update_sql)
         self.assertIn("setup_time_hours", event_sql)
         self.assertEqual(update_params["setup_time_hours"], event_params["setup_time_hours"])
         self.assertEqual(update_params["production_time_hours"], event_params["production_time_hours"])
-        self.assertIsNone(update_params["total_stopped_time_hours"])
+        self.assertEqual(update_params["total_stopped_time_hours"], event_params["total_stopped_time_hours"])
         self.assertTrue(result["metadata_only"])
 
     def test_production_manual_times_save_without_touching_pointing_for_work_and_entry(self):
@@ -69,6 +74,7 @@ class MesStageWriteSafetyTests(unittest.TestCase):
             "status": "EM_ANDAMENTO",
             "setup_time_hours": None,
             "production_time_hours": None,
+            "total_stopped_time_hours": None,
         }
 
         class Connection:
@@ -93,7 +99,12 @@ class MesStageWriteSafetyTests(unittest.TestCase):
                         kind,
                         "target",
                         "PREP",
-                        {"setup_time_hours": "1,25", "production_time_hours": "2.5", "idempotency_key": "key"},
+                        {
+                            "setup_time_hours": "1,25",
+                            "production_time_hours": "2.5",
+                            "total_stopped_time_hours": "0,50",
+                            "idempotency_key": "key",
+                        },
                         "PAULO",
                     )
 
@@ -102,16 +113,20 @@ class MesStageWriteSafetyTests(unittest.TestCase):
                 self.assertIn(f"update {stage_table}", update_sql)
                 self.assertIn("setup_time_hours=:setup_hours", update_sql)
                 self.assertIn("production_time_hours=:production_hours", update_sql)
+                self.assertIn("total_stopped_time_hours=:stopped_hours", update_sql)
                 self.assertNotIn("status=", update_sql)
                 self.assertNotIn("inicio=", update_sql)
                 self.assertNotIn("observacoes=", update_sql)
                 self.assertEqual(Decimal("1.25"), update_params["setup_hours"])
                 self.assertEqual(Decimal("2.50"), update_params["production_hours"])
+                self.assertEqual(Decimal("0.50"), update_params["stopped_hours"])
                 self.assertIn(f"insert into {event_table}", event_sql)
                 self.assertIn(stage_fk, event_sql)
                 self.assertIn("'tempos_manuais'", event_sql)
+                self.assertIn("total_stopped_time_hours", event_sql)
                 self.assertEqual(update_params["setup_hours"], event_params["setup_hours"])
                 self.assertEqual(update_params["production_hours"], event_params["production_hours"])
+                self.assertEqual(update_params["stopped_hours"], event_params["stopped_hours"])
                 self.assertTrue(result["metadata_only"])
 
     def test_production_screen_exposes_manual_setup_and_production_inputs(self):
@@ -119,8 +134,10 @@ class MesStageWriteSafetyTests(unittest.TestCase):
         source = template.read_text(encoding="utf-8")
         self.assertIn('id="setup-time"', source)
         self.assertIn('id="production-time"', source)
+        self.assertIn('id="stopped-time"', source)
         self.assertIn("Tempo de Setup (h)", source)
         self.assertIn("Tempo de Produção (h)", source)
+        self.assertIn("Tempo Parado Total Informado (h)", source)
         self.assertIn("SALVAR_TEMPOS", source)
 
     def test_manual_duration_rejects_negative_values_before_writing(self):

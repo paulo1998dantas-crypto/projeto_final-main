@@ -1936,7 +1936,8 @@ def _erp_history_export_rows():
                                  nullif(trim(v.versao),'')) as modelo,
                        s.stage_code,ev.action,ev.status_anterior,ev.novo_status,
                        ev.operador,ev.inicio,ev.termino,ev.localizacao,
-                       ev.setup_time_hours,ev.production_time_hours,ev.created_at,
+                       ev.setup_time_hours,ev.production_time_hours,
+                       ev.total_stopped_time_hours,ev.created_at,
                        ev.id as event_id,s.ordem,'ERP'::text as origem
                   from erp_work_order_stage_events ev
                   join erp_work_order_stages s on s.id=ev.work_order_stage_id
@@ -1949,7 +1950,8 @@ def _erp_history_export_rows():
                                  nullif(trim(v.versao),'')) as modelo,
                        s.stage_code,ev.action,ev.status_anterior,ev.novo_status,
                        ev.operador,ev.inicio,ev.termino,ev.localizacao,
-                       ev.setup_time_hours,ev.production_time_hours,ev.created_at,
+                       ev.setup_time_hours,ev.production_time_hours,
+                       ev.total_stopped_time_hours,ev.created_at,
                        ev.id as event_id,s.ordem,'ERP PRÉ-O.S.'::text as origem
                   from erp_vehicle_entry_stage_events ev
                   join erp_vehicle_entry_stages s on s.id=ev.vehicle_entry_stage_id
@@ -1975,6 +1977,7 @@ def _erp_history_export_rows():
                 "LOCALIZACAO": row["localizacao"],
                 "TEMPO DE SETUP (H)": row["setup_time_hours"],
                 "TEMPO DE PRODUÇÃO (H)": row["production_time_hours"],
+                "TEMPO PARADO TOTAL INFORMADO (H)": row["total_stopped_time_hours"],
                 "DATA": to_excel_dt(row["created_at"]),
                 "ORIGEM": row["origem"],
             }
@@ -1991,6 +1994,7 @@ def _erp_time_export_rows():
                                  nullif(trim(v.versao),'')) as modelo,
                        s.stage_code,s.status,s.responsavel,s.inicio,s.termino,s.localizacao,
                        s.setup_time_hours,s.production_time_hours,
+                       s.total_stopped_time_hours,
                        'ERP'::text as origem,s.ordem,s.id as stage_id
                   from erp_work_order_stages s
                   join erp_work_orders w on w.id=s.work_order_id
@@ -2002,6 +2006,7 @@ def _erp_time_export_rows():
                                  nullif(trim(v.versao),'')) as modelo,
                        s.stage_code,s.status,s.responsavel,s.inicio,s.termino,s.localizacao,
                        s.setup_time_hours,s.production_time_hours,
+                       s.total_stopped_time_hours,
                        'ERP PRÉ-O.S.'::text as origem,s.ordem,s.id as stage_id
                   from erp_vehicle_entry_stages s
                   join erp_vehicle_entries e on e.id=s.vehicle_entry_id
@@ -2024,6 +2029,7 @@ def _erp_time_export_rows():
                 "LOCALIZACAO": row["localizacao"],
                 "TEMPO DE SETUP (H)": row["setup_time_hours"],
                 "TEMPO DE PRODUÇÃO (H)": row["production_time_hours"],
+                "TEMPO PARADO TOTAL INFORMADO (H)": row["total_stopped_time_hours"],
                 "ORIGEM": row["origem"],
             }
             for row in rows
@@ -2042,7 +2048,7 @@ async def exportar(request: Request, db: Session = Depends(database.get_db)):
             "ITEM", "O.S.", "CHASSI", "MODELO", "ETAPA", "AÇÃO",
             "STATUS ANTERIOR", "STATUS", "RESPONSAVEL", "INICIO",
             "TERMINO", "LOCALIZACAO", "TEMPO DE SETUP (H)",
-            "TEMPO DE PRODUÇÃO (H)", "DATA", "ORIGEM",
+            "TEMPO DE PRODUÇÃO (H)", "TEMPO PARADO TOTAL INFORMADO (H)", "DATA", "ORIGEM",
         ]
         return _xlsx_response(
             _erp_history_export_rows(),
@@ -2092,7 +2098,8 @@ async def exportar_tempos(request: Request, db: Session = Depends(database.get_d
         columns = [
             "ITEM", "O.S.", "CHASSI", "MODELO", "ETAPA", "STATUS",
             "RESPONSAVEL", "INICIO", "TERMINO", "LOCALIZACAO",
-            "TEMPO DE SETUP (H)", "TEMPO DE PRODUÇÃO (H)", "ORIGEM",
+            "TEMPO DE SETUP (H)", "TEMPO DE PRODUÇÃO (H)",
+            "TEMPO PARADO TOTAL INFORMADO (H)", "ORIGEM",
         ]
         return _xlsx_response(
             _erp_time_export_rows(),

@@ -68,6 +68,7 @@ class MesOperationalExportTests(unittest.TestCase):
             "localizacao": "Linha",
             "setup_time_hours": 1.5,
             "production_time_hours": 2.25,
+            "total_stopped_time_hours": 0.5,
             "created_at": datetime(2026, 7, 30, 11, tzinfo=timezone.utc),
             "origem": "ERP",
         }])
@@ -79,12 +80,14 @@ class MesOperationalExportTests(unittest.TestCase):
         self.assertEqual(rows[0]["STATUS"], "CONCLUÍDA")
         self.assertEqual(rows[0]["TEMPO DE SETUP (H)"], 1.5)
         self.assertEqual(rows[0]["TEMPO DE PRODUÇÃO (H)"], 2.25)
+        self.assertEqual(rows[0]["TEMPO PARADO TOTAL INFORMADO (H)"], 0.5)
         self.assertEqual(rows[0]["ORIGEM"], "ERP")
         self.assertIsNone(rows[0]["DATA"].tzinfo)
         self.assertIn("erp_work_order_stage_events", engine.connection.sql)
         self.assertIn("erp_work_orders", engine.connection.sql)
         self.assertIn("union all", engine.connection.sql.lower())
         self.assertIn("erp_vehicle_entry_stage_events", engine.connection.sql)
+        self.assertIn("total_stopped_time_hours", engine.connection.sql)
 
     def test_time_export_reads_current_shared_erp_stages(self):
         engine = _FakeEngine([{
@@ -100,6 +103,7 @@ class MesOperationalExportTests(unittest.TestCase):
             "localizacao": "Linha",
             "setup_time_hours": 0.75,
             "production_time_hours": None,
+            "total_stopped_time_hours": 1.25,
             "origem": "ERP",
         }])
 
@@ -110,11 +114,13 @@ class MesOperationalExportTests(unittest.TestCase):
         self.assertEqual(rows[0]["STATUS"], "EM_ANDAMENTO")
         self.assertEqual(rows[0]["TEMPO DE SETUP (H)"], 0.75)
         self.assertIsNone(rows[0]["TEMPO DE PRODUÇÃO (H)"])
+        self.assertEqual(rows[0]["TEMPO PARADO TOTAL INFORMADO (H)"], 1.25)
         self.assertEqual(rows[0]["ORIGEM"], "ERP")
         self.assertIn("erp_work_order_stages", engine.connection.sql)
         self.assertIn("erp_vehicle_entries", engine.connection.sql)
         self.assertIn("union all", engine.connection.sql.lower())
         self.assertIn("erp_vehicle_entry_stages", engine.connection.sql)
+        self.assertIn("total_stopped_time_hours", engine.connection.sql)
 
     def test_both_routes_keep_session_authentication(self):
         for endpoint in (main.exportar, main.exportar_tempos):
@@ -163,7 +169,7 @@ class MesOperationalExportTests(unittest.TestCase):
                 "ITEM", "O.S.", "CHASSI", "MODELO", "ETAPA", "AÇÃO",
                 "STATUS ANTERIOR", "STATUS", "RESPONSAVEL", "INICIO",
                 "TERMINO", "LOCALIZACAO", "TEMPO DE SETUP (H)",
-                "TEMPO DE PRODUÇÃO (H)", "DATA", "ORIGEM",
+                "TEMPO DE PRODUÇÃO (H)", "TEMPO PARADO TOTAL INFORMADO (H)", "DATA", "ORIGEM",
             ],
         )
 
@@ -194,7 +200,8 @@ class MesOperationalExportTests(unittest.TestCase):
             [
                 "ITEM", "O.S.", "CHASSI", "MODELO", "ETAPA", "STATUS",
                 "RESPONSAVEL", "INICIO", "TERMINO", "LOCALIZACAO",
-                "TEMPO DE SETUP (H)", "TEMPO DE PRODUÇÃO (H)", "ORIGEM",
+                "TEMPO DE SETUP (H)", "TEMPO DE PRODUÇÃO (H)",
+                "TEMPO PARADO TOTAL INFORMADO (H)", "ORIGEM",
             ],
         )
 

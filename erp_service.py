@@ -3585,12 +3585,11 @@ def update_stage_metadata(conn, work_id, code, payload, actor):
         stage.get("production_time_hours"),
         "Tempo de produção",
     )
-    # Keep values submitted by already-open tabs during a rolling deployment.
     values["total_stopped_time_hours"] = _manual_hours_value(
         payload,
         "total_stopped_time_hours",
         stage.get("total_stopped_time_hours"),
-        "Tempo parado total (legado)",
+        "Tempo parado total",
     )
     conn.execute(text("""
         update erp_work_order_stages
@@ -3632,7 +3631,7 @@ def update_stage_metadata(conn, work_id, code, payload, actor):
 
 
 def update_production_manual_times(conn, target_kind, target_id, code, payload, actor):
-    """Save manually informed setup/production hours without changing pointing state."""
+    """Save manually informed setup, production and stopped hours without changing pointing state."""
     kind, target, stage = _production_locked_stage(conn, target_kind, target_id, code)
     key = str(payload.get("idempotency_key") or "").strip() or None
     if _production_event_replay(conn, kind, key):
@@ -3651,6 +3650,12 @@ def update_production_manual_times(conn, target_kind, target_id, code, payload, 
         stage.get("production_time_hours"),
         "Tempo de produção",
     )
+    stopped_hours = _manual_hours_value(
+        payload,
+        "total_stopped_time_hours",
+        stage.get("total_stopped_time_hours"),
+        "Tempo parado total",
+    )
     if kind == "work":
         stage_table = "erp_work_order_stages"
         event_table = "erp_work_order_stage_events"
@@ -3663,29 +3668,33 @@ def update_production_manual_times(conn, target_kind, target_id, code, payload, 
         update {stage_table}
            set setup_time_hours=:setup_hours,
                production_time_hours=:production_hours,
+               total_stopped_time_hours=:stopped_hours,
                updated_at=now()
          where id=:stage
     """), {
         "setup_hours": setup_hours,
         "production_hours": production_hours,
+        "stopped_hours": stopped_hours,
         "stage": stage["id"],
     })
     status = stage.get("status") or stage_input_code(stage)
     conn.execute(text(f"""
         insert into {event_table}(
             {stage_fk},action,status_anterior,novo_status,operador,
-            observacao,setup_time_hours,production_time_hours,idempotency_key
+            observacao,setup_time_hours,production_time_hours,
+            total_stopped_time_hours,idempotency_key
         ) values(
             :stage,'TEMPOS_MANUAIS',:status,:status,:actor,:note,
-            :setup_hours,:production_hours,:key
+            :setup_hours,:production_hours,:stopped_hours,:key
         )
     """), {
         "stage": stage["id"],
         "status": status,
         "actor": actor,
-        "note": "Tempos de setup e produção informados manualmente; apontamento e observações preservados.",
+        "note": "Tempos de setup, produção e parada informados manualmente; apontamento e observações preservados.",
         "setup_hours": setup_hours,
         "production_hours": production_hours,
+        "stopped_hours": stopped_hours,
         "key": key,
     })
     return {

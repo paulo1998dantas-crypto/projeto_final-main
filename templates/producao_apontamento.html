@@ -22,6 +22,7 @@
       <label>Data/hora de parada, interrupção ou finalização<input id="momento" type="datetime-local" value="{{ detail.now_input }}"></label>
       <label class="manual-entry">Tempo de Setup (h)<input id="setup-time" type="number" min="0" step="0.01" inputmode="decimal" value="{{ stage.setup_time_hours if stage.setup_time_hours is not none else '' }}" placeholder="0,00"></label>
       <label class="manual-entry">Tempo de Produção (h)<input id="production-time" type="number" min="0" step="0.01" inputmode="decimal" value="{{ stage.production_time_hours if stage.production_time_hours is not none else '' }}" placeholder="0,00"></label>
+      <label class="manual-entry">Tempo Parado Total Informado (h)<input id="stopped-time" type="number" min="0" step="0.01" inputmode="decimal" value="{{ stage.total_stopped_time_hours if stage.total_stopped_time_hours is not none else '' }}" placeholder="0,00"></label>
       <label class="full">Observação<textarea id="observacoes" placeholder="Informe o motivo da interrupção, do ajuste ou outra observação relevante."></textarea></label>
     </div>
     <div class="actions">
@@ -29,7 +30,7 @@
       {% if not stage.open_session %}<button class="btn success" type="button" onclick="command('INICIAR')">{% if stage.open_pause %}INICIAR / RETOMAR{% elif stage.input_code == 'S' %}INICIAR NOVO AJUSTE{% else %}INICIAR{% endif %}</button>{% endif %}
       {% if stage.open_session %}<button class="btn warning" type="button" onclick="command('PARAR')">PARAR</button><button class="btn danger" type="button" onclick="command('INTERROMPER')">INTERROMPER</button><button class="btn primary" type="button" onclick="command('FINALIZAR')">FINALIZAR</button>{% endif %}
     </div>
-    <p class="help">Tempo de Setup e Tempo de Produção são informações complementares digitadas manualmente em horas decimais. Salvar esses campos não altera o status, início, término, observações nem o cálculo das sessões. Cada início/retomada cria uma sessão produtiva adicional; paradas e interrupções são contabilizadas separadamente e nunca entram no tempo produtivo.</p>
+    <p class="help">Setup, produção e tempo parado total informado são campos complementares digitados manualmente em horas decimais. O tempo parado manual é separado do contador automático de pausas. Salvar esses campos não altera o status, início, término, observações nem o cálculo das sessões.</p>
   </section>
 </main>
 <script>
@@ -52,14 +53,15 @@ async function saveManualTimes(){
   try{
     payload={action:'SALVAR_TEMPOS',stage_code:stageCode,idempotency_key:key(),
       setup_time_hours:manualHours('setup-time','Tempo de Setup'),
-      production_time_hours:manualHours('production-time','Tempo de Produção')};
+      production_time_hours:manualHours('production-time','Tempo de Produção'),
+      total_stopped_time_hours:manualHours('stopped-time','Tempo Parado Total')};
   }catch(error){show(error.message);return}
   button.disabled=true;show('');
   try{
     const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const data=await response.json();
     if(!response.ok||!data.ok)throw new Error(data.error||'Não foi possível salvar os tempos.');
-    show('Tempos salvos. O apontamento, início, término e observações foram preservados.');
+    show('Tempos complementares salvos. O apontamento, início, término e observações foram preservados.');
   }catch(error){show(error.message)}finally{button.disabled=false}
 }
 async function command(action){
