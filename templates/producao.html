@@ -13,18 +13,18 @@
 {% include "_portal_back.html" %}
 <main>
   <header class="head">
-    <div><h1>Apontamento da Produção</h1><p>Localize o veículo e selecione o card para registrar uma etapa.</p></div>
+    <div><h1>{% if selected_sector %}Setor {{ selected_sector }}{% else %}Apontamento da Produção{% endif %}</h1><p>Localize o veículo e selecione o card para registrar uma etapa.</p>{% if selected_sector %}<a class="btn" href="/producao/setores">Trocar setor</a>{% endif %}</div>
     <div class="user"><span>{{ current_user.nome }}</span><form method="post" action="/logout"><button class="btn" type="submit">Sair</button></form></div>
   </header>
   <section class="panel">
-    <form class="search" method="get" action="/producao">
+    <form class="search" method="get" action="{% if selected_sector %}/producao/setor/{{ selected_sector|urlencode }}{% else %}/producao{% endif %}">
       <input name="q" value="{{ search }}" type="search" autofocus placeholder="Buscar por chassi, ITEM, O.S., cliente ou veículo">
       <button class="btn" type="submit">Buscar</button>
     </form>
     {% if cards %}
     <div class="cards">
       {% for card in cards %}
-      <a class="card {{ 'entry' if card.target_kind == 'entry' else '' }}" href="/producao/{{ card.target_kind }}/{{ card.target_id }}">
+      <a class="card {{ 'entry' if card.target_kind == 'entry' else '' }}" href="/producao/{{ card.target_kind }}/{{ card.target_id }}{% if selected_sector %}/apontar?stage_code={{ selected_sector|urlencode }}{% endif %}">
         <div class="card-head"><h2>ITEM {{ card.item_number }}{% if card.numero_os %} · O.S. {{ card.numero_os }}{% endif %}</h2><span class="badge">{{ card.target_status }}</span></div>
         <div class="chassi">{{ (card.chassi or 'CHASSI NÃO INFORMADO')[-8:] }}</div>
         <div class="vehicle">{{ card.vehicle_name }}</div>

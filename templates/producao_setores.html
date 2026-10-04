@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MES | Selecionar setor</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f1f5f9;color:#172033;font:15px Arial,sans-serif}main{max-width:1100px;margin:auto;padding:24px}header{display:flex;justify-content:space-between;gap:16px;align-items:center}h1{margin:0 0 5px}p{color:#64748b}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px;margin-top:24px}.sector{display:flex;align-items:center;min-height:100px;padding:20px;background:white;border:1px solid #dbe3ec;border-left:5px solid #2563eb;border-radius:10px;color:#172033;text-decoration:none;font-size:20px;font-weight:800}.sector:hover,.sector:focus-visible{border-color:#2563eb;box-shadow:0 6px 18px #0f172a18}.btn{padding:11px 17px;border:1px solid #b8c5d3;border-radius:7px;background:white;font-weight:800;cursor:pointer}
+</style></head><body>
+<main><header><div><h1>Escolha o setor</h1><p>{{ current_user.nome }} · Selecione o setor para ver os veículos disponíveis para apontamento.</p></div><form method="post" action="/logout"><button class="btn" type="submit">Sair</button></form></header>
+<section class="grid" aria-label="Setores de produção">{% for sector in sectors %}<a class="sector" href="/producao/setor/{{ sector|urlencode }}">{{ sector }}</a>{% endfor %}</section></main>
+</body></html>

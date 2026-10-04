@@ -487,19 +487,26 @@ def is_production_profile(user):
     return "PRODUCAO" in user_roles(user)
 
 
+def is_pointing_profile(user):
+    return "APONTAMENTO" in user_roles(user)
+
+
 def is_production_only(user):
-    """Use the simplified console only when no management role is also active."""
+    """The pointing role selects the sector flow; ADMIN keeps its full view."""
     return bool(
-        is_production_profile(user)
-        and not getattr(user, "is_admin", False)
-        and not has_permission(user, authz.MES_WORK_ORDERS_MANAGE)
+        not getattr(user, "is_admin", False)
+        and (
+            is_pointing_profile(user)
+            or (is_production_profile(user)
+                and not has_permission(user, authz.MES_WORK_ORDERS_MANAGE))
+        )
     )
 
 
 def can_access_production_console(user):
     return bool(
         user
-        and (getattr(user, "is_admin", False) or is_production_profile(user))
+        and (getattr(user, "is_admin", False) or is_production_profile(user) or is_pointing_profile(user))
         and has_permission(user, authz.MES_DASHBOARD_READ)
         and has_permission(user, authz.MES_STAGE_WRITE)
     )
@@ -1739,6 +1746,8 @@ async def salvar(request: Request, data: dict = Body(...), db: Session = Depends
         return JSONResponse({"status": "erro", "detail": "Login necessário"}, status_code=401)
     if not has_permission(current_user, authz.MES_STAGE_WRITE):
         return permission_denied(api=True)
+    if is_pointing_profile(current_user) and is_production_only(current_user):
+        return permission_denied(api=True)
     if not legacy_operational_schema_available():
         return legacy_disabled_response()
     ch = str(data["chassi"]).strip()
@@ -1876,6 +1885,8 @@ async def atualizar_localizacao(request: Request, data: dict = Body(...), db: Se
         return JSONResponse({"status": "erro", "detail": "Login necessário"}, status_code=401)
     if not has_permission(current_user, authz.MES_STAGE_WRITE):
         return permission_denied(api=True)
+    if is_pointing_profile(current_user) and is_production_only(current_user):
+        return permission_denied(api=True)
     if not legacy_operational_schema_available():
         return legacy_disabled_response()
     ch = str(data.get("chassi", "")).strip()
@@ -1895,6 +1906,8 @@ async def atualizar_banco(request: Request, data: dict = Body(...), db: Session 
     if not current_user:
         return JSONResponse({"status": "erro", "detail": "Login necessário"}, status_code=401)
     if not has_permission(current_user, authz.MES_STAGE_WRITE):
+        return permission_denied(api=True)
+    if is_pointing_profile(current_user) and is_production_only(current_user):
         return permission_denied(api=True)
     if not legacy_operational_schema_available():
         return legacy_disabled_response()
@@ -2512,6 +2525,8 @@ async def erp_vehicle_entry_stage(
         return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
     if not has_permission(user, authz.MES_STAGE_WRITE):
         return permission_denied(api=True)
+    if is_pointing_profile(user) and is_production_only(user):
+        return permission_denied(api=True)
     if data.get("expected_status") in (None, ""):
         return JSONResponse({
             "ok": False,
@@ -2544,6 +2559,9 @@ def prepare_production_detail(detail):
         stage["pause_started_str"] = to_input_dt(
             (stage.get("open_pause") or {}).get("started_at")
         )
+        stage["setup_started_str"] = to_input_dt(
+            (stage.get("open_setup") or {}).get("started_at")
+        )
     detail["now_input"] = to_input_dt(datetime.datetime.now(LOCAL_TZ))
     return detail
 
@@ -2564,6 +2582,8 @@ async def production_console(
         or not has_permission(user, authz.MES_DASHBOARD_READ)
     ):
         return permission_denied()
+    if is_pointing_profile(user) and is_production_only(user):
+        return RedirectResponse(url="/producao/setores", status_code=303)
     with database.engine.connect() as conn:
         cards = erp_service.list_production_targets(conn, search=q)
     return templates.TemplateResponse(request, "producao.html", {
@@ -2571,6 +2591,45 @@ async def production_console(
         "current_user": user,
         "cards": cards,
         "search": q,
+    })
+
+
+@app.get("/producao/setores", response_class=HTMLResponse)
+async def pointing_sectors(request: Request, db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled():
+        return HTMLResponse("Integração ERP desativada pela feature flag.", status_code=404)
+    user = require_login(request, db)
+    if not user:
+        return RedirectResponse(url="/login?next=/producao/setores", status_code=303)
+    if not (is_pointing_profile(user) and can_access_production_console(user)
+            and has_permission(user, authz.MES_DASHBOARD_READ)):
+        return permission_denied()
+    return templates.TemplateResponse(request, "producao_setores.html", {
+        "request": request, "current_user": user,
+        "sectors": [code for code, _, _ in erp_service.STAGES],
+    })
+
+
+@app.get("/producao/setor/{stage_code:path}", response_class=HTMLResponse)
+async def pointing_sector_cards(
+    request: Request, stage_code: str, q: str = "", db: Session = Depends(database.get_db),
+):
+    if not erp_feature_enabled():
+        return HTMLResponse("Integração ERP desativada pela feature flag.", status_code=404)
+    user = require_login(request, db)
+    if not user:
+        return RedirectResponse(url="/login?next=/producao/setores", status_code=303)
+    if not (is_pointing_profile(user) and can_access_production_console(user)
+            and has_permission(user, authz.MES_DASHBOARD_READ)):
+        return permission_denied()
+    try:
+        with database.engine.connect() as conn:
+            cards = erp_service.list_sector_production_targets(conn, stage_code, search=q)
+    except ValueError as exc:
+        return HTMLResponse(str(exc), status_code=404)
+    return templates.TemplateResponse(request, "producao.html", {
+        "request": request, "current_user": user, "cards": cards,
+        "search": q, "selected_sector": stage_code,
     })
 
 
@@ -2591,6 +2650,8 @@ async def production_stages(
         or not has_permission(user, authz.MES_DASHBOARD_READ)
     ):
         return permission_denied()
+    if is_pointing_profile(user) and is_production_only(user):
+        return RedirectResponse(url="/producao/setores", status_code=303)
     try:
         with database.engine.begin() as conn:
             detail = prepare_production_detail(
@@ -2649,7 +2710,10 @@ async def production_stage_screen(
         return HTMLResponse("Etapa não encontrada.", status_code=404)
     if not stage.get("can_point"):
         return HTMLResponse("Esta etapa não é aplicável.", status_code=409)
-    return templates.TemplateResponse(request, "producao_apontamento.html", {
+    return templates.TemplateResponse(request, (
+        "producao_operador.html" if is_pointing_profile(user) and is_production_only(user)
+        else "producao_apontamento.html"
+    ), {
         "request": request,
         "current_user": user,
         "detail": detail,
@@ -2678,6 +2742,11 @@ async def production_stage_command(
     stage_code = str(data.get("stage_code") or "").strip()
     if not stage_code:
         return JSONResponse({"ok": False, "error": "Etapa não informada."}, status_code=400)
+    if is_pointing_profile(user) and is_production_only(user) and str(data.get("action") or "").upper() == "SALVAR_TEMPOS":
+        return permission_denied(api=True)
+    data = {**data, "auto_time_fields": bool(
+        is_pointing_profile(user) and is_production_only(user)
+    )}
     try:
         with database.engine.begin() as conn:
             result = erp_service.execute_production_stage_command(
@@ -2804,6 +2873,8 @@ async def erp_stage(work_id: str, stage_code: str, request: Request, data: dict 
     # protegidas por MES_WORK_ORDERS_MANAGE em suas rotas específicas.
     if not has_permission(user, authz.MES_STAGE_WRITE):
         return permission_denied(api=True)
+    if is_pointing_profile(user) and is_production_only(user):
+        return permission_denied(api=True)
     if (
         not erp_service._is_metadata_only_stage_update(data)
         and data.get("expected_status") in (None, "")
@@ -2836,6 +2907,8 @@ async def erp_stage_details(
         return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
     if not has_permission(user, authz.MES_STAGE_WRITE):
         return permission_denied(api=True)
+    if is_pointing_profile(user) and is_production_only(user):
+        return permission_denied(api=True)
     try:
         with database.engine.begin() as conn:
             result = erp_service.update_stage_metadata(conn, work_id, stage_code, data, user.nome)
@@ -2859,6 +2932,8 @@ async def erp_location(
             status_code=401,
         )
     if not has_permission(user, authz.MES_STAGE_WRITE):
+        return permission_denied(api=True)
+    if is_pointing_profile(user) and is_production_only(user):
         return permission_denied(api=True)
     try:
         with database.engine.begin() as conn:

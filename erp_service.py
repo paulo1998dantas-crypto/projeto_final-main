@@ -1046,7 +1046,8 @@ def _promote_entry_stage_pointings(conn, entry_id, work_id, actor):
                    termino=:finished,
                    observacoes=:notes,
                    setup_time_hours=:setup_hours,
-                   production_time_hours=:production_hours
+                   production_time_hours=:production_hours,
+                   total_stopped_time_hours=:stopped_hours
              where id=:id
         """), {
             "id": target["id"],
@@ -1059,6 +1060,7 @@ def _promote_entry_stage_pointings(conn, entry_id, work_id, actor):
             "notes": source.get("observacoes") or "",
             "setup_hours": source.get("setup_time_hours"),
             "production_hours": source.get("production_time_hours"),
+            "stopped_hours": source.get("total_stopped_time_hours"),
         })
         events = [dict(row._mapping) for row in conn.execute(text("""
             select * from erp_vehicle_entry_stage_events
@@ -1073,10 +1075,12 @@ def _promote_entry_stage_pointings(conn, entry_id, work_id, actor):
                 insert into erp_work_order_stage_events(
                     work_order_stage_id,action,status_anterior,novo_status,
                     operador,inicio,termino,localizacao,observacao,
-                    setup_time_hours,production_time_hours,idempotency_key,created_at
+                    setup_time_hours,production_time_hours,total_stopped_time_hours,
+                    idempotency_key,created_at
                 ) values(
                     :stage,'APONTAMENTO_PRE_OS',:old,:new,:actor,
                     :started,:finished,:location,:note,:setup_hours,:production_hours,
+                    :stopped_hours,
                     :key,:created_at
                 )
                 on conflict(idempotency_key) do nothing
@@ -1088,6 +1092,7 @@ def _promote_entry_stage_pointings(conn, entry_id, work_id, actor):
                 "location": event.get("localizacao"), "note": event.get("observacao") or "",
                 "setup_hours": event.get("setup_time_hours"),
                 "production_hours": event.get("production_time_hours"),
+                "stopped_hours": event.get("total_stopped_time_hours"),
                 "key": transfer_key, "created_at": event["created_at"],
             }))
             if inserted:
@@ -1121,6 +1126,20 @@ def _promote_entry_stage_pointings(conn, entry_id, work_id, actor):
             """), {"target": target["id"], "source": source["id"]})
             conn.execute(text("""
                 update erp_stage_time_sessions
+                   set work_order_stage_id=:target,
+                       vehicle_entry_stage_id=null,
+                       updated_at=now()
+                 where vehicle_entry_stage_id=:source
+            """), {"target": target["id"], "source": source["id"]})
+        if _setup_schema_ready(conn):
+            conn.execute(text("""
+                update erp_stage_setup_sessions
+                   set work_order_stage_id=:target,
+                       vehicle_entry_stage_id=null
+                 where vehicle_entry_stage_id=:source
+            """), {"target": target["id"], "source": source["id"]})
+            conn.execute(text("""
+                update erp_stage_auto_time_counters
                    set work_order_stage_id=:target,
                        vehicle_entry_stage_id=null,
                        updated_at=now()
@@ -2875,6 +2894,43 @@ def list_production_targets(conn, search="", limit=1000):
     return targets
 
 
+def list_sector_production_targets(conn, stage_code, search="", limit=1000):
+    """Filter the existing production cards by a currently applicable sector."""
+    if stage_code not in {code for code, _, _ in STAGES}:
+        raise ValueError("Setor de apontamento inválido.")
+    cards = list_production_targets(conn, search=search, limit=limit)
+    allowed = set()
+    for kind, table, foreign_key in (
+        ("work", "erp_work_order_stages", "work_order_id"),
+        ("entry", "erp_vehicle_entry_stages", "vehicle_entry_id"),
+    ):
+        ids = [card["target_id"] for card in cards if card["target_kind"] == kind]
+        if not ids:
+            continue
+        rows = conn.execute(text(f"""
+            select {foreign_key}::text as target_id
+              from {table}
+             where {foreign_key}::text = any(:ids)
+               and stage_code=:stage
+               and aplicavel=true
+               and status <> 'NÃO_APLICÁVEL'
+        """), {"ids": ids, "stage": stage_code}).mappings()
+        allowed.update((kind, str(row["target_id"])) for row in rows)
+        if kind == "entry":
+            # A tela de pré-O.S. cria as linhas ao ser aberta; antes disso todos
+            # os setores são apontáveis e não podem desaparecer do cockpit.
+            initialized = {
+                str(row["target_id"])
+                for row in conn.execute(text("""
+                    select distinct vehicle_entry_id::text as target_id
+                      from erp_vehicle_entry_stages
+                     where vehicle_entry_id::text = any(:ids)
+                """), {"ids": ids}).mappings()
+            }
+            allowed.update((kind, entry_id) for entry_id in ids if entry_id not in initialized)
+    return [card for card in cards if (card["target_kind"], card["target_id"]) in allowed]
+
+
 def vehicle_entry_stage_detail(conn, entry_id):
     entry = _one(conn.execute(text("""
         select e.*,v.chassi,v.marca,v.modelo,v.versao,v.mmv,
@@ -3937,6 +3993,80 @@ def _pause_stage_column(target_kind):
     )
 
 
+def _setup_schema_ready(conn):
+    try:
+        return conn.execute(text(
+            "select to_regclass('public.erp_stage_setup_sessions') is not null "
+            "and to_regclass('public.erp_stage_auto_time_counters') is not null"
+        )).scalar() is True
+    except (AttributeError, TypeError):
+        return False
+
+
+def _open_stage_setup(conn, target_kind, stage_id):
+    column = _pause_stage_column(target_kind)
+    return _one(conn.execute(text(f"""
+        select * from erp_stage_setup_sessions
+         where {column}=:stage and ended_at is null
+         order by started_at desc limit 1
+    """), {"stage": stage_id}))
+
+
+def _close_stage_setup(conn, setup, ended_at, actor):
+    if conn.execute(text(
+        "select cast(:ended as timestamptz) < cast(:started as timestamptz)"
+    ), {"ended": ended_at, "started": setup["started_at"]}).scalar_one():
+        raise ValueError("O fim do setup não pode ser anterior ao início.")
+    return int(conn.execute(text("""
+        update erp_stage_setup_sessions
+           set ended_at=:ended,
+               duration_seconds=greatest(0,floor(extract(epoch from
+                   (cast(:ended as timestamptz)-started_at)))::bigint),
+               ended_by=:actor
+         where id=:id
+         returning duration_seconds
+    """), {"ended": ended_at, "actor": actor, "id": setup["id"]}).scalar_one())
+
+
+def _add_auto_stage_hours(conn, kind, target_id, stage_code, field, seconds, actor, key):
+    if not seconds:
+        return
+    _, _, stage = _production_locked_stage(conn, kind, target_id, stage_code)
+    counter_column = {
+        "production_time_hours": "production_seconds",
+        "setup_time_hours": "setup_seconds",
+        "total_stopped_time_hours": "stopped_seconds",
+    }[field]
+    stage_column = _pause_stage_column(kind)
+    conn.execute(text(f"""
+        insert into erp_stage_auto_time_counters({stage_column}) values (:stage)
+        on conflict do nothing
+    """), {"stage": stage["id"]})
+    counter = _one(conn.execute(text(f"""
+        select id,{counter_column} from erp_stage_auto_time_counters
+         where {stage_column}=:stage for update
+    """), {"stage": stage["id"]}))
+    previous_seconds = int(counter[counter_column])
+    next_seconds = previous_seconds + int(seconds)
+    conn.execute(text(f"""
+        update erp_stage_auto_time_counters
+           set {counter_column}=:seconds,updated_at=now()
+         where id=:id
+    """), {"seconds": next_seconds, "id": counter["id"]})
+    def rounded_hours(value):
+        return (Decimal(value) / Decimal(3600)).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+    delta_hours = rounded_hours(next_seconds) - rounded_hours(previous_seconds)
+    if not delta_hours:
+        return
+    hours = Decimal(str(stage.get(field) or 0)) + delta_hours
+    update_production_manual_times(conn, kind, target_id, stage_code, {
+        field: hours,
+        "idempotency_key": f"{key}:auto:{field}" if key else None,
+    }, actor)
+
+
 def _pause_summary(conn, target_kind, stage_id):
     if not _stage_pause_schema_ready(conn):
         return {
@@ -3996,8 +4126,10 @@ def production_target_detail(conn, target_kind, target_id):
         raise ValueError("Tipo de apontamento inválido.")
 
     stages = detail["stages"]
+    setup_ready = _setup_schema_ready(conn)
     for stage in stages:
         stage.update(_pause_summary(conn, kind, stage["id"]))
+        stage["open_setup"] = _open_stage_setup(conn, kind, stage["id"]) if setup_ready else None
         stage["can_point"] = stage.get("input_code") != "N/A"
     vehicle_name = " ".join(
         str(target.get(field) or "").strip()
@@ -4076,7 +4208,7 @@ def _close_stage_pause(conn, target_kind, stage_id, ended_at, actor):
         "ended": ended_at, "started": pause["started_at"],
     }).scalar_one():
         raise ValueError("O fim da parada não pode ser anterior ao início.")
-    conn.execute(text("""
+    seconds = conn.execute(text("""
         update erp_stage_time_pauses
            set ended_at=:ended,
                duration_seconds=greatest(
@@ -4084,9 +4216,9 @@ def _close_stage_pause(conn, target_kind, stage_id, ended_at, actor):
                ),
                ended_by=:actor,
                updated_at=now()
-         where id=:id
-    """), {"ended": ended_at, "actor": actor, "id": pause["id"]})
-    return True
+         where id=:id returning duration_seconds
+    """), {"ended": ended_at, "actor": actor, "id": pause["id"]}).scalar_one()
+    return int(seconds or 0)
 
 
 def _open_stage_session(conn, target_kind, stage_id, started_at, actor, note, key):
@@ -4115,7 +4247,7 @@ def _close_stage_session(conn, target_kind, stage_id, ended_at, actor):
         "ended": ended_at, "started": session["started_at"],
     }).scalar_one():
         raise ValueError("O fim da sessão não pode ser anterior ao início.")
-    conn.execute(text("""
+    seconds = conn.execute(text("""
         update erp_stage_time_sessions
            set ended_at=:ended,
                productive_seconds=greatest(
@@ -4123,8 +4255,9 @@ def _close_stage_session(conn, target_kind, stage_id, ended_at, actor):
                ),
                ended_by=:actor,
                updated_at=now()
-         where id=:id
-    """), {"ended": ended_at, "actor": actor, "id": session["id"]})
+         where id=:id returning productive_seconds
+    """), {"ended": ended_at, "actor": actor, "id": session["id"]}).scalar_one()
+    return int(seconds or 0)
 
 
 def execute_production_stage_command(conn, target_kind, target_id, stage_code, payload, actor):
@@ -4136,8 +4269,15 @@ def execute_production_stage_command(conn, target_kind, target_id, stage_code, p
         )
     if not _stage_pause_schema_ready(conn):
         raise ValueError("A migration de paradas da Produção ainda não foi aplicada.")
-    if action not in {"INICIAR", "PARAR", "FINALIZAR", "INTERROMPER"}:
-        raise ValueError("Comando inválido. Use INICIAR, PARAR, FINALIZAR ou INTERROMPER.")
+    auto_times = bool(payload.get("auto_time_fields"))
+    if auto_times and not _setup_schema_ready(conn):
+        raise ValueError("A migration do perfil APONTAMENTO ainda não foi aplicada.")
+    if action not in {"INICIAR", "SETUP", "PARAR", "FINALIZAR", "INTERROMPER"}:
+        raise ValueError("Comando de apontamento inválido.")
+    if auto_times and action == "INTERROMPER" and not str(payload.get("observacoes") or "").strip():
+        raise ValueError("Informe o motivo da interrupção.")
+    if action == "SETUP" and not auto_times:
+        raise ValueError("O setup automático requer o perfil APONTAMENTO.")
     kind, target, stage = _production_locked_stage(
         conn, target_kind, target_id, stage_code
     )
@@ -4164,13 +4304,57 @@ def execute_production_stage_command(conn, target_kind, target_id, stage_code, p
     time_state = _pause_summary(conn, kind, stage["id"])
     pause = time_state["open_pause"]
     session = time_state["open_session"]
+    setup = _open_stage_setup(conn, kind, stage["id"]) if _setup_schema_ready(conn) else None
+
+    if action == "SETUP":
+        if current != "P" or not session or pause or setup:
+            raise ValueError("Inicie a produção antes de entrar em setup.")
+        seconds = _close_stage_session(conn, kind, stage["id"], moment, actor)
+        _add_auto_stage_hours(
+            conn, kind, target_id, stage_code, "production_time_hours", seconds, actor, key
+        )
+        column = _pause_stage_column(kind)
+        conn.execute(text(f"""
+            insert into erp_stage_setup_sessions(
+                {column},started_at,started_by,idempotency_key
+            ) values (:stage,:started,:actor,:key)
+        """), {
+            "stage": stage["id"], "started": moment, "actor": actor,
+            "key": f"{key}:setup" if key else None,
+        })
+        event_table = "erp_work_order_stage_events" if kind == "work" else "erp_vehicle_entry_stage_events"
+        # A FK de eventos aponta para a etapa, não para a O.S./entrada.
+        stage_column = "work_order_stage_id" if kind == "work" else "vehicle_entry_stage_id"
+        conn.execute(text(f"""
+            insert into {event_table}(
+                {stage_column},action,status_anterior,novo_status,operador,
+                inicio,localizacao,observacao,idempotency_key
+            ) values (
+                :stage,'SETUP',:status,:status,:actor,
+                :inicio,:location,:note,:key
+            )
+        """), {
+            "stage": stage["id"], "status": stage["status"], "actor": actor,
+            "inicio": stage.get("inicio"), "location": stage.get("localizacao"),
+            "note": str(payload.get("observacoes") or "").strip(), "key": key,
+        })
+        return {"replayed": False, "input_code": current, "open_setup": True}
 
     if action in {"PARAR", "INTERROMPER"}:
         if current != "P":
             raise ValueError("Inicie a etapa antes de registrar uma parada ou interrupção.")
         if pause:
             raise ValueError("Esta etapa já possui uma parada ou interrupção em aberto.")
-        _close_stage_session(conn, kind, stage["id"], moment, actor)
+        if setup:
+            setup_seconds = _close_stage_setup(conn, setup, moment, actor)
+            if auto_times:
+                _add_auto_stage_hours(conn, kind, target_id, stage_code,
+                                      "setup_time_hours", setup_seconds, actor, key)
+        else:
+            seconds = _close_stage_session(conn, kind, stage["id"], moment, actor)
+            if auto_times:
+                _add_auto_stage_hours(conn, kind, target_id, stage_code,
+                                      "production_time_hours", seconds, actor, key)
         column = _pause_stage_column(kind)
         pause_type = "PARADA" if action == "PARAR" else "INTERRUPCAO"
         conn.execute(text(f"""
@@ -4217,7 +4401,15 @@ def execute_production_stage_command(conn, target_kind, target_id, stage_code, p
         if session:
             raise ValueError("Esta etapa já está em andamento.")
         if pause:
-            _close_stage_pause(conn, kind, stage["id"], start_at, actor)
+            stopped_seconds = _close_stage_pause(conn, kind, stage["id"], start_at, actor)
+            if auto_times:
+                _add_auto_stage_hours(conn, kind, target_id, stage_code,
+                                      "total_stopped_time_hours", stopped_seconds, actor, key)
+        if setup:
+            setup_seconds = _close_stage_setup(conn, setup, start_at, actor)
+            if auto_times:
+                _add_auto_stage_hours(conn, kind, target_id, stage_code,
+                                      "setup_time_hours", setup_seconds, actor, key)
         _open_stage_session(
             conn, kind, stage["id"], start_at, actor,
             str(payload.get("observacoes") or "").strip(), key,
@@ -4226,7 +4418,16 @@ def execute_production_stage_command(conn, target_kind, target_id, stage_code, p
     else:
         if pause:
             raise ValueError("Retome a etapa antes de finalizá-la.")
-        _close_stage_session(conn, kind, stage["id"], finish_at, actor)
+        if setup:
+            setup_seconds = _close_stage_setup(conn, setup, finish_at, actor)
+            if auto_times:
+                _add_auto_stage_hours(conn, kind, target_id, stage_code,
+                                      "setup_time_hours", setup_seconds, actor, key)
+        else:
+            seconds = _close_stage_session(conn, kind, stage["id"], finish_at, actor)
+            if auto_times:
+                _add_auto_stage_hours(conn, kind, target_id, stage_code,
+                                      "production_time_hours", seconds, actor, key)
         input_code = "S"
 
     stage_payload = {

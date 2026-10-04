@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MES | Apontar {{ stage.stage_code }}</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f1f5f9;color:#172033;font:16px Arial,sans-serif}main{max-width:880px;margin:auto;padding:18px}.head{padding:18px;border-radius:10px 10px 0 0;background:#0f172a;color:#fff}.head h1{margin:0;font-size:29px}.head p{margin:7px 0;color:#cbd5e1}.back{color:white}.panel{padding:18px;background:white;border:1px solid #dbe3ec;border-radius:0 0 10px 10px}.state{padding:14px;border-radius:8px;background:#dbeafe;color:#1e40af;font-weight:800}.state.running{background:#dcfce7;color:#166534}.state.paused{background:#ffedd5;color:#9a3412}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:16px 0}.metric{padding:13px;border:1px solid #dbe3ec;border-radius:8px}.metric small{display:block;color:#64748b;text-transform:uppercase;font-weight:800}.metric strong{display:block;margin-top:5px;font-size:19px}label{display:block;font-weight:800}textarea{width:100%;min-height:82px;margin-top:7px;padding:10px;border:1px solid #bdcad8;border-radius:7px;font:inherit}.actions{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:18px}.btn{min-height:58px;border:0;border-radius:8px;background:#2563eb;color:#fff;font:800 17px Arial,sans-serif;cursor:pointer}.btn.setup{background:#7c3aed}.btn.pause{background:#d97706}.btn.interrupt{background:#dc2626}.btn.finish{background:#059669}.btn:disabled{opacity:.55}.message{padding:12px;background:#fee2e2;color:#991b1b;border-radius:7px;margin-bottom:12px;font-weight:700}@media(max-width:650px){.metrics{grid-template-columns:1fr}.actions{grid-template-columns:1fr}}
+</style></head><body><main>
+<header class="head"><h1>{{ stage.stage_code }}</h1><p>ITEM {{ detail.item_number }}{% if detail.numero_os %} · O.S. {{ detail.numero_os }}{% endif %} · {{ (detail.chassi or '')[-8:] }}</p><a class="back" href="/producao/setor/{{ stage.stage_code|urlencode }}">← Voltar aos cards do setor</a></header>
+<section class="panel"><div id="message" class="message" hidden></div>
+{% if stage.open_setup %}<div class="state paused">Setup em andamento desde {{ stage.setup_started_str }}.</div>{% elif stage.open_pause %}<div class="state paused">Etapa parada/interrompida desde {{ stage.pause_started_str }}.</div>{% elif stage.open_session %}<div class="state running">Produção iniciada em {{ stage.session_started_str }}.</div>{% elif stage.input_code == 'S' %}<div class="state">Etapa concluída. É possível iniciar uma nova sessão de ajuste.</div>{% else %}<div class="state">Etapa disponível para apontamento.</div>{% endif %}
+<div class="metrics"><div class="metric"><small>Responsável</small><strong>{{ stage.responsavel or current_user.nome }}</strong></div><div class="metric"><small>Início vigente</small><strong>{{ stage.inicio_str or '—' }}</strong></div><div class="metric"><small>Produção acumulada</small><strong>{{ stage.production_time_hours if stage.production_time_hours is not none else '0' }} h</strong></div><div class="metric"><small>Setup acumulado</small><strong>{{ stage.setup_time_hours if stage.setup_time_hours is not none else '0' }} h</strong></div><div class="metric"><small>Parado acumulado</small><strong>{{ stage.total_stopped_time_hours if stage.total_stopped_time_hours is not none else '0' }} h</strong></div></div>
+<label>Observação / motivo da interrupção<textarea id="observacoes" placeholder="Descreva o motivo quando necessário."></textarea></label>
+<div class="actions">
+{% if stage.open_session %}<button class="btn setup" onclick="command('SETUP')">SETUP</button><button class="btn pause" onclick="command('PARAR')">PARAR</button><button class="btn interrupt" onclick="command('INTERROMPER')">INTERROMPER</button><button class="btn finish" onclick="command('FINALIZAR')">FINALIZAR</button>
+{% elif stage.open_setup %}<button class="btn" onclick="command('INICIAR')">INICIAR PRODUÇÃO</button><button class="btn pause" onclick="command('PARAR')">PARAR</button><button class="btn interrupt" onclick="command('INTERROMPER')">INTERROMPER</button><button class="btn finish" onclick="command('FINALIZAR')">FINALIZAR</button>
+{% else %}<button class="btn" onclick="command('INICIAR')">{% if stage.open_pause %}INICIAR / RETOMAR{% else %}INICIAR{% endif %}</button>{% endif %}
+</div></section></main>
+<script>
+const endpoint='/api/erp/producao/{{ detail.target_kind }}/{{ detail.target_id }}/commands';
+const stageCode={{ stage.stage_code|tojson }};
+const expected={{ stage.input_code|tojson }};
+const isCompleted={{ (stage.input_code == 'S')|tojson }};
+let pendingKey=null;
+function show(message){const box=document.getElementById('message');box.textContent=message;box.hidden=!message}
+async function command(action){
+  if(action==='INICIAR'&&isCompleted&&!confirm('Esta etapa já foi concluída. Deseja iniciar uma nova sessão de ajuste?'))return;
+  if(action==='INTERROMPER'&&!document.getElementById('observacoes').value.trim()){show('Informe o motivo da interrupção.');return}
+  const buttons=[...document.querySelectorAll('button')];buttons.forEach(button=>button.disabled=true);show('');
+  pendingKey=pendingKey||globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const payload={action,stage_code:stageCode,expected_status:expected,idempotency_key:pendingKey,observacoes:document.getElementById('observacoes').value};
+  try{const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json();if(!response.ok||!result.ok)throw new Error(result.error||'Não foi possível registrar o apontamento.');location.reload()}
+  catch(error){show(error.message);buttons.forEach(button=>button.disabled=false)}
+}
+</script></body></html>
