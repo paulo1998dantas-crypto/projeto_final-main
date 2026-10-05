@@ -54,12 +54,12 @@ class PointingAdjustmentTests(TestCase):
         _, payload = self.execute({
             'action': 'INICIAR', 'responsavel': 'Operador B', 'inicio': '2026-10-01T08:00:00-03:00',
         }, current='N', session=False)
-        self.assertEqual(payload['responsavel'], 'Operador B')
+        self.assertEqual(payload['responsavel'], 'OPERADOR B')
         self.assertEqual(payload['inicio'], self.start)
         self.assertEqual(payload['observacoes'], 'Observação existente')
         self.assertIn('Registrado por: Usuário logado', payload['pointing_audit_note'])
         self.open_session.assert_not_called()
-        self.assertEqual(self.start_setup.call_args.args[4:6], ('Usuário logado', 'Operador B'))
+        self.assertEqual(self.start_setup.call_args.args[4:6], ('Usuário logado', 'OPERADOR B'))
         self.assertEqual(self.update.call_args.args[4], 'Usuário logado')
 
     def test_retroactive_start_cannot_overlap_previous_closed_session(self):
@@ -70,7 +70,7 @@ class PointingAdjustmentTests(TestCase):
 
     def test_direct_finish_preserves_assigned_operator_and_automatic_timestamps(self):
         _, payload = self.execute({'action': 'FINALIZAR', 'expected_interval_id': 'session-1'})
-        self.assertEqual(payload['responsavel'], 'Operador A')
+        self.assertEqual(payload['responsavel'], 'OPERADOR A')
         self.assertIsNone(payload['inicio'])
         self.assertEqual(payload['termino'].tzinfo, timezone.utc)
         self.conn.execute.assert_not_called()

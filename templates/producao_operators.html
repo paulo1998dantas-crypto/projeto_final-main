@@ -1,0 +1,24 @@
+<fieldset class="full" style="border:1px solid #bdcad8;border-radius:8px;padding:14px">
+  <legend>Operadores desta execução</legend>
+  <datalist id="execution-operator-options">{% for name in detail.operator_references %}<option value="{{ name }}">{% endfor %}</datalist>
+  <div id="execution-crew-fields"></div>
+  <button type="button" id="add-execution-operator" class="btn" {% if stage.open_session %}disabled{% endif %}>+ Adicionar operador</button>
+  <p class="help">Selecione ou digite um nome por campo. As horas desta execução são divididas igualmente entre os participantes, sem multiplicar o total. Nomes repetidos contam uma vez. Para mudar a equipe durante a produção, interrompa e retome com os novos nomes.</p>
+</fieldset>
+<script>
+const crewFields=document.getElementById('execution-crew-fields');
+const crewLocked={% if stage.open_session %}true{% else %}false{% endif %};
+function appendExecutionOperator(value=''){
+  if(crewFields.children.length>=20)return;
+  const label=document.createElement('label'),input=document.createElement('input');
+  const index=crewFields.children.length+1;label.textContent=`Operador ${index}${index===1?' (obrigatório)':' (opcional)'}`;
+  input.setAttribute('data-execution-operator','');input.setAttribute('list','execution-operator-options');
+  input.maxLength=160;input.style.textTransform='uppercase';input.value=value.toUpperCase();input.readOnly=crewLocked;
+  if(index===1){input.id='responsavel';input.required=true}
+  input.addEventListener('input',()=>{input.value=input.value.toUpperCase()});label.append(input);crewFields.append(label);
+}
+const initialExecutionCrew={{ (stage.active_execution_operators or [current_user.nome])|tojson }};
+for(let i=0;i<Math.max(3,initialExecutionCrew.length);i++)appendExecutionOperator(initialExecutionCrew[i]||'');
+document.getElementById('add-execution-operator').addEventListener('click',()=>appendExecutionOperator());
+function readExecutionOperators(){return [...document.querySelectorAll('[data-execution-operator]')].map(input=>input.value.trim().toUpperCase()).filter(Boolean)}
+</script>

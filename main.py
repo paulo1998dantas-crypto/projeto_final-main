@@ -30,6 +30,7 @@ templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 import database, models
 import erp_service
 import erp_catalogs
+from erp_operators import OPERATOR_REFERENCES, operator_names, normalize_operators
 import erp_report
 import authz
 import portal_sso
@@ -2007,8 +2008,8 @@ def _erp_history_export_rows():
 def _erp_execution_export_rows():
     with database.engine.connect() as conn:
         rows = conn.execute(text("""
-            select * from bi.mes_execution_intervals
-            order by item_number,stage_code,started_at,interval_id
+            select * from bi.mes_operator_allocations
+            order by item_number,stage_code,started_at,interval_id,allocation_id
         """)).mappings()
         return [{
             "ID SESSÃO": str(row["interval_id"]), "ID ETAPA": str(row["stage_id"]),
@@ -2019,6 +2020,26 @@ def _erp_execution_export_rows():
             "TEMPO DE SETUP (H)": row["hours"] if row["phase"] == "SETUP" else 0,
             "TEMPO DE PRODUÇÃO (H)": row["hours"] if row["phase"] == "PRODUCAO" else 0,
             "TEMPO PARADO TOTAL INFORMADO (H)": row["hours"] if row["phase"] == "PARADA" else 0,
+            "OPERADORES DA EXECUÇÃO": row["execution_crew"],
+            "QTDE OPERADORES": row["operator_count"], "ID RATEIO": str(row["allocation_id"]),
+        } for row in rows]
+
+
+def _erp_operator_export_rows():
+    with database.engine.connect() as conn:
+        rows = conn.execute(text("""
+            select * from bi.fato_fechamento_operador
+            order by item,etapa,inicio,apontamento_id
+        """)).mappings()
+        return [{
+            "ID RATEIO": str(row["apontamento_id"]), "ID ETAPA": str(row["etapa_id"]),
+            "ITEM": row["item"], "O.S.": row["numero_os"], "CHASSI": row["chassi_exibicao"],
+            "ETAPA": row["etapa"], "OPERADOR EXECUÇÃO": row["responsavel"],
+            "INICIO": to_excel_dt(row["inicio"]), "TERMINO": to_excel_dt(row["termino"]),
+            "FASE": row["fase"], "USUÁRIO REGISTRADOR": row["registrado_por"],
+            "TEMPO DE SETUP (H)": row["setup_time_hours"],
+            "TEMPO DE PRODUÇÃO (H)": row["production_time_hours"],
+            "TEMPO PARADO TOTAL INFORMADO (H)": row["total_stopped_time_hours"],
         } for row in rows]
 
 
@@ -2095,9 +2116,11 @@ async def exportar(request: Request, db: Session = Depends(database.get_db)):
             extra_sheets={
                 "Sessões de execução": _erp_execution_export_rows() if history else [],
                 "Totais por etapa": _erp_time_export_rows() if history else [],
+                "Rateio por operador": _erp_operator_export_rows() if history else [],
                 "Como somar": [
                     {"ORIENTAÇÃO": "Sheet1: histórico auditável; TEMPOS_AUTOMATICOS são incrementos. TEMPOS_MANUAIS/METADADOS são snapshots acumulados, não somar."},
-                    {"ORIENTAÇÃO": "Sessões de execução: cada sessão fechada e seu operador, sem duplicidade; somar por fase. Horas conciliadas com os valores vigentes da etapa."},
+                    {"ORIENTAÇÃO": "Sessões de execução: uma linha por participante, com horas rateadas igualmente por equipe da sessão. Somar horas, não contar linhas como sessões (usar ID SESSÃO distinto)."},
+                    {"ORIENTAÇÃO": "Rateio por operador: mesma fonte do BI; sessões + residual manual/histórico, horas por pessoa sem duplicar total. Contar etapas distintas por ID ETAPA. Não somar esta aba com as outras."},
                     {"ORIENTAÇÃO": "Totais por etapa: acumulado vigente (inclui horas manuais/históricas). Não somar com as sessões, pois são duas visões do mesmo tempo."},
                 ],
             },
@@ -2602,13 +2625,15 @@ def prepare_production_detail(detail):
         )
         interval = stage.get("open_session") or stage.get("open_setup") or stage.get("open_pause") or {}
         stage["active_interval_id"] = str(interval.get("id") or "")
-        stage["active_execution_operator"] = interval.get("execution_operator") or current_operator_name(stage.get("responsavel"))
+        stage["active_execution_operator"] = normalize_operators(interval.get("execution_operator") or "")
+        stage["active_execution_operators"] = operator_names(stage["active_execution_operator"])
         interval_start = interval.get("started_at")
         stage["active_interval_start_input"] = (
             interval_start.astimezone(LOCAL_TZ).strftime("%Y-%m-%dT%H:%M:%S")
             if interval_start and interval_start.tzinfo is not None
             else interval_start.strftime("%Y-%m-%dT%H:%M:%S") if interval_start else ""
         )
+    detail["operator_references"] = OPERATOR_REFERENCES
     detail["now_input"] = to_input_dt(datetime.datetime.now(LOCAL_TZ))
     return detail
 
@@ -2828,7 +2853,7 @@ async def erp_work_order_screen(request: Request, db: Session = Depends(database
         return permission_denied()
     if is_production_only(user):
         return RedirectResponse(url="/producao", status_code=303)
-    return templates.TemplateResponse(request, "gestao_os.html", {"request": request, "current_user": user})
+    return templates.TemplateResponse(request, "gestao_os.html", {"request": request, "current_user": user, "operator_references": OPERATOR_REFERENCES})
 
 @app.get("/sequenciamento", response_class=HTMLResponse)
 async def erp_sequencing_screen(request: Request, db: Session = Depends(database.get_db)):

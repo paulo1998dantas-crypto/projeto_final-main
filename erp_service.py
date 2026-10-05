@@ -6,6 +6,7 @@ from functools import cmp_to_key
 import erp_stock_closure
 import json
 import hashlib
+from erp_operators import operator_names, normalize_operators, execution_crew
 from uuid import uuid4
 import re
 import unicodedata
@@ -3114,7 +3115,7 @@ def update_vehicle_entry_stage(conn, entry_id, code, payload, actor):
     if reopening:
         finished = None
     values = {
-        "responsible": str(payload.get("responsavel") or stage.get("responsavel") or ""),
+        "responsible": normalize_operators(payload.get("responsavel") or stage.get("responsavel") or ""),
         "location": str(payload.get("localizacao") or stage.get("localizacao") or ""),
         "notes": str(payload.get("observacoes") or stage.get("observacoes") or ""),
     }
@@ -3583,6 +3584,8 @@ def _metadata_value(payload, field, current):
     if field not in payload:
         return current
     value = payload.get(field)
+    if field == "responsavel":
+        return normalize_operators(value)
     if field in {"inicio", "termino"} and not value:
         return current
     if field in {"responsavel", "localizacao", "observacoes", "bloqueio_motivo"}:
@@ -4066,14 +4069,7 @@ def _production_execution_operators(conn, kind, stage_id):
 
 
 def _operator_names(*values):
-    names, seen = [], set()
-    for value in values:
-        for name in str(value or "").split("/"):
-            name = name.strip()
-            if name and name.casefold() not in seen:
-                seen.add(name.casefold())
-                names.append(name)
-    return names
+    return operator_names(*values)
 
 
 def _consolidated_operators(conn, kind, stage, responsible=None):
@@ -4202,7 +4198,7 @@ def update_synchronized_stage(conn, kind, target_id, code, payload, actor, metad
         last = max(closed, key=lambda row: _production_datetime(row["ended_at"]))
         _correct_interval_boundary(conn, kind, stage, last, "ended_at", data["termino"], actor)
 
-    responsible = str(data.get("responsavel") or stage.get("responsavel") or actor).strip()
+    responsible = execution_crew(data, stage.get("responsavel") or actor)
     if active and stage["status"] == "CONCLUÍDA":
         _supersede_completed_stage_timers(conn, kind, stage, actor)
         active = None
@@ -4614,13 +4610,9 @@ def execute_production_stage_command(conn, target_kind, target_id, stage_code, p
 
     responsible = actor
     if auto_times:
-        responsible = str(payload.get("responsavel") or (
+        responsible = execution_crew(payload, (
             actor if action == "INICIAR" else (_operator_names(stage.get("responsavel")) or [actor])[-1]
-        )).strip()
-        if not responsible:
-            raise ValueError("Informe o nome do operador responsável.")
-        if len(responsible) > 160:
-            raise ValueError("O nome do operador deve ter no máximo 160 caracteres.")
+        ))
     audit_notes = [f"Operador informado: {responsible}. Registrado por: {actor}."] if auto_times else []
 
     now = datetime.now(timezone.utc)
@@ -4640,7 +4632,7 @@ def execute_production_stage_command(conn, target_kind, target_id, stage_code, p
         if str(payload.get("expected_interval_id") or "") != str(actual_interval.get("id") or ""):
             raise StageConflictError("A sessão foi alterada. Atualize a tela antes de continuar.")
     if auto_times and action != "INICIAR":
-        responsible = str((session or setup or pause or {}).get("execution_operator") or responsible)
+        responsible = normalize_operators((session or setup or pause or {}).get("execution_operator") or responsible)
         audit_notes = [f"Operador informado: {responsible}. Registrado por: {actor}."]
     if auto_times and action == "INICIAR" and start_at > now:
         raise ValueError("O início do apontamento não pode estar no futuro.")

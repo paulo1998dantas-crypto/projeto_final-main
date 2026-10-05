@@ -147,13 +147,14 @@ class MesOperationalExportTests(unittest.TestCase):
             "numero_os": "3202", "chassi": "7242", "modelo": "MASTER",
             "stage_code": "ELÉTRICA", "status": "EM_ANDAMENTO",
             "execution_operator": "Francisco", "registered_by": "PAULO",
+            "execution_crew": "FRANCISCO / EVERTON", "operator_count": 2, "allocation_id": "allocation",
             "phase": "PARADA", "hours": Decimal("0.42"),
             "started_at": datetime(2026, 10, 5, 12, tzinfo=timezone.utc),
             "ended_at": datetime(2026, 10, 5, 13, tzinfo=timezone.utc),
         }])
         with patch.object(main.database, "engine", engine):
             rows = main._erp_execution_export_rows()
-        self.assertIn("bi.mes_execution_intervals", engine.connection.sql)
+        self.assertIn("bi.mes_operator_allocations", engine.connection.sql)
         self.assertEqual(rows[0]["OPERADOR EXECUÇÃO"], "Francisco")
         self.assertEqual(rows[0]["USUÁRIO REGISTRADOR"], "PAULO")
         self.assertEqual(rows[0]["TEMPO PARADO TOTAL INFORMADO (H)"], Decimal("0.42"))
@@ -173,10 +174,12 @@ class MesOperationalExportTests(unittest.TestCase):
             patch.object(main, "_erp_history_export_rows", return_value=[{"ITEM": 3202}]),
             patch.object(main, "_erp_execution_export_rows", return_value=[{"OPERADOR EXECUÇÃO": "Francisco", "TEMPO DE PRODUÇÃO (H)": Decimal("1.25")}]),
             patch.object(main, "_erp_time_export_rows", return_value=[{"ITEM": 3202, "TEMPO DE PRODUÇÃO (H)": Decimal("1.25")}]),
+            patch.object(main, "_erp_operator_export_rows", return_value=[{"OPERADOR EXECUÇÃO": "FRANCISCO", "TEMPO DE PRODUÇÃO (H)": Decimal("0.63")}]),
         ):
             response = asyncio.run(main.exportar(object(), object()))
         workbook = load_workbook(BytesIO(asyncio.run(self._response_bytes(response))), read_only=True)
-        self.assertEqual(workbook.sheetnames, ["Sheet1", "Sessões de execução", "Totais por etapa", "Como somar"])
+        self.assertEqual(workbook.sheetnames, ["Sheet1", "Sessões de execução", "Totais por etapa", "Rateio por operador", "Como somar"])
+        self.assertEqual(workbook["Rateio por operador"]["B2"].value, 0.63)
         self.assertEqual(workbook["Sessões de execução"]["B2"].value, 1.25)
         self.assertEqual(workbook["Totais por etapa"]["B2"].value, 1.25)
         workbook.close()

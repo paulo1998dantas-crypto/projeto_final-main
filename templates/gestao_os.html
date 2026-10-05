@@ -164,6 +164,7 @@ dialog{width:min(1480px,98vw);max-height:96vh;border:0;border-radius:9px;padding
 </dialog>
 {% endif %}
 
+{% include 'mes_stage_operators.html' %}
 <script>
 const state={orders:[],detail:null,catalogs:{},queryHandled:false};
 const canDeleteEntries={{ 'true' if current_user.can("mes.vehicle_entries.delete") else 'false' }};
@@ -582,6 +583,7 @@ function renderStages(){
   }).join('');
   document.querySelectorAll('#stage-rows tr').forEach(row=>{
     row.dataset.syncToken=stages.find(stage=>stage.stage_code===row.dataset.stage)?.sync_token||'';
+    attachStageOperatorPicker(row);
     row.querySelectorAll('input[type="datetime-local"]').forEach(input=>input.step='1');
   });
 }

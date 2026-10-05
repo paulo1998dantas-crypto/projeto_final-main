@@ -102,6 +102,7 @@ class ExecutionCycleTests(TestCase):
                                 'expected_status':'N' if index==0 else 'P','idempotency_key':str(index),
                                 'observacoes':'OBSERVAÇÃO ORIGINAL',
                                 ('inicio' if action=='INICIAR' else 'termino' if action=='FINALIZAR' else 'momento'):f'2026-10-03T{clock}:00-03:00'}
+                            if operator=='A':payload['operadores']=['carlos','Evrton','Carlos']
                             erp_service.execute_production_stage_command(conn,kind,'target','REVEST',payload,'USUÁRIO COMPARTILHADO')
                             # Duplicate delivery must not increment any interval/counter.
                             replay=erp_service.execute_production_stage_command(conn,kind,'target','REVEST',payload,'USUÁRIO COMPARTILHADO')
@@ -111,12 +112,12 @@ class ExecutionCycleTests(TestCase):
                         self.assertEqual(row['status'],'CONCLUÍDA')
                         self.assertEqual(row['inicio'].isoformat(),'2026-10-03T11:00:00+00:00')
                         self.assertEqual(row['observacoes'],'OBSERVAÇÃO ORIGINAL')
-                        self.assertEqual(row['responsavel'],'A / B / C / D')
-                        self.assertEqual(erp_service._production_execution_operators(conn,kind,'stage'),['A','B','C','D'])
+                        self.assertEqual(row['responsavel'],'CARLOS / EVERTON / B / C / D')
+                        self.assertCountEqual(erp_service._operator_names(*erp_service._production_execution_operators(conn,kind,'stage')),['CARLOS','EVERTON','B','C','D'])
                         counter=sql.execute(text('select * from erp_stage_auto_time_counters')).mappings().one()
                         self.assertEqual((counter['production_seconds'],counter['setup_seconds'],counter['stopped_seconds']),(4500,1200,1500))
                         pauses=sql.execute(text('select resume_phase,execution_operator from erp_stage_time_pauses order by started_at')).all()
-                        self.assertEqual(pauses,[('PRODUCAO','A'),('PRODUCAO','B'),('SETUP','C')])
+                        self.assertEqual(pauses,[('PRODUCAO','CARLOS / EVERTON'),('PRODUCAO','B'),('SETUP','C')])
                         for table in ('erp_stage_time_sessions','erp_stage_setup_sessions','erp_stage_time_pauses'):
                             self.assertEqual(sql.execute(text(f'select count(*) from {table} where ended_at is null')).scalar_one(),0)
                         events=sql.execute(text(f"select * from {event_table} where action='TEMPOS_AUTOMATICOS'")).mappings().all()
@@ -133,7 +134,7 @@ class ExecutionCycleTests(TestCase):
                         self.assertEqual((corrected['production_time_hours'],corrected['setup_time_hours'],corrected['total_stopped_time_hours']),(1.75,0.5,0.42))
                         self.assertEqual(corrected['inicio'].isoformat(),'2026-10-03T10:50:00+00:00')
                         self.assertEqual(corrected['termino'].isoformat(),'2026-10-03T13:30:00+00:00')
-                        self.assertEqual(corrected['responsavel'],'A / B / C / D')
+                        self.assertEqual(corrected['responsavel'],'CARLOS / EVERTON / B / C / D')
                         self.assertTrue(erp_service.update_synchronized_stage(conn,kind,'target','REVEST',correction,'PCP',metadata_only=kind=='work')['replayed'])
                         # A stale manual page cannot replace the new automatic
                         # totals after another console has changed the stage.
@@ -150,7 +151,7 @@ class ExecutionCycleTests(TestCase):
                         final=locked()[2]
                         self.assertEqual(final['production_time_hours'],2.5)
                         self.assertEqual(final['setup_time_hours'],0.67)
-                        self.assertEqual(final['responsavel'],'A / B / C / D / E')
+                        self.assertEqual(final['responsavel'],'CARLOS / EVERTON / B / C / D / E')
                         self.assertEqual(final['inicio'],corrected['inicio'])
                 engine.dispose()
 

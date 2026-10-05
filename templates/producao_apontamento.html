@@ -20,7 +20,7 @@
     <div class="form">
       <label>Data/hora de início ou retomada<input id="inicio" type="datetime-local" value="{{ detail.now_input }}"></label>
       <label>Data/hora de parada, interrupção ou finalização<input id="momento" type="datetime-local" value="{{ detail.now_input }}"></label>
-      <label class="full">Operador desta execução<input id="responsavel" maxlength="160" value="{{ stage.active_execution_operator or current_user.nome }}" {% if stage.open_session %}readonly{% endif %}></label>
+      {% include 'producao_operators.html' %}
       <label class="manual-entry">Tempo de Setup (h)<input id="setup-time" type="number" min="0" step="0.01" inputmode="decimal" value="{{ stage.setup_time_hours if stage.setup_time_hours is not none else '' }}" placeholder="0,00"></label>
       <label class="manual-entry">Tempo de Produção (h)<input id="production-time" type="number" min="0" step="0.01" inputmode="decimal" value="{{ stage.production_time_hours if stage.production_time_hours is not none else '' }}" placeholder="0,00"></label>
       <label class="manual-entry">Tempo Parado Total Informado (h)<input id="stopped-time" type="number" min="0" step="0.01" inputmode="decimal" value="{{ stage.total_stopped_time_hours if stage.total_stopped_time_hours is not none else '' }}" placeholder="0,00"></label>
@@ -70,8 +70,9 @@ async function saveManualTimes(){
 }
 async function sendStageCommand(action){
   if(action==='INICIAR'&&isCompleted&&!confirm('Esta etapa já foi concluída. Deseja iniciar uma nova sessão de ajuste sem apagar os apontamentos anteriores?'))return;
+  if(!document.getElementById('responsavel').value.trim()){show('Informe o primeiro operador.');return}
   const buttons=[...document.querySelectorAll('button')];buttons.forEach(b=>b.disabled=true);show('');
-  const payload={action,stage_code:stageCode,expected_status:expected,expected_interval_id:activeIntervalId,observacoes:document.getElementById('observacoes').value,responsavel:document.getElementById('responsavel').value.trim()};
+  const payload={action,stage_code:stageCode,expected_status:expected,expected_interval_id:activeIntervalId,observacoes:document.getElementById('observacoes').value,operadores:readExecutionOperators(),responsavel:readExecutionOperators().join(' / ')};
   if(action==='INICIAR')payload.inicio=document.getElementById('inicio').value;
   else if(action==='FINALIZAR')payload.termino=document.getElementById('momento').value;
   else payload.momento=document.getElementById('momento').value;

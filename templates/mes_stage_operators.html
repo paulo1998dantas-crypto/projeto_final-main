@@ -1,0 +1,38 @@
+<datalist id="stage-operator-options">{% for name in operator_references %}<option value="{{ name }}">{% endfor %}</datalist>
+<dialog id="stage-operators-dialog" style="max-width:560px;padding:22px;border-radius:12px">
+  <h2>Operadores da etapa</h2>
+  <p>Um nome por campo. Selecione ou digite novos nomes. As horas são rateadas entre os participantes.</p>
+  <div id="stage-operator-fields"></div>
+  <button class="btn" type="button" id="add-stage-operator">+ Adicionar operador</button>
+  <button class="btn primary" type="button" id="confirm-stage-operators">Usar estes operadores</button>
+  <button class="btn" type="button" id="cancel-stage-operators">Cancelar</button>
+  <p>A alteração será gravada quando você clicar em Salvar/Corrigir na etapa.</p>
+</dialog>
+<script>
+let selectedStageOwner=null;
+const stageCrewDialog=document.getElementById('stage-operators-dialog');
+function addStageOperator(value=''){
+  const fields=document.getElementById('stage-operator-fields');if(fields.children.length>=20)return;
+  const label=document.createElement('label'),input=document.createElement('input');
+  label.textContent=`Operador ${fields.children.length+1}`;input.value=value.toUpperCase();
+  input.maxLength=160;input.setAttribute('list','stage-operator-options');input.style.textTransform='uppercase';
+  input.addEventListener('input',()=>{input.value=input.value.toUpperCase()});label.append(input);fields.append(label);
+}
+function openStageOperators(input){
+  selectedStageOwner=input;document.getElementById('stage-operator-fields').replaceChildren();
+  const names=input.value.split(/\s*[/,;+&|]\s*|\s+E\s+/i).filter(Boolean);
+  for(let i=0;i<Math.max(3,names.length);i++)addStageOperator(names[i]||'');stageCrewDialog.showModal();
+}
+function attachStageOperatorPicker(row){
+  const input=row.querySelector('.stage-owner');input.setAttribute('list','stage-operator-options');input.style.textTransform='uppercase';
+  input.addEventListener('input',()=>{input.value=input.value.toUpperCase()});
+  const button=document.createElement('button');button.type='button';button.className='btn';button.textContent='Operadores';
+  button.disabled=input.disabled;button.addEventListener('click',()=>openStageOperators(input));input.after(button);
+}
+document.getElementById('add-stage-operator').addEventListener('click',()=>addStageOperator());
+document.getElementById('cancel-stage-operators').addEventListener('click',()=>stageCrewDialog.close());
+document.getElementById('confirm-stage-operators').addEventListener('click',()=>{
+  selectedStageOwner.value=[...document.querySelectorAll('#stage-operator-fields input')].map(input=>input.value.trim().toUpperCase()).filter(Boolean).join(' / ');
+  stageCrewDialog.close();
+});
+</script>

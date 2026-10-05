@@ -25,12 +25,17 @@ async function verify(testCase) {
     for (const id of ['finish-direct', 'finish-review', 'finish-save', 'finish-cancel']) {
       elements[id] = { hidden: false, addEventListener(event, handler) { this.handler = handler; } };
     }
+    const crewInputs=[];
+    elements['execution-crew-fields']={children:[],append(label){this.children.push(label)}};
+    elements['add-execution-operator']={addEventListener(event,handler){this.handler=handler}};
     const requests = [];
     let reloads = 0;
     const context = vm.createContext({
       document: {
-        querySelectorAll: () => buttons,
+        querySelectorAll: selector => selector==='[data-execution-operator]' ? crewInputs : buttons,
         getElementById: id => elements[id],
+        createElement: tag => ({style:{},value:'',setAttribute(){},addEventListener(){},
+          append(input){crewInputs.push(input);if(crewInputs.length===1)elements.responsavel=input}}),
       },
       crypto: { randomUUID: () => 'test-button-key' },
       confirm: () => true,
@@ -44,6 +49,8 @@ async function verify(testCase) {
     for (const script of testCase.html.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
       vm.runInContext(script[1], context);
     }
+    assert.equal(crewInputs.length,3);
+    crewInputs[0].value='Carlos';crewInputs[1].value='Everton';
     await buttons.find(button => button.dataset.stageAction === action).handler();
     const operator = testCase.html.includes('id="finish-dialog"');
     if (operator && action === 'FINALIZAR') {
@@ -75,7 +82,8 @@ async function verify(testCase) {
     assert.equal(requests[0].payload.expected_status, testCase.status);
     assert.equal(requests[0].payload.observacoes, 'Teste de interface');
     if (operator) {
-      assert.equal(requests[0].payload.responsavel, 'Operador informado');
+      assert.equal(requests[0].payload.responsavel, 'CARLOS / EVERTON');
+      assert.deepEqual(requests[0].payload.operadores,['CARLOS','EVERTON']);
       if (action === 'INICIAR') assert.equal(requests[0].payload.inicio, testCase.startOverride || undefined);
       if (action === 'FINALIZAR') {
         assert.equal(requests[0].payload.expected_interval_id, 'test-interval');
