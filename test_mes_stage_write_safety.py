@@ -123,7 +123,7 @@ class MesStageWriteSafetyTests(unittest.TestCase):
                 self.assertEqual(Decimal("0.50"), update_params["stopped_hours"])
                 self.assertIn(f"insert into {event_table}", event_sql)
                 self.assertIn(stage_fk, event_sql)
-                self.assertIn("'tempos_manuais'", event_sql)
+                self.assertEqual("TEMPOS_MANUAIS", event_params["action"])
                 self.assertIn("total_stopped_time_hours", event_sql)
                 self.assertEqual(update_params["setup_hours"], event_params["setup_hours"])
                 self.assertEqual(update_params["production_hours"], event_params["production_hours"])

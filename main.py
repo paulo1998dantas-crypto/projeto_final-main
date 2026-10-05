@@ -1929,12 +1929,14 @@ async def atualizar_banco(request: Request, data: dict = Body(...), db: Session 
     db.commit()
     return {"status": "ok"}
 
-def _xlsx_response(rows, columns, filename):
+def _xlsx_response(rows, columns, filename, extra_sheets=None):
     """Return a stable XLSX even when the selected report has no rows."""
     frame = pd.DataFrame(rows, columns=columns)
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
         frame.to_excel(writer, index=False)
+        for name, sheet_rows in (extra_sheets or {}).items():
+            pd.DataFrame(sheet_rows).to_excel(writer, sheet_name=name, index=False)
     out.seek(0)
     return StreamingResponse(
         out,
@@ -1951,7 +1953,7 @@ def _erp_history_export_rows():
                        concat_ws(' ',nullif(trim(v.marca),''),nullif(trim(v.modelo),''),
                                  nullif(trim(v.versao),'')) as modelo,
                        s.stage_code,ev.action,ev.status_anterior,ev.novo_status,
-                       ev.operador,ev.inicio,ev.termino,ev.localizacao,
+                       ev.operador,ev.inicio,ev.termino,ev.localizacao,ev.observacao,
                        ev.setup_time_hours,ev.production_time_hours,
                        ev.total_stopped_time_hours,ev.created_at,
                        ev.id as event_id,s.ordem,'ERP'::text as origem
@@ -1965,7 +1967,7 @@ def _erp_history_export_rows():
                        concat_ws(' ',nullif(trim(v.marca),''),nullif(trim(v.modelo),''),
                                  nullif(trim(v.versao),'')) as modelo,
                        s.stage_code,ev.action,ev.status_anterior,ev.novo_status,
-                       ev.operador,ev.inicio,ev.termino,ev.localizacao,
+                       ev.operador,ev.inicio,ev.termino,ev.localizacao,ev.observacao,
                        ev.setup_time_hours,ev.production_time_hours,
                        ev.total_stopped_time_hours,ev.created_at,
                        ev.id as event_id,s.ordem,'ERP PRÉ-O.S.'::text as origem
@@ -1996,9 +1998,28 @@ def _erp_history_export_rows():
                 "TEMPO PARADO TOTAL INFORMADO (H)": row["total_stopped_time_hours"],
                 "DATA": to_excel_dt(row["created_at"]),
                 "ORIGEM": row["origem"],
+                "OBSERVAÇÕES": row.get("observacao") or "",
             }
             for row in rows
         ]
+
+
+def _erp_execution_export_rows():
+    with database.engine.connect() as conn:
+        rows = conn.execute(text("""
+            select * from bi.mes_execution_intervals
+            order by item_number,stage_code,started_at,interval_id
+        """)).mappings()
+        return [{
+            "ID SESSÃO": str(row["interval_id"]), "ID ETAPA": str(row["stage_id"]),
+            "ITEM": row["item_number"], "O.S.": row["numero_os"], "CHASSI": row["chassi"],
+            "MODELO": row["modelo"], "ETAPA": row["stage_code"], "STATUS VIGENTE": row["status"],
+            "OPERADOR EXECUÇÃO": row["execution_operator"], "USUÁRIO REGISTRADOR": row["registered_by"],
+            "FASE": row["phase"], "INICIO": to_excel_dt(row["started_at"]), "TERMINO": to_excel_dt(row["ended_at"]),
+            "TEMPO DE SETUP (H)": row["hours"] if row["phase"] == "SETUP" else 0,
+            "TEMPO DE PRODUÇÃO (H)": row["hours"] if row["phase"] == "PRODUCAO" else 0,
+            "TEMPO PARADO TOTAL INFORMADO (H)": row["hours"] if row["phase"] == "PARADA" else 0,
+        } for row in rows]
 
 
 def _erp_time_export_rows():
@@ -2064,12 +2085,22 @@ async def exportar(request: Request, db: Session = Depends(database.get_db)):
             "ITEM", "O.S.", "CHASSI", "MODELO", "ETAPA", "AÇÃO",
             "STATUS ANTERIOR", "STATUS", "RESPONSAVEL", "INICIO",
             "TERMINO", "LOCALIZACAO", "TEMPO DE SETUP (H)",
-            "TEMPO DE PRODUÇÃO (H)", "TEMPO PARADO TOTAL INFORMADO (H)", "DATA", "ORIGEM",
+            "TEMPO DE PRODUÇÃO (H)", "TEMPO PARADO TOTAL INFORMADO (H)", "DATA", "ORIGEM", "OBSERVAÇÕES",
         ]
+        history = _erp_history_export_rows()
         return _xlsx_response(
-            _erp_history_export_rows(),
+            history,
             columns,
             "logs_apontamentos_mes.xlsx",
+            extra_sheets={
+                "Sessões de execução": _erp_execution_export_rows() if history else [],
+                "Totais por etapa": _erp_time_export_rows() if history else [],
+                "Como somar": [
+                    {"ORIENTAÇÃO": "Sheet1: histórico auditável; TEMPOS_AUTOMATICOS são incrementos. TEMPOS_MANUAIS/METADADOS são snapshots acumulados, não somar."},
+                    {"ORIENTAÇÃO": "Sessões de execução: cada sessão fechada e seu operador, sem duplicidade; somar por fase. Horas conciliadas com os valores vigentes da etapa."},
+                    {"ORIENTAÇÃO": "Totais por etapa: acumulado vigente (inclui horas manuais/históricas). Não somar com as sessões, pois são duas visões do mesmo tempo."},
+                ],
+            },
         )
     if not legacy_operational_schema_available():
         return legacy_disabled_response()
@@ -2565,7 +2596,7 @@ def prepare_production_detail(detail):
         stage["setup_started_str"] = to_input_dt(
             (stage.get("open_setup") or {}).get("started_at")
         )
-        interval = stage.get("open_session") or stage.get("open_setup") or {}
+        interval = stage.get("open_session") or stage.get("open_setup") or stage.get("open_pause") or {}
         stage["active_interval_id"] = str(interval.get("id") or "")
         interval_start = interval.get("started_at")
         stage["active_interval_start_input"] = (

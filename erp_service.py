@@ -2899,6 +2899,7 @@ def list_sector_production_targets(conn, stage_code, search="", limit=1000):
     if stage_code not in {code for code, _, _ in STAGES}:
         raise ValueError("Setor de apontamento inválido.")
     cards = list_production_targets(conn, search=search, limit=limit)
+    cards_by_target = {(card["target_kind"], card["target_id"]): card for card in cards}
     allowed = set()
     for kind, table, foreign_key in (
         ("work", "erp_work_order_stages", "work_order_id"),
@@ -2908,14 +2909,18 @@ def list_sector_production_targets(conn, stage_code, search="", limit=1000):
         if not ids:
             continue
         rows = conn.execute(text(f"""
-            select {foreign_key}::text as target_id
+            select {foreign_key}::text as target_id,status,parametrizado,aplicavel
               from {table}
              where {foreign_key}::text = any(:ids)
                and stage_code=:stage
                and aplicavel=true
                and status <> 'NÃO_APLICÁVEL'
         """), {"ids": ids, "stage": stage_code}).mappings()
-        allowed.update((kind, str(row["target_id"])) for row in rows)
+        for row in rows:
+            identity = (kind, str(row["target_id"]))
+            allowed.add(identity)
+            if identity in cards_by_target:
+                cards_by_target[identity]["sector_input_code"] = stage_input_code(row)
         if kind == "entry":
             # A tela de pré-O.S. cria as linhas ao ser aberta; antes disso todos
             # os setores são apontáveis e não podem desaparecer do cockpit.
@@ -3738,23 +3743,33 @@ def update_production_manual_times(conn, target_kind, target_id, code, payload, 
         "stage": stage["id"],
     })
     status = stage.get("status") or stage_input_code(stage)
+    automatic_field = payload.get("automatic_delta_field")
+    event_hours = {
+        "setup_hours": setup_hours, "production_hours": production_hours,
+        "stopped_hours": stopped_hours,
+    }
+    if automatic_field:
+        event_hours = {name: None for name in event_hours}
+        event_hours[{
+            "setup_time_hours": "setup_hours", "production_time_hours": "production_hours",
+            "total_stopped_time_hours": "stopped_hours",
+        }[automatic_field]] = payload["automatic_delta_hours"]
     conn.execute(text(f"""
         insert into {event_table}(
             {stage_fk},action,status_anterior,novo_status,operador,
             observacao,setup_time_hours,production_time_hours,
             total_stopped_time_hours,idempotency_key
         ) values(
-            :stage,'TEMPOS_MANUAIS',:status,:status,:actor,:note,
+            :stage,:action,:status,:status,:actor,:note,
             :setup_hours,:production_hours,:stopped_hours,:key
         )
     """), {
         "stage": stage["id"],
         "status": status,
         "actor": actor,
-        "note": "Tempos de setup, produção e parada informados manualmente; apontamento e observações preservados.",
-        "setup_hours": setup_hours,
-        "production_hours": production_hours,
-        "stopped_hours": stopped_hours,
+        "action": "TEMPOS_AUTOMATICOS" if automatic_field else "TEMPOS_MANUAIS",
+        "note": "Incremento de tempo desta sessão; somável com outros incrementos automáticos." if automatic_field else "Tempos de setup, produção e parada informados manualmente; valores acumulados vigentes, não somar snapshots.",
+        **event_hours,
         "key": key,
     })
     return {
@@ -4018,6 +4033,45 @@ def _open_stage_setup(conn, target_kind, stage_id):
     """), {"stage": stage_id}))
 
 
+def _start_stage_setup(conn, kind, stage_id, started_at, actor, responsible, key):
+    column = _pause_stage_column(kind)
+    conn.execute(text(f"""
+        insert into erp_stage_setup_sessions(
+            {column},started_at,started_by,execution_operator,auto_time_fields,idempotency_key
+        ) values (:stage,:started,:actor,:responsible,true,:key)
+    """), {"stage": stage_id, "started": started_at, "actor": actor,
+             "responsible": responsible, "key": f"{key}:setup" if key else None})
+
+
+def _production_execution_operators(conn, kind, stage_id):
+    column = _pause_stage_column(kind)
+    return [row["name"] for row in conn.execute(text(f"""
+        select distinct trim(execution_operator) as name from (
+            select execution_operator from erp_stage_time_sessions where {column}=:stage
+            union all
+            select execution_operator from erp_stage_setup_sessions where {column}=:stage
+        ) operators where nullif(trim(execution_operator),'') is not null
+        order by name
+    """), {"stage": stage_id}).mappings()]
+
+
+def _supersede_completed_stage_timers(conn, kind, stage, actor):
+    """A manual conclusion wins; retain stale timers as superseded evidence.
+
+    Never infer missing historical hours from wall-clock time. The canonical
+    manual totals remain untouched when explicitly reopening for a new cycle.
+    """
+    column = _pause_stage_column(kind)
+    for table, seconds in (("erp_stage_time_sessions", "productive_seconds"),
+                           ("erp_stage_setup_sessions", "duration_seconds"),
+                           ("erp_stage_time_pauses", "duration_seconds")):
+        conn.execute(text(f"""
+            update {table} set ended_at=greatest(started_at,coalesce(cast(:finish as timestamptz),now())),
+                ended_by=:actor,{seconds}=0,superseded_at=now()
+            where {column}=:stage and ended_at is null
+        """), {"stage": stage["id"], "finish": stage.get("termino"), "actor": actor})
+
+
 def _close_stage_setup(conn, setup, ended_at, actor):
     if conn.execute(text(
         "select cast(:ended as timestamptz) < cast(:started as timestamptz)"
@@ -4069,6 +4123,8 @@ def _add_auto_stage_hours(conn, kind, target_id, stage_code, field, seconds, act
     hours = Decimal(str(stage.get(field) or 0)) + delta_hours
     update_production_manual_times(conn, kind, target_id, stage_code, {
         field: hours,
+        "automatic_delta_field": field,
+        "automatic_delta_hours": delta_hours,
         "idempotency_key": f"{key}:auto:{field}" if key else None,
     }, actor)
 
@@ -4136,6 +4192,11 @@ def production_target_detail(conn, target_kind, target_id):
     for stage in stages:
         stage.update(_pause_summary(conn, kind, stage["id"]))
         stage["open_setup"] = _open_stage_setup(conn, kind, stage["id"]) if setup_ready else None
+        # The canonical stage is authoritative, including manual/historic
+        # conclusions. An old timer must never make an S look like a P.
+        if stage.get("input_code") in {"S", "N/A"}:
+            stage.update(open_session=None, open_pause=None, open_setup=None)
+        stage["execution_operators"] = _production_execution_operators(conn, kind, stage["id"]) if setup_ready else []
         stage["can_point"] = stage.get("input_code") != "N/A"
     vehicle_name = " ".join(
         str(target.get(field) or "").strip()
@@ -4227,20 +4288,22 @@ def _close_stage_pause(conn, target_kind, stage_id, ended_at, actor):
     return int(seconds or 0)
 
 
-def _open_stage_session(conn, target_kind, stage_id, started_at, actor, note, key):
+def _open_stage_session(conn, target_kind, stage_id, started_at, actor, note, key, responsible=None):
     summary = _pause_summary(conn, target_kind, stage_id)
     if summary["open_session"]:
         raise ValueError("Esta etapa já possui uma sessão produtiva em andamento.")
     column = _pause_stage_column(target_kind)
+    extra_columns = ",execution_operator,auto_time_fields" if responsible is not None else ""
+    extra_values = ",:responsible,true" if responsible is not None else ""
     conn.execute(text(f"""
         insert into erp_stage_time_sessions(
-            {column},started_at,started_by,observation,idempotency_key
+            {column},started_at,started_by,observation,idempotency_key{extra_columns}
         ) values(
-            :stage,:started,:actor,:note,:key
+            :stage,:started,:actor,:note,:key{extra_values}
         )
     """), {
         "stage": stage_id, "started": started_at, "actor": actor,
-        "note": note, "key": f"{key}:session" if key else None,
+        "note": note, "key": f"{key}:session" if key else None, "responsible": responsible,
     })
 
 
@@ -4356,10 +4419,19 @@ def execute_production_stage_command(conn, target_kind, target_id, stage_code, p
     start_at = _production_datetime(payload.get("inicio"), now)
     finish_at = _production_datetime(payload.get("termino"), now)
     moment = _production_datetime(payload.get("momento"), now)
+    if auto_times and current == "S" and action == "INICIAR":
+        _supersede_completed_stage_timers(conn, kind, stage, actor)
     time_state = _pause_summary(conn, kind, stage["id"])
     pause = time_state["open_pause"]
     session = time_state["open_session"]
     setup = _open_stage_setup(conn, kind, stage["id"]) if _setup_schema_ready(conn) else None
+    if auto_times and "expected_interval_id" in payload:
+        actual_interval = session or setup or pause or {}
+        if str(payload.get("expected_interval_id") or "") != str(actual_interval.get("id") or ""):
+            raise StageConflictError("A sessão foi alterada. Atualize a tela antes de continuar.")
+    if auto_times and action != "INICIAR":
+        responsible = str((session or setup or pause or {}).get("execution_operator") or responsible)
+        audit_notes = [f"Operador informado: {responsible}. Registrado por: {actor}."]
     if auto_times and action == "INICIAR" and start_at > now:
         raise ValueError("O início do apontamento não pode estar no futuro.")
     if auto_times and action == "INICIAR" and str(payload.get("inicio") or "").strip():
@@ -4390,15 +4462,7 @@ def execute_production_stage_command(conn, target_kind, target_id, stage_code, p
         _add_auto_stage_hours(
             conn, kind, target_id, stage_code, "production_time_hours", seconds, actor, key
         )
-        column = _pause_stage_column(kind)
-        conn.execute(text(f"""
-            insert into erp_stage_setup_sessions(
-                {column},started_at,started_by,idempotency_key
-            ) values (:stage,:started,:actor,:key)
-        """), {
-            "stage": stage["id"], "started": moment, "actor": actor,
-            "key": f"{key}:setup" if key else None,
-        })
+        _start_stage_setup(conn, kind, stage["id"], moment, actor, responsible, key)
         event_table = "erp_work_order_stage_events" if kind == "work" else "erp_vehicle_entry_stage_events"
         # A FK de eventos aponta para a etapa, não para a O.S./entrada.
         stage_column = "work_order_stage_id" if kind == "work" else "vehicle_entry_stage_id"
@@ -4413,7 +4477,7 @@ def execute_production_stage_command(conn, target_kind, target_id, stage_code, p
         """), {
             "stage": stage["id"], "status": stage["status"], "actor": actor,
             "inicio": stage.get("inicio"), "location": stage.get("localizacao"),
-            "note": str(payload.get("observacoes") or "").strip(), "key": key,
+            "note": " | ".join(filter(None, [str(payload.get("observacoes") or "").strip(), *audit_notes])), "key": key,
         })
         return {"replayed": False, "input_code": current, "open_setup": True}
 
@@ -4434,16 +4498,19 @@ def execute_production_stage_command(conn, target_kind, target_id, stage_code, p
                                       "production_time_hours", seconds, actor, key)
         column = _pause_stage_column(kind)
         pause_type = "PARADA" if action == "PARAR" else "INTERRUPCAO"
+        extra_columns = ",execution_operator,auto_time_fields,resume_phase" if auto_times else ""
+        extra_values = ",:responsible,true,:resume_phase" if auto_times else ""
         conn.execute(text(f"""
             insert into erp_stage_time_pauses(
-                {column},pause_type,started_at,started_by,reason,idempotency_key
+                {column},pause_type,started_at,started_by,reason,idempotency_key{extra_columns}
             ) values(
-                :stage,:type,:started,:actor,:reason,:pause_key
+                :stage,:type,:started,:actor,:reason,:pause_key{extra_values}
             )
         """), {
             "stage": stage["id"], "type": pause_type, "started": moment,
             "actor": actor, "reason": str(payload.get("observacoes") or "").strip(),
             "pause_key": f"{key}:pause" if key else None,
+            "responsible": responsible, "resume_phase": "SETUP" if setup else "PRODUCAO",
         })
         event_table = (
             "erp_work_order_stage_events" if kind == "work"
@@ -4466,7 +4533,7 @@ def execute_production_stage_command(conn, target_kind, target_id, stage_code, p
             "status": stage["status"], "actor": actor,
             "inicio": stage.get("inicio"), "moment": moment,
             "location": stage.get("localizacao"),
-            "note": str(payload.get("observacoes") or "").strip(), "key": key,
+            "note": " | ".join(filter(None, [str(payload.get("observacoes") or "").strip(), *audit_notes])), "key": key,
         })
         return {
             "replayed": False,
@@ -4487,10 +4554,17 @@ def execute_production_stage_command(conn, target_kind, target_id, stage_code, p
             if auto_times:
                 _add_auto_stage_hours(conn, kind, target_id, stage_code,
                                       "setup_time_hours", setup_seconds, actor, key)
-        _open_stage_session(
-            conn, kind, stage["id"], start_at, actor,
-            str(payload.get("observacoes") or "").strip(), key,
+        initial_setup = auto_times and not setup and (
+            not pause or pause.get("resume_phase") == "SETUP"
         )
+        if initial_setup:
+            _start_stage_setup(conn, kind, stage["id"], start_at, actor, responsible, key)
+        elif auto_times:
+            _open_stage_session(conn, kind, stage["id"], start_at, actor,
+                                str(payload.get("observacoes") or "").strip(), key, responsible=responsible)
+        else:
+            _open_stage_session(conn, kind, stage["id"], start_at, actor,
+                                str(payload.get("observacoes") or "").strip(), key)
         input_code = "P"
     else:
         if pause:

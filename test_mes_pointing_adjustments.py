@@ -37,6 +37,7 @@ class PointingAdjustmentTests(TestCase):
                 stack.enter_context(patch.object(erp_service, name, return_value=value))
             self.add_hours = stack.enter_context(patch.object(erp_service, '_add_auto_stage_hours'))
             self.open_session = stack.enter_context(patch.object(erp_service, '_open_stage_session'))
+            self.start_setup = stack.enter_context(patch.object(erp_service, '_start_stage_setup'))
             self.update = erp_service.update_stage if self.kind == 'work' else erp_service.update_vehicle_entry_stage
             self.close_session = erp_service._close_stage_session
             result = erp_service.execute_production_stage_command(
@@ -56,7 +57,8 @@ class PointingAdjustmentTests(TestCase):
         self.assertEqual(payload['inicio'], self.start)
         self.assertEqual(payload['observacoes'], 'Observação existente')
         self.assertIn('Registrado por: Usuário logado', payload['pointing_audit_note'])
-        self.assertEqual(self.open_session.call_args.args[4], 'Usuário logado')
+        self.open_session.assert_not_called()
+        self.assertEqual(self.start_setup.call_args.args[4:6], ('Usuário logado', 'Operador B'))
         self.assertEqual(self.update.call_args.args[4], 'Usuário logado')
 
     def test_retroactive_start_cannot_overlap_previous_closed_session(self):

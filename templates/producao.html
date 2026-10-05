@@ -28,6 +28,7 @@
         <div class="card-head"><h2>ITEM {{ card.item_number }}{% if card.numero_os %} · O.S. {{ card.numero_os }}{% endif %}</h2><span class="badge">{{ card.target_status }}</span></div>
         <div class="chassi">{{ (card.chassi or 'CHASSI NÃO INFORMADO')[-8:] }}</div>
         <div class="vehicle">{{ card.vehicle_name }}</div>
+        {% if selected_sector %}<p><strong>{{ selected_sector }} · {% if card.sector_input_code == 'S' %}S — OK / CONCLUÍDA{% elif card.sector_input_code == 'P' %}P — PARCIAL{% else %}N — NÃO INICIADA{% endif %}</strong></p>{% endif %}
         <div class="meta"><span>{{ card.cliente_nome or 'Cliente não informado' }}</span><span>{{ card.progress_percent }}%</span></div>
         <div class="progress"><span style="width:{{ card.progress_percent }}%"></span></div>
         <div class="progress-label">{{ card.progress_completed }}/{{ card.progress_total }} etapas concluídas</div>
