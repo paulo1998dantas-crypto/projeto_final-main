@@ -3127,6 +3127,8 @@ def update_vehicle_entry_stage(conn, entry_id, code, payload, actor):
         "started": started, "finished": finished, **values,
     })
     event_note = values["notes"]
+    if payload.get("pointing_audit_note"):
+        event_note += (" | " if event_note else "") + payload["pointing_audit_note"]
     if reopening:
         event_note = f"Reabertura da etapa: {reopen_reason}" + (
             f" | {event_note}" if event_note else ""
@@ -3892,6 +3894,8 @@ def update_stage(conn, work_id, code, payload, actor, allow_finalized_stage_poin
         "id": stage["id"],
     })
     event_note = str(payload.get("observacoes") or "")
+    if payload.get("pointing_audit_note"):
+        event_note += (" | " if event_note else "") + payload["pointing_audit_note"]
     if reopening:
         event_note = f"Reabertura da etapa: {reopen_reason}" + (
             f" | {event_note}" if event_note else ""
@@ -4260,6 +4264,44 @@ def _close_stage_session(conn, target_kind, stage_id, ended_at, actor):
     return int(seconds or 0)
 
 
+def _validate_pointing_start_boundary(conn, kind, stage_id, started_at):
+    column = _pause_stage_column(kind)
+    previous_end = conn.execute(text(f"""
+        select max(ended_at) from (
+            select ended_at from erp_stage_time_sessions where {column}=:stage
+            union all
+            select ended_at from erp_stage_time_pauses where {column}=:stage
+            union all
+            select ended_at from erp_stage_setup_sessions where {column}=:stage
+        ) as intervals
+    """), {"stage": stage_id}).scalar_one()
+    if previous_end and started_at < _production_datetime(previous_end):
+        raise ValueError("O início ajustado não pode sobrepor uma sessão, setup ou parada anterior.")
+
+
+def _adjust_open_pointing_start(conn, kind, stage, interval, is_setup, started_at, finished_at):
+    """Correct only the active interval; closed sessions/pauses remain untouched."""
+    old_start = _production_datetime(interval["started_at"])
+    if started_at > finished_at:
+        raise ValueError("O fim do apontamento não pode ser anterior ao início.")
+    _validate_pointing_start_boundary(conn, kind, stage["id"], started_at)
+    table = "erp_stage_setup_sessions" if is_setup else "erp_stage_time_sessions"
+    conn.execute(text(f"""
+        update {table} set started_at=:started where id=:id and ended_at is null
+    """), {"started": started_at, "id": interval["id"]})
+    interval["started_at"] = started_at
+    canonical_start = _production_datetime(stage.get("inicio"))
+    if canonical_start == old_start:
+        # Pre-O.S. preserves the first start with coalesce(inicio, :started).
+        # Update it explicitly only when it belongs to this corrected interval.
+        stage_table = "erp_work_order_stages" if kind == "work" else "erp_vehicle_entry_stages"
+        conn.execute(text(f"update {stage_table} set inicio=:started where id=:id"), {
+            "started": started_at, "id": stage["id"],
+        })
+        stage["inicio"] = started_at
+    return f"Início da sessão ajustado: {old_start.isoformat()} → {started_at.isoformat()}."
+
+
 def execute_production_stage_command(conn, target_kind, target_id, stage_code, payload, actor):
     """Execute the simplified shop-floor commands using canonical MES stages."""
     action = _token(payload.get("action")).replace(" ", "_")
@@ -4297,6 +4339,17 @@ def execute_production_stage_command(conn, target_kind, target_id, stage_code, p
     if current == "N/A":
         raise ValueError("Esta etapa não é aplicável.")
 
+    responsible = actor
+    if auto_times:
+        responsible = str(payload.get("responsavel") or (
+            actor if action == "INICIAR" and current != "P" else stage.get("responsavel") or actor
+        )).strip()
+        if not responsible:
+            raise ValueError("Informe o nome do operador responsável.")
+        if len(responsible) > 160:
+            raise ValueError("O nome do operador deve ter no máximo 160 caracteres.")
+    audit_notes = [f"Operador informado: {responsible}. Registrado por: {actor}."] if auto_times else []
+
     now = datetime.now(timezone.utc)
     start_at = _production_datetime(payload.get("inicio"), now)
     finish_at = _production_datetime(payload.get("termino"), now)
@@ -4305,6 +4358,28 @@ def execute_production_stage_command(conn, target_kind, target_id, stage_code, p
     pause = time_state["open_pause"]
     session = time_state["open_session"]
     setup = _open_stage_setup(conn, kind, stage["id"]) if _setup_schema_ready(conn) else None
+    if auto_times and action == "INICIAR" and start_at > now:
+        raise ValueError("O início do apontamento não pode estar no futuro.")
+    if auto_times and action == "INICIAR" and str(payload.get("inicio") or "").strip():
+        _validate_pointing_start_boundary(conn, kind, stage["id"], start_at)
+    if auto_times and action == "FINALIZAR":
+        if finish_at > now:
+            raise ValueError("O fim do apontamento não pode estar no futuro.")
+        interval = session or setup
+        expected_interval = str(payload.get("expected_interval_id") or "")
+        if expected_interval and (not interval or expected_interval != str(interval["id"])):
+            raise StageConflictError("A sessão foi alterada. Atualize a tela antes de finalizar.")
+        if payload.get("ajustar_horarios") is True:
+            if not interval or not expected_interval:
+                raise StageConflictError("Selecione novamente a sessão em andamento para ajustar os horários.")
+            if not str(payload.get("termino") or "").strip():
+                raise ValueError("Informe a hora de fim ajustada.")
+            adjusted_start = _production_datetime(payload.get("inicio_sessao"))
+            if adjusted_start:
+                audit_notes.append(_adjust_open_pointing_start(
+                    conn, kind, stage, interval, bool(setup), adjusted_start, finish_at
+                ))
+            audit_notes.append(f"Fim informado na finalização: {finish_at.isoformat()}.")
 
     if action == "SETUP":
         if current != "P" or not session or pause or setup:
@@ -4433,8 +4508,9 @@ def execute_production_stage_command(conn, target_kind, target_id, stage_code, p
     stage_payload = {
         "input_code": input_code,
         "expected_status": current,
-        "responsavel": actor,
-        "observacoes": str(payload.get("observacoes") or "").strip(),
+        "responsavel": responsible,
+        "observacoes": str(payload.get("observacoes") or (stage.get("observacoes") if auto_times else "") or "").strip(),
+        "pointing_audit_note": " ".join(audit_notes),
         "confirmed_status_change": True,
         "idempotency_key": key,
         "reopen_reason": (
@@ -4443,9 +4519,11 @@ def execute_production_stage_command(conn, target_kind, target_id, stage_code, p
         ),
     }
     if action == "INICIAR":
-        stage_payload["inicio"] = start_at
+        stage_payload["inicio"] = (
+            (stage.get("inicio") or start_at) if auto_times and current == "P" else start_at
+        )
     else:
-        stage_payload["inicio"] = _production_datetime(payload.get("inicio"), None)
+        stage_payload["inicio"] = None if auto_times else _production_datetime(payload.get("inicio"), None)
         stage_payload["termino"] = finish_at
 
     if kind == "work":

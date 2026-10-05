@@ -2562,6 +2562,14 @@ def prepare_production_detail(detail):
         stage["setup_started_str"] = to_input_dt(
             (stage.get("open_setup") or {}).get("started_at")
         )
+        interval = stage.get("open_session") or stage.get("open_setup") or {}
+        stage["active_interval_id"] = str(interval.get("id") or "")
+        interval_start = interval.get("started_at")
+        stage["active_interval_start_input"] = (
+            interval_start.astimezone(LOCAL_TZ).strftime("%Y-%m-%dT%H:%M:%S")
+            if interval_start and interval_start.tzinfo is not None
+            else interval_start.strftime("%Y-%m-%dT%H:%M:%S") if interval_start else ""
+        )
     detail["now_input"] = to_input_dt(datetime.datetime.now(LOCAL_TZ))
     return detail
 

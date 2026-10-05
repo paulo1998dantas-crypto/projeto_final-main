@@ -3,35 +3,83 @@
 <title>MES | Apontar {{ stage.stage_code }}</title>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#f1f5f9;color:#172033;font:16px Arial,sans-serif}main{max-width:880px;margin:auto;padding:18px}.head{padding:18px;border-radius:10px 10px 0 0;background:#0f172a;color:#fff}.head h1{margin:0;font-size:29px}.head p{margin:7px 0;color:#cbd5e1}.back{color:white}.panel{padding:18px;background:white;border:1px solid #dbe3ec;border-radius:0 0 10px 10px}.state{padding:14px;border-radius:8px;background:#dbeafe;color:#1e40af;font-weight:800}.state.running{background:#dcfce7;color:#166534}.state.paused{background:#ffedd5;color:#9a3412}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:16px 0}.metric{padding:13px;border:1px solid #dbe3ec;border-radius:8px}.metric small{display:block;color:#64748b;text-transform:uppercase;font-weight:800}.metric strong{display:block;margin-top:5px;font-size:19px}label{display:block;font-weight:800}textarea{width:100%;min-height:82px;margin-top:7px;padding:10px;border:1px solid #bdcad8;border-radius:7px;font:inherit}.actions{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:18px}.btn{min-height:58px;border:0;border-radius:8px;background:#2563eb;color:#fff;font:800 17px Arial,sans-serif;cursor:pointer}.btn.setup{background:#7c3aed}.btn.pause{background:#d97706}.btn.interrupt{background:#dc2626}.btn.finish{background:#059669}.btn:disabled{opacity:.55}.message{padding:12px;background:#fee2e2;color:#991b1b;border-radius:7px;margin-bottom:12px;font-weight:700}@media(max-width:650px){.metrics{grid-template-columns:1fr}.actions{grid-template-columns:1fr}}
+input{width:100%;margin:7px 0 14px;padding:11px;border:1px solid #bdcad8;border-radius:7px;font:inherit}input[readonly]{background:#f1f5f9}.help{color:#64748b;font-size:13px;line-height:1.5}details{margin:10px 0 18px}summary{cursor:pointer;color:#1d4ed8}dialog{max-width:560px;width:calc(100% - 30px);padding:22px;border:0;border-radius:12px}dialog::backdrop{background:#0f172a99}dialog h2{margin-top:0}.btn.secondary{background:#64748b}.dialog-actions{display:grid;gap:10px;margin-top:14px}
 </style></head><body><main>
 <header class="head"><h1>{{ stage.stage_code }}</h1><p>ITEM {{ detail.item_number }}{% if detail.numero_os %} · O.S. {{ detail.numero_os }}{% endif %} · {{ (detail.chassi or '')[-8:] }}</p><a class="back" href="/producao/setor/{{ stage.stage_code|urlencode }}">← Voltar aos cards do setor</a></header>
 <section class="panel"><div id="message" class="message" hidden></div>
 {% if stage.open_setup %}<div class="state paused">Setup em andamento desde {{ stage.setup_started_str }}.</div>{% elif stage.open_pause %}<div class="state paused">Etapa parada/interrompida desde {{ stage.pause_started_str }}.</div>{% elif stage.open_session %}<div class="state running">Produção iniciada em {{ stage.session_started_str }}.</div>{% elif stage.input_code == 'S' %}<div class="state">Etapa concluída. É possível iniciar uma nova sessão de ajuste.</div>{% else %}<div class="state">Etapa disponível para apontamento.</div>{% endif %}
 <div class="metrics"><div class="metric"><small>Responsável</small><strong>{{ stage.responsavel or current_user.nome }}</strong></div><div class="metric"><small>Início vigente</small><strong>{{ stage.inicio_str or '—' }}</strong></div><div class="metric"><small>Produção acumulada</small><strong>{{ stage.production_time_hours if stage.production_time_hours is not none else '0' }} h</strong></div><div class="metric"><small>Setup acumulado</small><strong>{{ stage.setup_time_hours if stage.setup_time_hours is not none else '0' }} h</strong></div><div class="metric"><small>Parado acumulado</small><strong>{{ stage.total_stopped_time_hours if stage.total_stopped_time_hours is not none else '0' }} h</strong></div></div>
+<label>Operador responsável<input id="responsavel" maxlength="160" value="{{ (stage.responsavel or current_user.nome) if stage.open_session or stage.open_setup or stage.open_pause else current_user.nome }}" {% if stage.open_session or stage.open_setup %}readonly{% endif %}></label>
+<p class="help">O nome vem preenchido automaticamente. Ao iniciar, você pode informar quem executará o serviço. O histórico preserva o usuário que registra a ação.</p>
+{% if not stage.open_session and not stage.open_setup %}<details><summary>Ajustar horário de início (opcional)</summary><label>Início deste apontamento<input id="start-override" type="datetime-local" step="1"></label><p class="help">Deixe vazio para usar o horário automático do sistema.</p></details>{% endif %}
 <label>Observação / motivo da interrupção<textarea id="observacoes" placeholder="Descreva o motivo quando necessário."></textarea></label>
 <div class="actions">
 {% if stage.open_session %}<button class="btn setup" type="button" data-stage-action="SETUP">SETUP</button><button class="btn pause" type="button" data-stage-action="PARAR">PARAR</button><button class="btn interrupt" type="button" data-stage-action="INTERROMPER">INTERROMPER</button><button class="btn finish" type="button" data-stage-action="FINALIZAR">FINALIZAR</button>
 {% elif stage.open_setup %}<button class="btn" type="button" data-stage-action="INICIAR">INICIAR PRODUÇÃO</button><button class="btn pause" type="button" data-stage-action="PARAR">PARAR</button><button class="btn interrupt" type="button" data-stage-action="INTERROMPER">INTERROMPER</button><button class="btn finish" type="button" data-stage-action="FINALIZAR">FINALIZAR</button>
 {% else %}<button class="btn" type="button" data-stage-action="INICIAR">{% if stage.open_pause %}INICIAR / RETOMAR{% else %}INICIAR{% endif %}</button>{% endif %}
 </div></section></main>
+<dialog id="finish-dialog" aria-labelledby="finish-title">
+<h2 id="finish-title">Finalizar apontamento</h2><p>Deseja finalizar agora com o horário automático ou revisar o início e o fim?</p>
+<div id="finish-error" class="message" hidden></div>
+<section id="finish-adjustments" hidden>
+<label>Início desta sessão<input id="finish-start" type="datetime-local" step="1" value="{{ stage.active_interval_start_input }}"></label>
+<label>Fim do apontamento<input id="finish-end" type="datetime-local" step="1"></label>
+<p class="help">Ajusta somente a sessão em andamento. Sessões, setups e paradas anteriores são preservados; os tempos são recalculados sem sobreposição.</p>
+</section>
+<div class="dialog-actions"><button id="finish-direct" type="button" class="btn finish">Finalizar direto — horário automático</button><button id="finish-review" type="button" class="btn">Ajustar início / fim</button><button id="finish-save" type="button" class="btn finish" hidden>Salvar ajustes e finalizar</button><button id="finish-cancel" type="button" class="btn secondary">Cancelar</button></div>
+</dialog>
 <script>
 const endpoint='/api/erp/producao/{{ detail.target_kind }}/{{ detail.target_id }}/commands';
 const stageCode={{ stage.stage_code|tojson }};
 const expected={{ stage.input_code|tojson }};
 const isCompleted={{ (stage.input_code == 'S')|tojson }};
-let pendingKey=null;
-function show(message){const box=document.getElementById('message');box.textContent=message;box.hidden=!message}
-async function sendStageCommand(action){
+const activeIntervalId={{ (stage.active_interval_id or '')|tojson }};
+const originalIntervalStart={{ (stage.active_interval_start_input or '')|tojson }};
+let pendingKey=null,pendingSignature=null;
+const finishDialog=document.getElementById('finish-dialog');
+function show(message){for(const id of ['message','finish-error']){const box=document.getElementById(id);box.textContent=message;box.hidden=!message}}
+function localTimestamp(){const date=new Date();const pad=value=>String(value).padStart(2,'0');return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`}
+function openFinishDialog(){
+  show('');document.getElementById('finish-adjustments').hidden=true;
+  document.getElementById('finish-save').hidden=true;document.getElementById('finish-review').hidden=false;
+  document.getElementById('finish-start').value=originalIntervalStart;
+  document.getElementById('finish-end').value=localTimestamp();finishDialog.showModal();
+}
+async function sendStageCommand(action,adjustTimes=false){
   if(action==='INICIAR'&&isCompleted&&!confirm('Esta etapa já foi concluída. Deseja iniciar uma nova sessão de ajuste?'))return;
   if(action==='INTERROMPER'&&!document.getElementById('observacoes').value.trim()){show('Informe o motivo da interrupção.');return}
+  const payload={action,stage_code:stageCode,expected_status:expected,observacoes:document.getElementById('observacoes').value,responsavel:document.getElementById('responsavel').value.trim()};
+  if(!payload.responsavel){show('Informe o nome do operador responsável.');return}
+  if(action==='INICIAR'){
+    const override=document.getElementById('start-override')?.value;
+    if(override)payload.inicio=override;
+  }
+  if(action==='FINALIZAR'){
+    payload.expected_interval_id=activeIntervalId;
+    if(adjustTimes){
+      const start=document.getElementById('finish-start').value,end=document.getElementById('finish-end').value;
+      if(!start||!end){show('Informe o início e o fim do apontamento.');return}
+      if(new Date(end)<new Date(start)){show('O fim não pode ser anterior ao início.');return}
+      payload.ajustar_horarios=true;payload.termino=end;
+      if(new Date(start).getTime()!==new Date(originalIntervalStart).getTime())payload.inicio_sessao=start;
+    }
+  }
   const buttons=[...document.querySelectorAll('button')];buttons.forEach(button=>button.disabled=true);show('');
-  pendingKey=pendingKey||globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const payload={action,stage_code:stageCode,expected_status:expected,idempotency_key:pendingKey,observacoes:document.getElementById('observacoes').value};
+  const signature=JSON.stringify(payload);
+  if(signature!==pendingSignature){pendingKey=globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random().toString(16).slice(2)}`;pendingSignature=signature}
+  payload.idempotency_key=pendingKey;
   try{const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json();if(!response.ok||!result.ok)throw new Error(result.error||'Não foi possível registrar o apontamento.');location.reload()}
   catch(error){show(error.message);buttons.forEach(button=>button.disabled=false)}
 }
 // Listeners não usam o escopo especial de onclick nem a propriedade nativa button.command.
 document.querySelectorAll('[data-stage-action]').forEach(button=>{
-  button.addEventListener('click',()=>sendStageCommand(button.dataset.stageAction));
+  button.addEventListener('click',()=>button.dataset.stageAction==='FINALIZAR'?openFinishDialog():sendStageCommand(button.dataset.stageAction));
 });
+document.getElementById('finish-direct').addEventListener('click',()=>sendStageCommand('FINALIZAR'));
+document.getElementById('finish-review').addEventListener('click',()=>{
+  document.getElementById('finish-adjustments').hidden=false;document.getElementById('finish-save').hidden=false;
+  document.getElementById('finish-review').hidden=true;document.getElementById('finish-start').focus();
+});
+document.getElementById('finish-save').addEventListener('click',()=>sendStageCommand('FINALIZAR',true));
+document.getElementById('finish-cancel').addEventListener('click',()=>finishDialog.close());
 </script></body></html>
