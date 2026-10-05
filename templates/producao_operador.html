@@ -10,9 +10,9 @@
 <div class="metrics"><div class="metric"><small>Responsável</small><strong>{{ stage.responsavel or current_user.nome }}</strong></div><div class="metric"><small>Início vigente</small><strong>{{ stage.inicio_str or '—' }}</strong></div><div class="metric"><small>Produção acumulada</small><strong>{{ stage.production_time_hours if stage.production_time_hours is not none else '0' }} h</strong></div><div class="metric"><small>Setup acumulado</small><strong>{{ stage.setup_time_hours if stage.setup_time_hours is not none else '0' }} h</strong></div><div class="metric"><small>Parado acumulado</small><strong>{{ stage.total_stopped_time_hours if stage.total_stopped_time_hours is not none else '0' }} h</strong></div></div>
 <label>Observação / motivo da interrupção<textarea id="observacoes" placeholder="Descreva o motivo quando necessário."></textarea></label>
 <div class="actions">
-{% if stage.open_session %}<button class="btn setup" onclick="command('SETUP')">SETUP</button><button class="btn pause" onclick="command('PARAR')">PARAR</button><button class="btn interrupt" onclick="command('INTERROMPER')">INTERROMPER</button><button class="btn finish" onclick="command('FINALIZAR')">FINALIZAR</button>
-{% elif stage.open_setup %}<button class="btn" onclick="command('INICIAR')">INICIAR PRODUÇÃO</button><button class="btn pause" onclick="command('PARAR')">PARAR</button><button class="btn interrupt" onclick="command('INTERROMPER')">INTERROMPER</button><button class="btn finish" onclick="command('FINALIZAR')">FINALIZAR</button>
-{% else %}<button class="btn" onclick="command('INICIAR')">{% if stage.open_pause %}INICIAR / RETOMAR{% else %}INICIAR{% endif %}</button>{% endif %}
+{% if stage.open_session %}<button class="btn setup" type="button" data-stage-action="SETUP">SETUP</button><button class="btn pause" type="button" data-stage-action="PARAR">PARAR</button><button class="btn interrupt" type="button" data-stage-action="INTERROMPER">INTERROMPER</button><button class="btn finish" type="button" data-stage-action="FINALIZAR">FINALIZAR</button>
+{% elif stage.open_setup %}<button class="btn" type="button" data-stage-action="INICIAR">INICIAR PRODUÇÃO</button><button class="btn pause" type="button" data-stage-action="PARAR">PARAR</button><button class="btn interrupt" type="button" data-stage-action="INTERROMPER">INTERROMPER</button><button class="btn finish" type="button" data-stage-action="FINALIZAR">FINALIZAR</button>
+{% else %}<button class="btn" type="button" data-stage-action="INICIAR">{% if stage.open_pause %}INICIAR / RETOMAR{% else %}INICIAR{% endif %}</button>{% endif %}
 </div></section></main>
 <script>
 const endpoint='/api/erp/producao/{{ detail.target_kind }}/{{ detail.target_id }}/commands';
@@ -21,7 +21,7 @@ const expected={{ stage.input_code|tojson }};
 const isCompleted={{ (stage.input_code == 'S')|tojson }};
 let pendingKey=null;
 function show(message){const box=document.getElementById('message');box.textContent=message;box.hidden=!message}
-async function command(action){
+async function sendStageCommand(action){
   if(action==='INICIAR'&&isCompleted&&!confirm('Esta etapa já foi concluída. Deseja iniciar uma nova sessão de ajuste?'))return;
   if(action==='INTERROMPER'&&!document.getElementById('observacoes').value.trim()){show('Informe o motivo da interrupção.');return}
   const buttons=[...document.querySelectorAll('button')];buttons.forEach(button=>button.disabled=true);show('');
@@ -30,4 +30,8 @@ async function command(action){
   try{const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json();if(!response.ok||!result.ok)throw new Error(result.error||'Não foi possível registrar o apontamento.');location.reload()}
   catch(error){show(error.message);buttons.forEach(button=>button.disabled=false)}
 }
+// Listeners não usam o escopo especial de onclick nem a propriedade nativa button.command.
+document.querySelectorAll('[data-stage-action]').forEach(button=>{
+  button.addEventListener('click',()=>sendStageCommand(button.dataset.stageAction));
+});
 </script></body></html>
