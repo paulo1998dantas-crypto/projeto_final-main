@@ -4199,6 +4199,33 @@ def update_synchronized_stage(conn, kind, target_id, code, payload, actor, metad
         _correct_interval_boundary(conn, kind, stage, last, "ended_at", data["termino"], actor)
 
     responsible = execution_crew(data, stage.get("responsavel") or actor)
+    previous_responsible = normalize_operators(stage.get("responsavel") or "")
+    responsible_was_corrected = (
+        "responsavel" in data
+        and normalize_operators(data.get("responsavel") or "") != previous_responsible
+    )
+    if responsible_was_corrected:
+        # The MES card is the operator's correction surface. An explicit change
+        # replaces the crew on the canonical stage and its live execution rows;
+        # it must not be unioned with the old crew or with the authenticated
+        # editor (whose identity is recorded separately in the audit event).
+        stage_column = _pause_stage_column(kind)
+        for table in (
+            "erp_stage_time_sessions",
+            "erp_stage_setup_sessions",
+            "erp_stage_time_pauses",
+        ):
+            conn.execute(text(f"""
+                update {table}
+                   set execution_operator=:responsible
+                 where {stage_column}=:stage
+                   and superseded_at is null
+            """), {"responsible": responsible, "stage": stage["id"]})
+        old_label = previous_responsible or "(vazio)"
+        data["pointing_audit_note"] = (
+            (str(data.get("pointing_audit_note") or "") + " | ")
+            if data.get("pointing_audit_note") else ""
+        ) + f"Responsáveis da execução corrigidos: {old_label} → {responsible}."
     if active and stage["status"] == "CONCLUÍDA":
         _supersede_completed_stage_timers(conn, kind, stage, actor)
         active = None
@@ -4240,9 +4267,17 @@ def update_synchronized_stage(conn, kind, target_id, code, payload, actor, metad
             if stage.get("production_time_hours") is not None and "production_time_hours" not in data:
                 data["production_time_hours"] = stage["production_time_hours"]
             data.update(inicio=start, termino=end)
-    data["responsavel"] = _consolidated_operators(conn, kind, stage, responsible)
+    data["responsavel"] = (
+        responsible
+        if responsible_was_corrected
+        else _consolidated_operators(conn, kind, stage, responsible)
+    )
     if changed_start or changed_end:
-        data["pointing_audit_note"] = "Datas corrigidas no MES e nos intervalos de execução; acumulados recalculados."
+        date_note = "Datas corrigidas no MES e nos intervalos de execução; acumulados recalculados."
+        data["pointing_audit_note"] = (
+            (str(data.get("pointing_audit_note") or "") + " | ")
+            if data.get("pointing_audit_note") else ""
+        ) + date_note
     if kind == "work":
         result = (update_stage_metadata if metadata_only else update_stage)(conn, target_id, code, data, actor)
         if not metadata_only and any(field in data for field in ("setup_time_hours", "production_time_hours", "total_stopped_time_hours")):

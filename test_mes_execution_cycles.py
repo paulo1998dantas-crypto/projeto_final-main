@@ -126,7 +126,7 @@ class ExecutionCycleTests(TestCase):
                         self.assertAlmostEqual(sum(row['total_stopped_time_hours'] or 0 for row in events),0.42)
                         token=erp_service._stage_sync_token(row,erp_service._execution_intervals(conn,kind,'stage'))
                         correction={'input_code':'S','expected_status':'S','idempotency_key':'manual-correction',
-                            'expected_sync_token':token,'responsavel':'D',
+                            'expected_sync_token':token,'responsavel':row['responsavel'],
                             'observacoes':'OBSERVAÇÃO ORIGINAL','inicio':'2026-10-03T07:50:00-03:00',
                             'termino':'2026-10-03T10:30:00-03:00'}
                         erp_service.update_synchronized_stage(conn,kind,'target','REVEST',correction,'PCP',metadata_only=kind=='work')
@@ -136,6 +136,34 @@ class ExecutionCycleTests(TestCase):
                         self.assertEqual(corrected['termino'].isoformat(),'2026-10-03T13:30:00+00:00')
                         self.assertEqual(corrected['responsavel'],'CARLOS / EVERTON / B / C / D')
                         self.assertTrue(erp_service.update_synchronized_stage(conn,kind,'target','REVEST',correction,'PCP',metadata_only=kind=='work')['replayed'])
+
+                        # Explicitly correcting the crew replaces the old
+                        # execution assignments, without inserting the logged
+                        # in user's name into the crew or leaving stale names
+                        # in the BI-facing interval rows.
+                        crew='NOVO OPERADOR / OPERADOR DOIS'
+                        corrected_row=locked()[2]
+                        crew_token=erp_service._stage_sync_token(
+                            corrected_row,erp_service._execution_intervals(conn,kind,'stage'))
+                        crew_correction={
+                            'input_code':'S','expected_status':'S','idempotency_key':'crew-correction',
+                            'expected_sync_token':crew_token,'responsavel':crew,
+                            'observacoes':'OBSERVAÇÃO ORIGINAL',
+                            'inicio':corrected_row['inicio'].isoformat(),
+                            'termino':corrected_row['termino'].isoformat(),
+                        }
+                        erp_service.update_synchronized_stage(
+                            conn,kind,'target','REVEST',crew_correction,'PCP',metadata_only=kind=='work')
+                        crew_corrected=locked()[2]
+                        self.assertEqual(crew_corrected['responsavel'],crew)
+                        for table in ('erp_stage_time_sessions','erp_stage_setup_sessions','erp_stage_time_pauses'):
+                            names=sql.execute(text(f'select distinct execution_operator from {table} where {fk}=:stage and superseded_at is null'),{'stage':'stage'}).scalars().all()
+                            self.assertTrue(names)
+                            self.assertEqual(set(names),{crew})
+                        if kind=='work':
+                            audit=sql.execute(text(f"select operador,observacao from {event_table} where idempotency_key='crew-correction'")).one()
+                            self.assertEqual(audit[0],'PCP')
+                            self.assertIn('Responsáveis da execução corrigidos',audit[1])
                         # A stale manual page cannot replace the new automatic
                         # totals after another console has changed the stage.
                         with self.assertRaises(erp_service.StageConflictError):
@@ -151,7 +179,7 @@ class ExecutionCycleTests(TestCase):
                         final=locked()[2]
                         self.assertEqual(final['production_time_hours'],2.5)
                         self.assertEqual(final['setup_time_hours'],0.67)
-                        self.assertEqual(final['responsavel'],'CARLOS / EVERTON / B / C / D / E')
+                        self.assertEqual(final['responsavel'],crew+' / E')
                         self.assertEqual(final['inicio'],corrected['inicio'])
                 engine.dispose()
 
