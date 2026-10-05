@@ -47,6 +47,7 @@ function manualHours(id,label){
   if(!Number.isFinite(value)||value<0||value>99999999.99)throw new Error(`${label}: informe horas entre 0 e 99.999.999,99.`);
   return value;
 }
+{% include 'producao_api_response.html' %}
 async function saveManualTimes(){
   const button=document.getElementById('save-manual-times');
   let payload;
@@ -59,8 +60,7 @@ async function saveManualTimes(){
   button.disabled=true;show('');
   try{
     const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-    const data=await response.json();
-    if(!response.ok||!data.ok)throw new Error(data.error||'Não foi possível salvar os tempos.');
+    await readPointingResponse(response);
     show('Tempos complementares salvos. O apontamento, início, término e observações foram preservados.');
   }catch(error){show(error.message)}finally{button.disabled=false}
 }
@@ -73,8 +73,7 @@ async function sendStageCommand(action){
   else payload.momento=document.getElementById('momento').value;
   try{
     const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-    const data=await response.json();
-    if(!response.ok||!data.ok)throw new Error(data.error||'Não foi possível registrar o apontamento.');
+    await readPointingResponse(response);
     location.reload();
   }catch(error){show(error.message);buttons.forEach(b=>b.disabled=false)}
 }

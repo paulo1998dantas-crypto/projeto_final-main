@@ -42,6 +42,9 @@ class StageButtonTests(unittest.TestCase):
                     cases.append({**cases[-1], 'finishMode': 'end-only'})
                 if template == 'producao_operador.html' and state == 'pending':
                     cases.append({**cases[-1], 'startOverride': '2026-10-05T07:00:00'})
+                if state == 'running':
+                    for invalid in ('Internal Server Error', '<html>Bad Gateway</html>', '', 'null', '[]'):
+                        cases.append({**cases[-1], 'invalidResponse': invalid, 'reject': True})
         result = subprocess.run(
             [shutil.which('node'), str(ROOT / 'tests' / 'mes_stage_buttons.cjs')],
             input=json.dumps(cases), text=True, encoding='utf-8', capture_output=True, timeout=30,

@@ -3722,12 +3722,14 @@ def update_production_manual_times(conn, target_kind, target_id, code, payload, 
         stage_table = "erp_vehicle_entry_stages"
         event_table = "erp_vehicle_entry_stage_events"
         stage_fk = "vehicle_entry_stage_id"
+    # O.S. stages have no updated_at; preliminary entry stages do. Both
+    # retain the timestamp/actor of this change in their stage event table.
+    timestamp_assignment = ", updated_at=now()" if kind == "entry" else ""
     conn.execute(text(f"""
         update {stage_table}
            set setup_time_hours=:setup_hours,
                production_time_hours=:production_hours,
-               total_stopped_time_hours=:stopped_hours,
-               updated_at=now()
+               total_stopped_time_hours=:stopped_hours{timestamp_assignment}
          where id=:stage
     """), {
         "setup_hours": setup_hours,

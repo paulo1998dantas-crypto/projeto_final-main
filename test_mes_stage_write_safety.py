@@ -117,6 +117,7 @@ class MesStageWriteSafetyTests(unittest.TestCase):
                 self.assertNotIn("status=", update_sql)
                 self.assertNotIn("inicio=", update_sql)
                 self.assertNotIn("observacoes=", update_sql)
+                self.assertEqual("updated_at=now()" in update_sql, kind == "entry")
                 self.assertEqual(Decimal("1.25"), update_params["setup_hours"])
                 self.assertEqual(Decimal("2.50"), update_params["production_hours"])
                 self.assertEqual(Decimal("0.50"), update_params["stopped_hours"])

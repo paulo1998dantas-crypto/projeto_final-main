@@ -1,0 +1,12 @@
+async function readPointingResponse(response){
+  const body=await response.text();
+  let data;
+  try{data=JSON.parse(body)}catch(error){
+    throw new Error(`O MES retornou uma resposta inválida (HTTP ${response.status}). Confira o estado da etapa antes de tentar novamente. Se persistir, informe o suporte.`);
+  }
+  if(!data||typeof data!=='object'||Array.isArray(data)){
+    throw new Error('Resposta inesperada do MES. Confira o estado da etapa antes de tentar novamente.');
+  }
+  if(!response.ok||data.ok!==true)throw new Error(data.error||`Não foi possível confirmar o apontamento (HTTP ${response.status}).`);
+  return data;
+}

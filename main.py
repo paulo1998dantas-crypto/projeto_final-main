@@ -7,7 +7,9 @@ import webbrowser
 import secrets
 import hashlib
 import hmac
+import logging
 from fastapi import FastAPI, Request, Depends, Body, UploadFile, File, Form, Query
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
@@ -33,6 +35,7 @@ import authz
 import portal_sso
 
 LOCAL_TZ = ZoneInfo("America/Sao_Paulo")
+logger = logging.getLogger(__name__)
 
 def legacy_schema_auto_migrate_enabled():
     """Allow legacy auto-DDL only in an explicitly controlled environment."""
@@ -2765,11 +2768,21 @@ async def production_stage_command(
                 data,
                 user.nome,
             )
-        return {"ok": True, **result}
+            # Build/serialize before committing so serialization errors also
+            # roll back the command instead of reporting failure after saving.
+            response = JSONResponse(jsonable_encoder({"ok": True, **result}))
+        return response
     except erp_service.StageConflictError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    except Exception:
+        logger.exception("Falha no apontamento MES: target=%s/%s stage=%s action=%s",
+                         target_kind, target_id, stage_code, data.get("action"))
+        return JSONResponse({
+            "ok": False,
+            "error": "Não foi possível confirmar o apontamento. Confira o estado da etapa antes de tentar novamente. Se persistir, informe o suporte.",
+        }, status_code=500)
 
 
 @app.get("/gestao-os", response_class=HTMLResponse)

@@ -38,6 +38,7 @@ const originalIntervalStart={{ (stage.active_interval_start_input or '')|tojson 
 let pendingKey=null,pendingSignature=null;
 const finishDialog=document.getElementById('finish-dialog');
 function show(message){for(const id of ['message','finish-error']){const box=document.getElementById(id);box.textContent=message;box.hidden=!message}}
+{% include 'producao_api_response.html' %}
 function localTimestamp(){const date=new Date();const pad=value=>String(value).padStart(2,'0');return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`}
 function openFinishDialog(){
   show('');document.getElementById('finish-adjustments').hidden=true;
@@ -68,7 +69,7 @@ async function sendStageCommand(action,adjustTimes=false){
   const signature=JSON.stringify(payload);
   if(signature!==pendingSignature){pendingKey=globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random().toString(16).slice(2)}`;pendingSignature=signature}
   payload.idempotency_key=pendingKey;
-  try{const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json();if(!response.ok||!result.ok)throw new Error(result.error||'Não foi possível registrar o apontamento.');location.reload()}
+  try{const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await readPointingResponse(response);location.reload()}
   catch(error){show(error.message);buttons.forEach(button=>button.disabled=false)}
 }
 // Listeners não usam o escopo especial de onclick nem a propriedade nativa button.command.

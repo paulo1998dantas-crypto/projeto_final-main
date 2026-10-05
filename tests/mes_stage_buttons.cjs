@@ -37,7 +37,8 @@ async function verify(testCase) {
       location: { reload() { reloads++; } },
       fetch: async (endpoint, options) => {
         requests.push({ endpoint, options, payload: JSON.parse(options.body) });
-        return { ok: !testCase.reject, json: async () => ({ ok: !testCase.reject, error: 'Etapa alterada' }) };
+        return { ok: !testCase.reject, status: testCase.reject ? 500 : 200,
+          text: async () => 'invalidResponse' in testCase ? testCase.invalidResponse : JSON.stringify({ ok: !testCase.reject, error: 'Etapa alterada' }) };
       },
     });
     for (const script of testCase.html.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
@@ -91,7 +92,11 @@ async function verify(testCase) {
     }
     assert.equal(reloads, testCase.reject ? 0 : 1);
     if (testCase.reject) {
-      assert.equal(elements.message.textContent, 'Etapa alterada');
+      if ('invalidResponse' in testCase) {
+        assert.match(elements.message.textContent, /Confira o estado da etapa/);
+        assert.ok(!elements.message.textContent.includes('Unexpected token'));
+        assert.ok(!elements.message.textContent.includes('Internal Server Error'));
+      } else assert.equal(elements.message.textContent, 'Etapa alterada');
       assert.equal(elements.message.hidden, false);
       assert.ok(buttons.every(button => !button.disabled));
     }
