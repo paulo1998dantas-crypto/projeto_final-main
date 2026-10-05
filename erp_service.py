@@ -5,6 +5,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from functools import cmp_to_key
 import erp_stock_closure
 import json
+import hashlib
 from uuid import uuid4
 import re
 import unicodedata
@@ -2963,8 +2964,11 @@ def vehicle_entry_stage_detail(conn, entry_id):
         where s.vehicle_entry_id=:entry
         order by s.ordem
     """), {"entry": entry_id})]
+    sync_ready = _setup_schema_ready(conn)
     for stage in stages:
         stage["input_code"] = stage_input_code(stage)
+        if sync_ready:
+            stage["sync_token"] = _stage_sync_token(stage, _execution_intervals(conn, "entry", stage["id"]))
     events = [dict(row._mapping) for row in conn.execute(text("""
         select event.*,stage.stage_code
         from erp_vehicle_entry_stage_events event
@@ -3205,8 +3209,11 @@ def work_order_detail(conn, work_id):
         work["inicio_ciclo_produtivo"],
         work["fim_ciclo_produtivo"],
     ) = productive_cycle_window(work, stages)
+    sync_ready = _setup_schema_ready(conn)
     for stage in stages:
         stage["input_code"] = stage_input_code(stage)
+        if sync_ready:
+            stage["sync_token"] = _stage_sync_token(stage, _execution_intervals(conn, "work", stage["id"]))
     schedules = [dict(row._mapping) for row in conn.execute(text("""
         select * from erp_work_order_schedules where work_order_id=:id order by created_at desc
     """), {"id": work_id})]
@@ -3684,7 +3691,9 @@ def update_stage_metadata(conn, work_id, code, payload, actor):
         "inicio": values["inicio"],
         "termino": values["termino"],
         "location": values["localizacao"],
-        "note": "Dados operacionais atualizados sem alterar o status da etapa.",
+        "note": "Dados operacionais atualizados sem alterar o status da etapa." + (
+            " | " + payload["pointing_audit_note"] if payload.get("pointing_audit_note") else ""
+        ),
         "setup_time_hours": values["setup_time_hours"],
         "production_time_hours": values["production_time_hours"],
         "total_stopped_time_hours": values["total_stopped_time_hours"],
@@ -3704,6 +3713,7 @@ def update_production_manual_times(conn, target_kind, target_id, code, payload, 
             "input_code": stage_input_code(stage),
             "status": stage.get("status"),
         }
+    _validate_stage_sync_token(conn, kind, stage, payload)
     setup_hours = _manual_hours_value(
         payload, "setup_time_hours", stage.get("setup_time_hours"), "Tempo de setup"
     )
@@ -4047,12 +4057,210 @@ def _production_execution_operators(conn, kind, stage_id):
     column = _pause_stage_column(kind)
     return [row["name"] for row in conn.execute(text(f"""
         select distinct trim(execution_operator) as name from (
-            select execution_operator from erp_stage_time_sessions where {column}=:stage
+            select execution_operator from erp_stage_time_sessions where {column}=:stage and superseded_at is null
             union all
-            select execution_operator from erp_stage_setup_sessions where {column}=:stage
+            select execution_operator from erp_stage_setup_sessions where {column}=:stage and superseded_at is null
         ) operators where nullif(trim(execution_operator),'') is not null
         order by name
     """), {"stage": stage_id}).mappings()]
+
+
+def _operator_names(*values):
+    names, seen = [], set()
+    for value in values:
+        for name in str(value or "").split("/"):
+            name = name.strip()
+            if name and name.casefold() not in seen:
+                seen.add(name.casefold())
+                names.append(name)
+    return names
+
+
+def _consolidated_operators(conn, kind, stage, responsible=None):
+    return " / ".join(_operator_names(
+        stage.get("responsavel") if stage.get("status") != "PENDENTE" else None, responsible,
+        *_production_execution_operators(conn, kind, stage["id"]),
+    ))
+
+
+def _execution_intervals(conn, kind, stage_id):
+    column = _pause_stage_column(kind)
+    return [dict(row) for row in conn.execute(text(f"""
+        select id,started_at,ended_at,execution_operator,auto_time_fields,
+            productive_seconds as seconds,'PRODUCAO' as phase from erp_stage_time_sessions
+            where {column}=:stage and superseded_at is null
+        union all
+        select id,started_at,ended_at,execution_operator,auto_time_fields,duration_seconds,'SETUP'
+            from erp_stage_setup_sessions where {column}=:stage and superseded_at is null
+        union all
+        select id,started_at,ended_at,execution_operator,auto_time_fields,duration_seconds,'PARADA'
+            from erp_stage_time_pauses where {column}=:stage and superseded_at is null
+        order by started_at,id
+    """), {"stage": stage_id}).mappings()]
+
+
+def _stage_sync_token(stage, intervals):
+    fields = ("status", "parametrizado", "aplicavel", "inicio", "termino", "responsavel",
+              "localizacao", "observacoes", "setup_time_hours", "production_time_hours", "total_stopped_time_hours")
+    snapshot = {field: stage.get(field) for field in fields}
+    snapshot["intervals"] = intervals
+    return hashlib.sha256(json.dumps(snapshot, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _validate_stage_sync_token(conn, kind, stage, payload):
+    expected = payload.get("expected_sync_token")
+    if expected and expected != _stage_sync_token(stage, _execution_intervals(conn, kind, stage["id"])):
+        raise StageConflictError("Os dados ou tempos desta etapa mudaram. Atualize a tela antes de salvar.")
+
+
+def _correct_interval_boundary(conn, kind, stage, interval, boundary, moment, actor):
+    table, seconds_column, hours_field, counter_field = {
+        "PRODUCAO": ("erp_stage_time_sessions", "productive_seconds", "production_time_hours", "production_seconds"),
+        "SETUP": ("erp_stage_setup_sessions", "duration_seconds", "setup_time_hours", "setup_seconds"),
+        "PARADA": ("erp_stage_time_pauses", "duration_seconds", "total_stopped_time_hours", "stopped_seconds"),
+    }[interval["phase"]]
+    start = moment if boundary == "started_at" else _production_datetime(interval["started_at"])
+    end = moment if boundary == "ended_at" else _production_datetime(interval.get("ended_at"))
+    if end is not None and end < start:
+        raise ValueError("A correção deixaria o fim da sessão anterior ao início.")
+    seconds = max(0, int((end-start).total_seconds())) if end is not None else None
+    conn.execute(text(f"update {table} set {boundary}=:moment,{seconds_column}=:seconds where id=:id"),
+                 {"moment": moment, "seconds": seconds, "id": interval["id"]})
+    delta = seconds - int(interval.get("seconds") or 0) if seconds is not None else 0
+    interval.update(started_at=start, ended_at=end, seconds=seconds)
+    if not delta or not interval.get("auto_time_fields"):
+        return
+    column = _pause_stage_column(kind)
+    counter = _one(conn.execute(text(f"select id,{counter_field} from erp_stage_auto_time_counters where {column}=:stage for update"), {"stage": stage["id"]}))
+    if not counter:
+        raise ValueError("Os contadores desta etapa precisam ser sincronizados antes da correção.")
+    previous = int(counter[counter_field])
+    next_seconds = previous + delta
+    if next_seconds < 0:
+        raise ValueError("A correção não corresponde ao contador vigente da etapa.")
+    rounded = lambda value: (Decimal(value)/Decimal(3600)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    stage_table = "erp_work_order_stages" if kind == "work" else "erp_vehicle_entry_stages"
+    current = conn.execute(text(f"select {hours_field} from {stage_table} where id=:id"), {"id": stage["id"]}).scalar_one()
+    hours = max(Decimal(0), Decimal(str(current or 0)) + rounded(next_seconds)-rounded(previous))
+    conn.execute(text(f"update erp_stage_auto_time_counters set {counter_field}=:seconds,updated_at=now() where id=:id"), {"id": counter["id"], "seconds": next_seconds})
+    conn.execute(text(f"update {stage_table} set {hours_field}=:hours where id=:id"), {"id": stage["id"], "hours": hours})
+
+
+def update_synchronized_stage(conn, kind, target_id, code, payload, actor, metadata_only=False):
+    """Manual MES and timed commands share canonical stages and execution intervals.
+
+    Date corrections change the first/last interval only. Closed middle
+    intervals and manual accumulated overrides retain their own meaning.
+    All writes occur inside the caller's transaction and stage lock.
+    """
+    metadata_only = metadata_only or _is_metadata_only_stage_update(payload)
+    if kind == "work":
+        target, stage = _locked_work_and_stage(conn, target_id, str(code).upper())
+    else:
+        _, target, stage = _production_locked_stage(conn, kind, target_id, code)
+    data = dict(payload)
+    key = str(data.get("idempotency_key") or "").strip() or None
+    if _production_event_replay(conn, kind, key):
+        return {"replayed": True, "input_code": stage_input_code(stage), "status": stage["status"]}
+    expected = str(data.get("expected_status") or "").upper()
+    if not metadata_only and expected and expected != stage_input_code(stage):
+        raise StageConflictError("A etapa foi alterada. Atualize a tela antes de salvar.")
+    for field in ("inicio", "termino"):
+        if data.get(field):
+            data[field] = _production_datetime(data[field])
+            previous = _production_datetime(stage.get(field))
+            if previous and previous.replace(microsecond=0) == data[field].replace(microsecond=0):
+                data[field] = previous
+    if not _setup_schema_ready(conn):
+        if kind == "entry":
+            return update_vehicle_entry_stage(conn, target_id, code, data, actor)
+        return (update_stage_metadata if metadata_only else update_stage)(conn, target_id, code, data, actor)
+
+    _validate_stage_sync_token(conn, kind, stage, data)
+
+    new_status = stage["status"] if metadata_only else _stage_status_from_input(data.get("input_code") or data.get("status"))
+    if not new_status:
+        raise ValueError("Informe explicitamente o status da etapa.")
+    now = datetime.now(timezone.utc)
+    rows = _execution_intervals(conn, kind, stage["id"])
+    old_start, old_end = _production_datetime(stage.get("inicio")), _production_datetime(stage.get("termino"))
+    changed_start = data.get("inicio") and data["inicio"] != old_start
+    changed_end = data.get("termino") and data["termino"] != old_end
+    if (changed_start and data["inicio"] > now) or (changed_end and data["termino"] > now):
+        raise ValueError("Os horários do apontamento não podem estar no futuro.")
+    effective_start = data.get("inicio") or old_start
+    effective_end = data.get("termino") or old_end
+    if effective_start and effective_end and new_status == "CONCLUÍDA" and effective_end < effective_start:
+        raise ValueError("O fim do apontamento não pode ser anterior ao início.")
+    if rows and changed_start and old_start == _production_datetime(rows[0]["started_at"]):
+        if len(rows)>1 and data["inicio"] > _production_datetime(rows[1]["started_at"]):
+            raise ValueError("O início corrigido sobrepõe outra sessão da etapa.")
+        _correct_interval_boundary(conn, kind, stage, rows[0], "started_at", data["inicio"], actor)
+    active = next((row for row in rows if row["ended_at"] is None), None)
+    closed = [row for row in rows if row["ended_at"] is not None]
+    if changed_end and not active and closed and new_status == "CONCLUÍDA":
+        last = max(closed, key=lambda row: _production_datetime(row["ended_at"]))
+        _correct_interval_boundary(conn, kind, stage, last, "ended_at", data["termino"], actor)
+
+    responsible = str(data.get("responsavel") or stage.get("responsavel") or actor).strip()
+    if active and stage["status"] == "CONCLUÍDA":
+        _supersede_completed_stage_timers(conn, kind, stage, actor)
+        active = None
+    if new_status in {"PENDENTE", "NÃO_APLICÁVEL"} and active:
+        _supersede_completed_stage_timers(conn, kind, stage, actor)
+    elif new_status == "CONCLUÍDA" and active:
+        end = data.get("termino") or now
+        if end > now:
+            raise ValueError("O fim do apontamento não pode estar no futuro.")
+        if active["phase"] == "SETUP":
+            seconds = _close_stage_setup(conn, active, end, actor)
+            field = "setup_time_hours"
+        elif active["phase"] == "PARADA":
+            seconds = _close_stage_pause(conn, kind, stage["id"], end, actor)
+            field = "total_stopped_time_hours"
+        else:
+            seconds = _close_stage_session(conn, kind, stage["id"], end, actor)
+            field = "production_time_hours"
+        _add_auto_stage_hours(conn, kind, target_id, code, field, seconds, actor, key)
+        data["termino"] = end
+    elif new_status == "EM_ANDAMENTO" and not active and not metadata_only:
+        start = (data.get("inicio") or old_start or now) if not rows else now
+        if start>now:
+            raise ValueError("O início do apontamento não pode estar no futuro.")
+        _validate_pointing_start_boundary(conn, kind, stage["id"], start)
+        _open_stage_session(conn, kind, stage["id"], start, actor, data.get("observacoes") or "", key, responsible=responsible)
+        data["inicio"] = data.get("inicio") or old_start or start
+    # A direct manual N -> S with explicit start/end is a real execution.
+    # Existing historic S records without intervals are never inferred.
+    elif new_status == "CONCLUÍDA" and stage["status"] != "CONCLUÍDA" and not rows:
+        start, end = data.get("inicio") or old_start, data.get("termino") or now
+        if start:
+            if start > now or end > now or end < start:
+                raise ValueError("Informe horários válidos: início anterior ao fim, ambos sem datas futuras.")
+            _open_stage_session(conn, kind, stage["id"], start, actor, data.get("observacoes") or "", key, responsible=responsible)
+            seconds = _close_stage_session(conn, kind, stage["id"], end, actor)
+            _add_auto_stage_hours(conn, kind, target_id, code, "production_time_hours", seconds, actor, key)
+            # Hours entered explicitly remain the authoritative consolidated value.
+            if stage.get("production_time_hours") is not None and "production_time_hours" not in data:
+                data["production_time_hours"] = stage["production_time_hours"]
+            data.update(inicio=start, termino=end)
+    data["responsavel"] = _consolidated_operators(conn, kind, stage, responsible)
+    if changed_start or changed_end:
+        data["pointing_audit_note"] = "Datas corrigidas no MES e nos intervalos de execução; acumulados recalculados."
+    if kind == "work":
+        result = (update_stage_metadata if metadata_only else update_stage)(conn, target_id, code, data, actor)
+        if not metadata_only and any(field in data for field in ("setup_time_hours", "production_time_hours", "total_stopped_time_hours")):
+            update_stage_metadata(conn, target_id, code, {k:v for k,v in data.items() if k in ("setup_time_hours", "production_time_hours", "total_stopped_time_hours")}, actor)
+    else:
+        result = update_vehicle_entry_stage(conn, target_id, code, data, actor)
+        # Entry's historical coalesce must still allow an explicit date correction.
+        if changed_start:
+            conn.execute(text("update erp_vehicle_entry_stages set inicio=:start where id=:id"), {"start": data["inicio"], "id": stage["id"]})
+        if any(field in data for field in ("setup_time_hours", "production_time_hours", "total_stopped_time_hours")):
+            update_production_manual_times(conn, kind, target_id, code, {
+                k:v for k,v in data.items() if k in ("setup_time_hours", "production_time_hours", "total_stopped_time_hours")
+            }, actor)
+    return result
 
 
 def _supersede_completed_stage_timers(conn, kind, stage, actor):
@@ -4118,7 +4326,7 @@ def _add_auto_stage_hours(conn, kind, target_id, stage_code, field, seconds, act
             Decimal("0.01"), rounding=ROUND_HALF_UP
         )
     delta_hours = rounded_hours(next_seconds) - rounded_hours(previous_seconds)
-    if not delta_hours:
+    if not delta_hours and stage.get(field) is not None:
         return
     hours = Decimal(str(stage.get(field) or 0)) + delta_hours
     update_production_manual_times(conn, kind, target_id, stage_code, {
@@ -4196,7 +4404,7 @@ def production_target_detail(conn, target_kind, target_id):
         # conclusions. An old timer must never make an S look like a P.
         if stage.get("input_code") in {"S", "N/A"}:
             stage.update(open_session=None, open_pause=None, open_setup=None)
-        stage["execution_operators"] = _production_execution_operators(conn, kind, stage["id"]) if setup_ready else []
+        stage["execution_operators"] = _operator_names(stage.get("responsavel"), *_production_execution_operators(conn, kind, stage["id"])) if setup_ready else _operator_names(stage.get("responsavel"))
         stage["can_point"] = stage.get("input_code") != "N/A"
     vehicle_name = " ".join(
         str(target.get(field) or "").strip()
@@ -4376,7 +4584,7 @@ def execute_production_stage_command(conn, target_kind, target_id, stage_code, p
         )
     if not _stage_pause_schema_ready(conn):
         raise ValueError("A migration de paradas da Produção ainda não foi aplicada.")
-    auto_times = bool(payload.get("auto_time_fields"))
+    auto_times = True
     if auto_times and not _setup_schema_ready(conn):
         raise ValueError("A migration do perfil APONTAMENTO ainda não foi aplicada.")
     if action not in {"INICIAR", "SETUP", "PARAR", "FINALIZAR", "INTERROMPER"}:
@@ -4407,7 +4615,7 @@ def execute_production_stage_command(conn, target_kind, target_id, stage_code, p
     responsible = actor
     if auto_times:
         responsible = str(payload.get("responsavel") or (
-            actor if action == "INICIAR" and current != "P" else stage.get("responsavel") or actor
+            actor if action == "INICIAR" else (_operator_names(stage.get("responsavel")) or [actor])[-1]
         )).strip()
         if not responsible:
             raise ValueError("Informe o nome do operador responsável.")
@@ -4419,6 +4627,8 @@ def execute_production_stage_command(conn, target_kind, target_id, stage_code, p
     start_at = _production_datetime(payload.get("inicio"), now)
     finish_at = _production_datetime(payload.get("termino"), now)
     moment = _production_datetime(payload.get("momento"), now)
+    if action in {"SETUP", "PARAR", "INTERROMPER"} and moment > now:
+        raise ValueError("O horário da mudança de fase não pode estar no futuro.")
     if auto_times and current == "S" and action == "INICIAR":
         _supersede_completed_stage_timers(conn, kind, stage, actor)
     time_state = _pause_summary(conn, kind, stage["id"])
@@ -4584,7 +4794,7 @@ def execute_production_stage_command(conn, target_kind, target_id, stage_code, p
     stage_payload = {
         "input_code": input_code,
         "expected_status": current,
-        "responsavel": responsible,
+        "responsavel": _consolidated_operators(conn, kind, stage, responsible),
         "observacoes": str(payload.get("observacoes") or (stage.get("observacoes") if auto_times else "") or "").strip(),
         "pointing_audit_note": " ".join(audit_notes),
         "confirmed_status_change": True,
@@ -4596,7 +4806,7 @@ def execute_production_stage_command(conn, target_kind, target_id, stage_code, p
     }
     if action == "INICIAR":
         stage_payload["inicio"] = (
-            (stage.get("inicio") or start_at) if auto_times and current == "P" else start_at
+            stage.get("inicio") or start_at
         )
     else:
         stage_payload["inicio"] = None if auto_times else _production_datetime(payload.get("inicio"), None)

@@ -178,7 +178,7 @@ function normalizeWorkOrderChoice(name,value){const raw=String(value??'').trim()
 const isoDate=v=>v?String(v).slice(0,10):'';
 const date=v=>{if(!v)return '—';const d=new Date(`${isoDate(v)}T12:00:00`);return Number.isNaN(d.getTime())?'—':d.toLocaleDateString('pt-BR')};
 const datetime=v=>{if(!v)return '—';const d=new Date(v);return Number.isNaN(d.getTime())?'—':d.toLocaleString('pt-BR')};
-const inputDatetime=v=>{if(!v)return '';const d=new Date(v);if(Number.isNaN(d.getTime()))return '';return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,16)};
+const inputDatetime=v=>{if(!v)return '';const d=new Date(v);if(Number.isNaN(d.getTime()))return '';return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,19)};
 function refreshClientSuggestions(){const input=document.getElementById('entry-form').elements.cliente_nome,list=document.getElementById('entry-client-suggestions'),query=norm(input.value);const clients=[...(state.catalogs.clientes_recentes||[])].filter(name=>!query||norm(name).includes(query)).sort((left,right)=>{const leftStarts=norm(left).startsWith(query)?0:1,rightStarts=norm(right).startsWith(query)?0:1;return leftStarts-rightStarts}).slice(0,20);list.innerHTML=clients.map(name=>`<option value="${esc(name)}"></option>`).join('')}
 function message(text,error=false){const box=document.getElementById('message');box.hidden=!text;box.className='message'+(error?' error':'');box.textContent=text||''}
 function scheduleMessage(text,error=false){const box=document.getElementById('schedule-message');if(!box)return;box.hidden=!text;box.className='message'+(error?' error':'');box.textContent=text||''}
@@ -580,6 +580,10 @@ function renderStages(){
     const origin=hasPointing&&configuring?'<br><small class="muted">Apontada antes da O.S.</small>':'';
     return `<tr data-stage="${esc(s.stage_code)}" data-input-code="${esc(s.input_code||'?')}" data-has-operational-pointing="${hasPointing?'1':'0'}"><td><span class="stage-code">${esc(s.stage_code)}</span>${origin}<br><span class="badge ${esc(s.status)}">${esc(s.input_code||'?')} · ${esc(s.status.replaceAll('_',' '))}</span></td><td><select class="stage-status" ${closed?'disabled':''}>${stageInputs.map(([value,label])=>`<option value="${value}" ${value===(s.input_code||'?')?'selected':''}>${label}</option>`).join('')}</select></td><td><input class="stage-owner" value="${esc(s.responsavel||'')}" ${fieldsLocked?'disabled':''}></td><td><input class="stage-location" value="${esc(s.localizacao||'')}" ${fieldsLocked?'disabled':''}></td><td><input class="stage-start" type="datetime-local" value="${esc(inputDatetime(s.inicio))}" ${hardLocked?'disabled':''}></td><td><input class="stage-finish" type="datetime-local" value="${esc(inputDatetime(s.termino))}" ${hardLocked?'disabled':''}></td>${entryMode?'':`<td><input class="manual-time stage-setup-time" type="number" min="0" step="0.01" inputmode="decimal" value="${esc(s.setup_time_hours??'')}" placeholder="0,00" ${hardLocked?'disabled':''}></td><td><input class="manual-time stage-production-time" type="number" min="0" step="0.01" inputmode="decimal" value="${esc(s.production_time_hours??'')}" placeholder="0,00" ${hardLocked?'disabled':''}></td><td><input class="manual-time stage-stopped-time" type="number" min="0" step="0.01" inputmode="decimal" value="${esc(s.total_stopped_time_hours??'')}" placeholder="0,00" ${hardLocked?'disabled':''}></td><td><button class="btn manual-time-action" type="button" ${hardLocked?'disabled':''} onclick="saveManualStageTimes(this)">Salvar tempos</button></td>`}<td><input class="stage-note notes" value="${esc(s.observacoes||'')}" ${fieldsLocked?'disabled':''}></td><td>${actionAllowed?`<button class="btn primary" ${hardLocked?'disabled':''} type="button" onclick="saveStage(this)">${hasPointing?'Corrigir':'Salvar'}</button>`:'—'}</td></tr>`;
   }).join('');
+  document.querySelectorAll('#stage-rows tr').forEach(row=>{
+    row.dataset.syncToken=stages.find(stage=>stage.stage_code===row.dataset.stage)?.sync_token||'';
+    row.querySelectorAll('input[type="datetime-local"]').forEach(input=>input.step='1');
+  });
 }
 
 function manualHours(value){
@@ -609,6 +613,7 @@ async function saveManualStageTimes(button){
       setup_time_hours:parseHours(setup,'Tempo de setup'),
       production_time_hours:parseHours(production,'Tempo de produção'),
       total_stopped_time_hours:parseHours(stopped,'Tempo parado total'),
+      expected_sync_token:row.dataset.syncToken,
       idempotency_key:crypto.randomUUID()
     };
   }catch(error){message(error.message,true);return}
@@ -809,6 +814,7 @@ async function saveStage(button){
   const payload={
     input_code:inputCode,
     expected_status:previousCode,
+    expected_sync_token:row.dataset.syncToken,
     responsavel:row.querySelector('.stage-owner').value,
     localizacao:row.querySelector('.stage-location').value,
     inicio:start?new Date(start).toISOString():null,

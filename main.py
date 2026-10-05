@@ -2568,14 +2568,18 @@ async def erp_vehicle_entry_stage(
         }, status_code=409)
     try:
         with database.engine.begin() as conn:
-            result = erp_service.update_vehicle_entry_stage(
-                conn, entry_id, stage_code, data, user.nome
+            result = erp_service.update_synchronized_stage(
+                conn, "entry", entry_id, stage_code, data, user.nome
             )
         return {"ok": True, **result}
     except erp_service.StageConflictError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+def current_operator_name(responsible):
+    return str(responsible or "").split("/")[-1].strip()
+
 
 def prepare_production_detail(detail):
     for stage in detail.get("stages", []):
@@ -2598,6 +2602,7 @@ def prepare_production_detail(detail):
         )
         interval = stage.get("open_session") or stage.get("open_setup") or stage.get("open_pause") or {}
         stage["active_interval_id"] = str(interval.get("id") or "")
+        stage["active_execution_operator"] = interval.get("execution_operator") or current_operator_name(stage.get("responsavel"))
         interval_start = interval.get("started_at")
         stage["active_interval_start_input"] = (
             interval_start.astimezone(LOCAL_TZ).strftime("%Y-%m-%dT%H:%M:%S")
@@ -2786,9 +2791,7 @@ async def production_stage_command(
         return JSONResponse({"ok": False, "error": "Etapa não informada."}, status_code=400)
     if is_pointing_profile(user) and is_production_only(user) and str(data.get("action") or "").upper() == "SALVAR_TEMPOS":
         return permission_denied(api=True)
-    data = {**data, "auto_time_fields": bool(
-        is_pointing_profile(user) and is_production_only(user)
-    )}
+    data = {**data, "auto_time_fields": True}
     try:
         with database.engine.begin() as conn:
             result = erp_service.execute_production_stage_command(
@@ -2936,7 +2939,7 @@ async def erp_stage(work_id: str, stage_code: str, request: Request, data: dict 
             "error": "Esta tela esta desatualizada. Atualize a pagina antes de registrar o status da etapa.",
         }, status_code=409)
     try:
-        with database.engine.begin() as conn: result = erp_service.update_stage(conn, work_id, stage_code, data, user.nome)
+        with database.engine.begin() as conn: result = erp_service.update_synchronized_stage(conn, "work", work_id, stage_code, data, user.nome)
         return {"ok": True, **result}
     except erp_service.StageConflictError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
@@ -2963,8 +2966,10 @@ async def erp_stage_details(
         return permission_denied(api=True)
     try:
         with database.engine.begin() as conn:
-            result = erp_service.update_stage_metadata(conn, work_id, stage_code, data, user.nome)
+            result = erp_service.update_synchronized_stage(conn, "work", work_id, stage_code, data, user.nome, metadata_only=True)
         return {"ok": True, **result}
+    except erp_service.StageConflictError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 

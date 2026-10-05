@@ -32,6 +32,7 @@ class PointingAdjustmentTests(TestCase):
                 ('_production_event_replay', False), ('_pause_summary', timing),
                 ('_open_stage_setup', dict(setup) if setup else None),
                 ('_close_stage_session', 1800), ('_close_stage_setup', 1800),
+                ('_production_execution_operators', []),
                 ('update_stage', {'input_code': 'S'}), ('update_vehicle_entry_stage', {'input_code': 'S'}),
             ):
                 stack.enter_context(patch.object(erp_service, name, return_value=value))

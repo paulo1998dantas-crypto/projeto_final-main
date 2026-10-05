@@ -613,7 +613,7 @@ class MesStageWriteSafetyTests(unittest.TestCase):
             patch.object(main.database.engine, "begin", return_value=FakeTransaction()),
             patch.object(
                 main.erp_service,
-                "update_stage",
+                "update_synchronized_stage",
                 return_value={"status": "CONCLUÍDA", "input_code": "S"},
             ) as update_stage,
         ):
@@ -633,6 +633,7 @@ class MesStageWriteSafetyTests(unittest.TestCase):
         self.assertEqual(response["status"], "CONCLUÍDA")
         update_stage.assert_called_once_with(
             connection,
+            "work",
             "work-order",
             "VIDROS",
             {

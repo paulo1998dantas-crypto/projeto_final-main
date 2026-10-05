@@ -17,15 +17,13 @@ class StageButtonTests(unittest.TestCase):
         cases = []
         for template in ('producao_operador.html', 'producao_apontamento.html'):
             for state in ('pending', 'running', 'paused', 'completed', 'setup', 'rejected'):
-                if state == 'setup' and template == 'producao_apontamento.html':
-                    continue
                 stage = {
                     'stage_code': 'REVEST', 'input_code': 'S' if state == 'completed' else 'P' if state in ('running', 'paused', 'setup') else 'N',
                     'open_session': state == 'running', 'open_pause': state == 'paused', 'open_setup': state == 'setup',
                     'active_interval_id': 'test-interval', 'active_interval_start_input': '2026-10-05T08:00:00',
                 }
                 if state == 'running':
-                    actions = ['SETUP', 'PARAR', 'INTERROMPER', 'FINALIZAR'] if template == 'producao_operador.html' else ['PARAR', 'INTERROMPER', 'FINALIZAR']
+                    actions = ['SETUP', 'PARAR', 'INTERROMPER', 'FINALIZAR']
                 elif state == 'setup':
                     actions = ['INICIAR', 'PARAR', 'INTERROMPER', 'FINALIZAR']
                 else:

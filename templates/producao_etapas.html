@@ -19,8 +19,8 @@
   <header class="title"><h2>Etapas disponíveis</h2><p>Selecione uma etapa para iniciar, parar, interromper, retomar ou finalizar.</p></header>
   <section class="stages">
     {% for stage in detail.stages %}
-      {% set state_class = 'disabled' if not stage.can_point else ('paused' if stage.open_pause else ('running' if stage.open_session else ('complete' if stage.input_code == 'S' else ''))) %}
-      {% set state_label = 'NÃO APLICÁVEL' if not stage.can_point else ('PARADA' if stage.open_pause else ('EM ANDAMENTO' if stage.open_session else ('CONCLUÍDA' if stage.input_code == 'S' else 'DISPONÍVEL'))) %}
+      {% set state_class = 'disabled' if not stage.can_point else ('complete' if stage.input_code == 'S' else ('paused' if stage.open_pause or stage.open_setup else ('running' if stage.input_code == 'P' else ''))) %}
+      {% set state_label = 'NÃO APLICÁVEL' if not stage.can_point else ('CONCLUÍDA' if stage.input_code == 'S' else ('P — PARADA' if stage.open_pause else ('P — SETUP' if stage.open_setup else ('P — EM ANDAMENTO' if stage.input_code == 'P' else 'DISPONÍVEL')))) %}
       {% if stage.can_point %}<a class="stage {{ state_class }}" href="/producao/{{ detail.target_kind }}/{{ detail.target_id }}/apontar?stage_code={{ stage.stage_code|urlencode }}">{% else %}<div class="stage {{ state_class }}">{% endif %}
         <div class="stage-head"><h3>{{ stage.stage_code }}</h3><span class="badge">{{ state_label }}</span></div>
         <dl><div><dt>Responsável</dt><dd>{{ stage.responsavel or '—' }}</dd></div><div><dt>Status MES</dt><dd>{{ stage.input_code }}</dd></div><div><dt>Primeiro início</dt><dd>{{ stage.inicio_str or '—' }}</dd></div><div><dt>Último término</dt><dd>{{ stage.termino_str or '—' }}</dd></div></dl>

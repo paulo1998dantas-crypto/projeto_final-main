@@ -104,6 +104,7 @@ class ApontamentoProfileTests(unittest.TestCase):
         timing = {"open_pause": None, "open_session": None,
                   "total_productive_seconds": 0, "total_paused_seconds": 0}
         with (
+            patch.object(erp_service, "_production_execution_operators", return_value=[]),
             patch.object(erp_service, "_stage_pause_schema_ready", return_value=True),
             patch.object(erp_service, "_setup_schema_ready", return_value=True),
             patch.object(erp_service, "_production_locked_stage",

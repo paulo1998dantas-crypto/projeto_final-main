@@ -15,11 +15,12 @@
   <header class="head"><div class="head-top"><div><h1>{{ stage.stage_code }}</h1><p>ITEM {{ detail.item_number }}{% if detail.numero_os %} · O.S. {{ detail.numero_os }}{% endif %} · {{ (detail.chassi or '')[-8:] }}</p></div><a class="btn" href="/producao/{{ detail.target_kind }}/{{ detail.target_id }}">Voltar às etapas</a></div></header>
   <section class="panel">
     <div id="message" class="message" hidden></div>
-    {% if stage.open_pause %}<div class="state paused">Etapa parada/interrompida desde {{ stage.pause_started_str }}. Use INICIAR para retomar.</div>{% elif stage.open_session %}<div class="state running">Sessão produtiva iniciada em {{ stage.session_started_str }}.</div>{% elif stage.input_code == 'S' %}<div class="state">Etapa concluída. Um novo INICIAR acrescentará uma sessão de ajuste sem apagar o histórico anterior.</div>{% else %}<div class="state">Etapa disponível para apontamento.</div>{% endif %}
-    <div class="metrics"><div class="metric"><span>Responsável atual</span><strong>{{ stage.responsavel or current_user.nome }}</strong></div><div class="metric"><span>Primeiro início</span><strong>{{ stage.inicio_str or '—' }}</strong></div><div class="metric"><span>Tempo produtivo acumulado</span><strong>{{ stage.productive_duration }}</strong></div><div class="metric"><span>Tempo parado acumulado</span><strong>{{ stage.paused_duration }}</strong></div></div>
+    {% if stage.input_code == 'S' %}<div class="state">S — OK / Etapa concluída. Um novo INICIAR acrescentará uma sessão de ajuste sem apagar o histórico anterior.</div>{% elif stage.open_setup %}<div class="state paused">P — PARCIAL · Setup iniciado em {{ stage.setup_started_str }}.</div>{% elif stage.open_pause %}<div class="state paused">P — PARCIAL · Etapa parada/interrompida desde {{ stage.pause_started_str }}. Use INICIAR para retomar.</div>{% elif stage.open_session %}<div class="state running">P — PARCIAL · Sessão produtiva iniciada em {{ stage.session_started_str }}.</div>{% else %}<div class="state">Etapa disponível para apontamento.</div>{% endif %}
+    <div class="metrics"><div class="metric"><span>Operadores consolidados</span><strong>{{ stage.responsavel or current_user.nome }}</strong></div><div class="metric"><span>Primeiro início</span><strong>{{ stage.inicio_str or '—' }}</strong></div><div class="metric"><span>Produção acumulada</span><strong>{{ stage.production_time_hours or 0 }} h</strong></div><div class="metric"><span>Setup acumulado</span><strong>{{ stage.setup_time_hours or 0 }} h</strong></div><div class="metric"><span>Parado acumulado</span><strong>{{ stage.total_stopped_time_hours or 0 }} h</strong></div></div>
     <div class="form">
       <label>Data/hora de início ou retomada<input id="inicio" type="datetime-local" value="{{ detail.now_input }}"></label>
       <label>Data/hora de parada, interrupção ou finalização<input id="momento" type="datetime-local" value="{{ detail.now_input }}"></label>
+      <label class="full">Operador desta execução<input id="responsavel" maxlength="160" value="{{ stage.active_execution_operator or current_user.nome }}" {% if stage.open_session %}readonly{% endif %}></label>
       <label class="manual-entry">Tempo de Setup (h)<input id="setup-time" type="number" min="0" step="0.01" inputmode="decimal" value="{{ stage.setup_time_hours if stage.setup_time_hours is not none else '' }}" placeholder="0,00"></label>
       <label class="manual-entry">Tempo de Produção (h)<input id="production-time" type="number" min="0" step="0.01" inputmode="decimal" value="{{ stage.production_time_hours if stage.production_time_hours is not none else '' }}" placeholder="0,00"></label>
       <label class="manual-entry">Tempo Parado Total Informado (h)<input id="stopped-time" type="number" min="0" step="0.01" inputmode="decimal" value="{{ stage.total_stopped_time_hours if stage.total_stopped_time_hours is not none else '' }}" placeholder="0,00"></label>
@@ -27,10 +28,11 @@
     </div>
     <div class="actions">
       <button id="save-manual-times" class="btn primary" type="button" onclick="saveManualTimes()">Salvar tempos</button>
-      {% if not stage.open_session %}<button class="btn success" type="button" data-stage-action="INICIAR">{% if stage.open_pause %}INICIAR / RETOMAR{% elif stage.input_code == 'S' %}INICIAR NOVO AJUSTE{% else %}INICIAR{% endif %}</button>{% endif %}
-      {% if stage.open_session %}<button class="btn warning" type="button" data-stage-action="PARAR">PARAR</button><button class="btn danger" type="button" data-stage-action="INTERROMPER">INTERROMPER</button><button class="btn primary" type="button" data-stage-action="FINALIZAR">FINALIZAR</button>{% endif %}
+      {% if not stage.open_session %}<button class="btn success" type="button" data-stage-action="INICIAR">{% if stage.open_setup %}INICIAR PRODUÇÃO{% elif stage.open_pause %}INICIAR / RETOMAR{% elif stage.input_code == 'S' %}INICIAR NOVO AJUSTE{% else %}INICIAR SETUP{% endif %}</button>{% endif %}
+      {% if stage.open_session %}<button class="btn" type="button" data-stage-action="SETUP">SETUP</button>{% endif %}
+      {% if stage.open_session or stage.open_setup %}<button class="btn warning" type="button" data-stage-action="PARAR">PARAR</button><button class="btn danger" type="button" data-stage-action="INTERROMPER">INTERROMPER</button><button class="btn primary" type="button" data-stage-action="FINALIZAR">FINALIZAR</button>{% endif %}
     </div>
-    <p class="help">Setup, produção e tempo parado total informado são campos complementares digitados manualmente em horas decimais. Pausas nunca entram no tempo produtivo. O tempo parado manual é separado do contador automático de pausas. Salvar esses campos não altera o status, início, término, observações nem o cálculo das sessões.</p>
+    <p class="help">Os comandos somam setup, produção e paradas automaticamente. Pausas nunca entram no tempo produtivo. Os campos em horas permitem corrigir os acumulados das sessões encerradas; uma sessão aberta continua contando. As duas telas usam os mesmos valores vigentes.</p>
   </section>
 </main>
 <script>
@@ -38,6 +40,8 @@ const endpoint='/api/erp/producao/{{ detail.target_kind }}/{{ detail.target_id }
 const stageCode={{ stage.stage_code|tojson }};
 const expected={{ stage.input_code|tojson }};
 const isCompleted={{ (stage.input_code == 'S')|tojson }};
+const activeIntervalId={{ (stage.active_interval_id or '')|tojson }};
+let pendingKey=null,pendingSignature=null;
 function key(){return globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random().toString(16).slice(2)}`}
 function show(text){const el=document.getElementById('message');el.textContent=text;el.hidden=!text}
 function manualHours(id,label){
@@ -52,7 +56,7 @@ async function saveManualTimes(){
   const button=document.getElementById('save-manual-times');
   let payload;
   try{
-    payload={action:'SALVAR_TEMPOS',stage_code:stageCode,idempotency_key:key(),
+    payload={action:'SALVAR_TEMPOS',stage_code:stageCode,idempotency_key:key(),expected_sync_token:{{ (stage.sync_token or '')|tojson }},
       setup_time_hours:manualHours('setup-time','Tempo de Setup'),
       production_time_hours:manualHours('production-time','Tempo de Produção'),
       total_stopped_time_hours:manualHours('stopped-time','Tempo Parado Total')};
@@ -61,16 +65,19 @@ async function saveManualTimes(){
   try{
     const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     await readPointingResponse(response);
-    show('Tempos complementares salvos. O apontamento, início, término e observações foram preservados.');
+    location.reload();
   }catch(error){show(error.message)}finally{button.disabled=false}
 }
 async function sendStageCommand(action){
   if(action==='INICIAR'&&isCompleted&&!confirm('Esta etapa já foi concluída. Deseja iniciar uma nova sessão de ajuste sem apagar os apontamentos anteriores?'))return;
   const buttons=[...document.querySelectorAll('button')];buttons.forEach(b=>b.disabled=true);show('');
-  const payload={action,stage_code:stageCode,expected_status:expected,idempotency_key:key(),observacoes:document.getElementById('observacoes').value};
+  const payload={action,stage_code:stageCode,expected_status:expected,expected_interval_id:activeIntervalId,observacoes:document.getElementById('observacoes').value,responsavel:document.getElementById('responsavel').value.trim()};
   if(action==='INICIAR')payload.inicio=document.getElementById('inicio').value;
   else if(action==='FINALIZAR')payload.termino=document.getElementById('momento').value;
   else payload.momento=document.getElementById('momento').value;
+  const signature=JSON.stringify(payload);
+  if(signature!==pendingSignature){pendingKey=key();pendingSignature=signature}
+  payload.idempotency_key=pendingKey;
   try{
     const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     await readPointingResponse(response);

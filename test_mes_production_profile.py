@@ -107,6 +107,12 @@ class MesProductionProfileTests(unittest.TestCase):
 
         with (
             patch.object(erp_service, "_stage_pause_schema_ready", return_value=True),
+            patch.object(erp_service, "_setup_schema_ready", return_value=True),
+            patch.object(erp_service, "_open_stage_setup", return_value=None),
+            patch.object(erp_service, "_production_execution_operators", return_value=[]),
+            patch.object(erp_service, "_supersede_completed_stage_timers"),
+            patch.object(erp_service, "_validate_pointing_start_boundary"),
+            patch.object(erp_service, "_start_stage_setup") as start_setup,
             patch.object(
                 erp_service,
                 "_production_locked_stage",
@@ -135,7 +141,8 @@ class MesProductionProfileTests(unittest.TestCase):
                 "OPERADOR 1",
             )
 
-        open_session.assert_called_once()
+        start_setup.assert_called_once()
+        open_session.assert_not_called()
         payload = update_stage.call_args.args[3]
         self.assertEqual(payload["input_code"], "P")
         self.assertEqual(
@@ -168,6 +175,10 @@ class MesProductionProfileTests(unittest.TestCase):
 
         with (
             patch.object(erp_service, "_stage_pause_schema_ready", return_value=True),
+            patch.object(erp_service, "_setup_schema_ready", return_value=True),
+            patch.object(erp_service, "_open_stage_setup", return_value=None),
+            patch.object(erp_service, "_production_execution_operators", return_value=[]),
+            patch.object(erp_service, "_add_auto_stage_hours"),
             patch.object(
                 erp_service,
                 "_production_locked_stage",
@@ -175,7 +186,7 @@ class MesProductionProfileTests(unittest.TestCase):
             ),
             patch.object(erp_service, "_production_event_replay", return_value=False),
             patch.object(erp_service, "_pause_summary", side_effect=[before, after]),
-            patch.object(erp_service, "_close_stage_session") as close_session,
+            patch.object(erp_service, "_close_stage_session", return_value=3600) as close_session,
             patch.object(
                 erp_service,
                 "update_stage",
