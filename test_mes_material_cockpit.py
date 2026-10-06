@@ -23,7 +23,7 @@ class MaterialCockpitTests(unittest.TestCase):
                 "create table stock_balances(id integer primary key, sku_id integer, saldo_atual numeric)",
                 "create table bom_components(id integer primary key,item_sku_id integer,component_sku_id integer,quantidade numeric)",
                 "create table movements(id integer primary key, sku_id integer, tipo text, quantidade numeric, related_movement_id integer, work_order_id text, movement_status text)",
-                "create table erp_purchase_orders(id integer primary key, work_order_id text, vehicle_entry_id text, data_necessidade text, numero_oc text, fornecedor_nome text, status text)",
+                "create table erp_purchase_orders(id integer primary key, work_order_id text, vehicle_entry_id text, data_necessidade text, numero_oc text, fornecedor_nome text, status text, technical_status text)",
                 "create table erp_purchase_order_lines(id integer primary key, purchase_order_id integer, sku_id integer, sku_codigo text, quantidade_pedida numeric, quantidade_recebida numeric, data_necessidade text, status text, work_order_id text)",
             ):
                 conn.execute(text(statement))
@@ -64,7 +64,7 @@ class MaterialCockpitTests(unittest.TestCase):
                 ), {"id": movement_id, "sku": sku_id, "kind": kind,
                     "quantity": quantity, "work": movement_work})
             conn.execute(text(
-                "insert into erp_purchase_orders values(1,:work,'entry-1','2026-10-05','OC-100','Fornecedor','EMITIDA')"
+                "insert into erp_purchase_orders values(1,:work,'entry-1','2026-10-05','OC-100','Fornecedor','EMITIDA','ABERTA')"
             ), {"work": WORK})
             conn.execute(text(
                 "insert into erp_purchase_order_lines values(1,1,4,'1004',5,0,'2026-10-05','PENDENTE',:work)"
@@ -86,6 +86,26 @@ class MaterialCockpitTests(unittest.TestCase):
         self.assertEqual(1, result["summary"]["ha_saldo"])
         self.assertEqual(1, result["summary"]["empenho_parcial"])
         self.assertEqual(5.0, result["summary"]["em_transito_total"])
+
+    def test_global_parent_set_purchase_transit_is_exploded_to_os_component(self):
+        with self.engine.begin() as conn:
+            conn.execute(text("insert into skus values(5,'30180013','CJ REVESTIMENTO L3H2 VITRE','CJ',1)"))
+            conn.execute(text("insert into skus values(6,'PP-REV','PP REVESTIMENTO','CJ',1)"))
+            conn.execute(text("insert into bom_components values(1,5,6,2),(2,6,4,3)"))
+            # The O.C. is general stock, not allocated to this O.S.; receipt
+            # of the set will be backflushed into the leaf component 1004.
+            conn.execute(text("update erp_purchase_orders set work_order_id=null,vehicle_entry_id=null where id=1"))
+            conn.execute(text("update erp_purchase_order_lines set sku_id=5,sku_codigo='30180013',quantidade_pedida=2,quantidade_recebida=0,work_order_id=null where id=1"))
+
+        with self.engine.connect() as conn:
+            result = erp_service.work_order_material_cockpit(conn, WORK)
+
+        component = next(row for row in result["items"] if row["codigo"] == "1004")
+        self.assertEqual(12.0, component["em_chegada"])
+        self.assertEqual("2026-10-05", component["previsao_chegada"])
+        self.assertEqual("30180013", component["previsoes"][0]["sku_origem"])
+        self.assertFalse(component["previsoes"][0]["vinculada_a_esta_os"])
+        self.assertEqual(12.0, result["summary"]["em_transito_total"])
 
     def test_bom_commitment_and_baixa_are_reflected_on_leaf_materials(self):
         with self.engine.begin() as conn:

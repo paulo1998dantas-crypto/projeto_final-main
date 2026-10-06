@@ -320,17 +320,16 @@ def work_order_material_cockpit(conn, work_id):
                l.data_necessidade as linha_data_necessidade,
                o.data_necessidade as pedido_data_necessidade,
                o.numero_oc,o.fornecedor_nome,o.status as pedido_status,
-               l.status as linha_status
+               l.status as linha_status,o.work_order_id as pedido_work_order_id,
+               l.work_order_id as linha_work_order_id,
+               o.vehicle_entry_id as pedido_vehicle_entry_id
           from erp_purchase_order_lines l
           join erp_purchase_orders o on o.id=l.purchase_order_id
-         where (
-               o.work_order_id=:work_id
-               or o.vehicle_entry_id=:entry_id
-               or l.work_order_id=:work_id
-         )
-           and coalesce(o.status,'') in ('EMITIDA','PARCIALMENTE_RECEBIDA')
+         where coalesce(o.status,'') in ('EMITIDA','PARCIALMENTE_RECEBIDA')
+           and coalesce(o.technical_status,'ABERTA') <> 'CONCLUIDA'
            and coalesce(l.status,'') in ('PENDENTE','PARCIALMENTE_RECEBIDA')
-    """), {"work_id": work["id"], "entry_id": work["vehicle_entry_id"]}).mappings()
+           and l.quantidade_pedida > coalesce(l.quantidade_recebida,0)
+    """)).mappings()
     for row in incoming_rows:
         pending = max(
             _material_cockpit_quantity(row.get("quantidade_pedida"))
@@ -343,15 +342,32 @@ def work_order_material_cockpit(conn, work_id):
             sku = erp_stock_closure.code(sku_row.get("sku") if sku_row else "")
         if not sku or pending <= 0:
             continue
-        incoming_by_code[sku].append({
-            "numero_oc": row.get("numero_oc"),
-            "fornecedor": row.get("fornecedor_nome") or "Fornecedor não informado",
-            "quantidade": _material_cockpit_number(pending),
-            "previsao": _material_cockpit_date(
-                row.get("linha_data_necessidade") or row.get("pedido_data_necessidade")
-            ),
-            "status": row.get("linha_status") or row.get("pedido_status") or "PENDENTE",
-        })
+        # O.C. can name a CJ/PP while receiving/backflush puts inventory in
+        # its leaf SKUs. Project that same parent quantity onto the recursive
+        # BOM leaves shown by this cockpit; direct material lines remain 1:1.
+        for component_code, component_quantity in erp_stock_closure._leaf_requirements(
+            sku, pending, children,
+        ).items():
+            if component_code not in required_by_code or component_quantity <= 0:
+                continue
+            linked_to_work_order = (
+                erp_stock_closure.same_uuid(row.get("pedido_work_order_id"), work["id"])
+                or erp_stock_closure.same_uuid(row.get("linha_work_order_id"), work["id"])
+            )
+            linked_to_entry = erp_stock_closure.same_uuid(
+                row.get("pedido_vehicle_entry_id"), work["vehicle_entry_id"],
+            )
+            incoming_by_code[component_code].append({
+                "numero_oc": row.get("numero_oc"),
+                "fornecedor": row.get("fornecedor_nome") or "Fornecedor não informado",
+                "quantidade": _material_cockpit_number(component_quantity),
+                "previsao": _material_cockpit_date(
+                    row.get("linha_data_necessidade") or row.get("pedido_data_necessidade")
+                ),
+                "status": row.get("linha_status") or row.get("pedido_status") or "PENDENTE",
+                "sku_origem": sku,
+                "vinculada_a_esta_os": bool(linked_to_work_order or linked_to_entry),
+            })
 
     items = []
     counters = {
