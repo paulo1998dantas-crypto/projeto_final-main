@@ -2754,11 +2754,12 @@ def set_purchase_order_allocation(
             "vehicle_entry_id": target_vehicle_entry}
 
 
-def list_work_orders(conn, search="", status="", limit=1000):
+def list_work_orders(conn, search="", status="", limit=1000, offset=0):
     params = {
         "search": f"%{str(search or '').strip()}%",
         "status": str(status or "").strip().upper(),
         "limit": min(max(int(limit or 1000), 1), 2000),
+        "offset": max(int(offset or 0), 0),
     }
     rows = conn.execute(text("""
         select e.id as entry_id,e.item_number,e.status as entry_status,e.data_chegada,
@@ -2768,7 +2769,7 @@ def list_work_orders(conn, search="", status="", limit=1000):
                w.data_aprovacao,w.vendedor,w.mercado,e.cliente_nome as cliente_nome,w.municipio,w.uf,
                w.tipo_veiculo,w.linha,w.transformacao_codigo,w.transformacao,w.codigo_banco,w.conjunto_bancos,
                w.acessibilidade,w.lotacao,w.ar_condicionado,w.tipo_sistema_ar,w.ar_quente,
-               w.acessorio,w.plotagem,w.data_comercial_prevista,w.status,w.version,
+               w.acessorio,w.plotagem,w.data_comercial_prevista,w.termino_producao,w.status,w.version,
                w.revision_number,w.is_current,w.supersedes_work_order_id,
                w.stage_configuration_status,w.stage_configured_at,w.stage_configured_by,
                w.technical_status,w.technical_previous_status,
@@ -2819,7 +2820,7 @@ def list_work_orders(conn, search="", status="", limit=1000):
             else 2
           end,
           seq.sequencia nulls last,e.item_number desc
-        limit :limit
+        limit :limit offset :offset
     """), params)
     orders = [dict(row._mapping) for row in rows]
     for order in orders:

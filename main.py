@@ -3308,12 +3308,21 @@ async def erp_internal_catalogs(request: Request):
     return {"ok": True, **erp_catalogs.payload()}
 
 @app.get("/api/erp/internal/work-orders")
-async def erp_internal_work_orders(request: Request, search: str = "", status: str = ""):
+async def erp_internal_work_orders(
+    request: Request,
+    search: str = "",
+    status: str = "",
+    limit: int = 1000,
+    offset: int = 0,
+):
     if not erp_feature_enabled(): return erp_disabled_response()
     actor = erp_backend_actor(request)
     if not actor: return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
     with database.engine.connect() as conn:
-        return {"ok": True, "orders": erp_service.list_work_orders(conn, search, status)}
+        return {
+            "ok": True,
+            "orders": erp_service.list_work_orders(conn, search, status, limit, offset),
+        }
 
 
 @app.get("/api/erp/internal/work-order-options")
