@@ -140,7 +140,7 @@ dialog{width:min(1480px,98vw);max-height:96vh;border:0;border-radius:9px;padding
       <label>Tipo de serviço<select name="tipo_servico"></select></label>
       <label>Mercado<select name="mercado"></select></label>
       <label>Vendedor<select name="vendedor"></select></label>
-      <label>Nº da proposta<input name="proposta_numero" maxlength="80"></label>
+      <label>Nº da proposta<input name="proposta_numero" maxlength="80" readonly><small>Selecione a proposta pelo botão “Vincular proposta” do card.</small></label>
       <label>Data de aprovação<input name="data_aprovacao" type="date"></label>
       <label>Município<input name="municipio" maxlength="120"></label>
       <label>UF<input name="uf" maxlength="2"></label>
@@ -883,5 +883,6 @@ async function closeWork(){
 
 loadOrders();
 </script>
+{% include 'mes_proposal_picker.html' %}
 </body>
 </html>

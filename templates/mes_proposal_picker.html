@@ -1,0 +1,52 @@
+{% if current_user.can("mes.work_orders.manage") %}
+<dialog id="commercial-proposal-dialog" class="historical-correction-dialog">
+ <form id="commercial-proposal-form">
+  <header class="modal-head"><div><h2>Vincular proposta comercial</h2><small id="commercial-proposal-context"></small></div><button class="btn" type="button" onclick="document.getElementById('commercial-proposal-dialog').close()">Fechar</button></header>
+  <div class="historical-warning">A proposta selecionada será a referência do card e da programação. Não altera chassi, composição, valores, status produtivo ou apontamentos. Uma troca preserva a linha comercial anterior como cancelada e exige motivo.</div>
+  <div class="historical-grid">
+   <label class="span2">Buscar proposta, cliente ou destino<input id="commercial-proposal-search" type="search" autocomplete="off"></label>
+   <button class="btn" id="commercial-proposal-search-button" type="button">Buscar</button>
+   <label class="span2">Proposta / vaga do veículo<select id="commercial-proposal-select" required><option value="">Carregando...</option></select></label>
+   <label class="span2">Motivo<input id="commercial-proposal-reason" minlength="3" maxlength="1000" required placeholder="Informe o motivo do vínculo ou correção"></label>
+  </div>
+  <div id="commercial-proposal-message" class="message" role="status" hidden></div>
+  <footer class="historical-foot"><span>Confira proposta, cliente e vaga antes de confirmar.</span><button class="btn primary" id="commercial-proposal-submit" type="submit">Confirmar vínculo</button></footer>
+ </form>
+</dialog>
+<script>
+const proposalPicker={work:null,rows:[],ticket:0};
+const proposalDialog=document.getElementById('commercial-proposal-dialog');
+const proposalButton=document.createElement('button');proposalButton.type='button';proposalButton.className='btn';proposalButton.textContent='Vincular proposta';proposalButton.onclick=openCommercialProposalPicker;
+document.querySelector('#detail-dialog > .modal-head .actions').prepend(proposalButton);
+function proposalPickerMessage(text){const box=document.getElementById('commercial-proposal-message');box.textContent=text||'';box.hidden=!text}
+async function searchCommercialProposals(){
+ const ticket=++proposalPicker.ticket,work=proposalPicker.work;if(!work)return;
+ const select=document.getElementById('commercial-proposal-select');select.disabled=true;
+ try{
+  const result=await api(`/api/erp/work-orders/${encodeURIComponent(work.id)}/commercial-proposals?search=${encodeURIComponent(document.getElementById('commercial-proposal-search').value)}`);
+  if(ticket!==proposalPicker.ticket)return;
+  proposalPicker.rows=result.rows||[];
+  select.innerHTML='<option value="">Selecione uma proposta cadastrada...</option>'+proposalPicker.rows.map(r=>`<option value="${esc(r.id)}" ${r.linked?'selected':''}>${esc(r.proposal_number)} · ${esc(r.client_name||'Cliente a definir')} · ${esc(r.destination||'')} · veículo ${r.sequence} · ${esc(r.chassi||'Vaga sem chassi')}</option>`).join('');
+  proposalPickerMessage(proposalPicker.rows.length?'':'Nenhuma vaga compatível. Confira a proposta no Comercial; vagas de outro chassi/O.S. não podem ser reutilizadas.');
+ }catch(error){proposalPickerMessage(error.message)}finally{if(ticket===proposalPicker.ticket)select.disabled=false}
+}
+async function openCommercialProposalPicker(){
+ const work=state.detail?.work_order;
+ if(!work?.id){message('Abra o card de uma O.S. vigente.',true);return}
+ if(['CANCELADA','CANCELADO','ARQUIVADA'].includes(work.status)){message('Essa O.S. é histórica/cancelada e não pode receber outro vínculo.',true);return}
+ proposalPicker.work={...work};proposalPicker.rows=[];
+ document.getElementById('commercial-proposal-context').textContent=`ITEM ${work.item_number} · O.S. ${work.numero_os} · ${work.chassi} · proposta vigente: ${work.proposta_numero||'Não informada'}`;
+ document.getElementById('commercial-proposal-search').value='';document.getElementById('commercial-proposal-reason').value='';proposalPickerMessage('');proposalDialog.showModal();await searchCommercialProposals();
+}
+document.getElementById('commercial-proposal-search-button').onclick=searchCommercialProposals;
+document.getElementById('commercial-proposal-search').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();searchCommercialProposals()}};
+document.getElementById('commercial-proposal-form').onsubmit=async e=>{
+ e.preventDefault();const id=document.getElementById('commercial-proposal-select').value,row=proposalPicker.rows.find(r=>r.id===id),work=proposalPicker.work,button=document.getElementById('commercial-proposal-submit');
+ if(!row||!work)return;button.disabled=true;
+ try{
+  const result=await api(`/api/erp/work-orders/${encodeURIComponent(work.id)}/commercial-proposal`,{method:'PATCH',body:JSON.stringify({program_id:row.id,program_version:row.version,expected_proposal:work.proposta_numero||'',motivo:document.getElementById('commercial-proposal-reason').value})});
+  proposalDialog.close();await loadOrders();await openDetail(work.id);message(`Proposta ${result.proposta_numero} vinculada ao card e à programação, com auditoria.`);
+ }catch(error){proposalPickerMessage(error.message)}finally{button.disabled=false}
+};
+</script>
+{% endif %}

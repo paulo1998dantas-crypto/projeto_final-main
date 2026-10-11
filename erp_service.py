@@ -1996,6 +1996,9 @@ def create_work_order(conn, entry_id, payload, actor):
             }
             if documento_os_id is not None:
                 result['documento_os_id'] = documento_os_id
+            if payload.get('commercial_program_id'):
+                from erp_commercial_proposals import apply_selection
+                apply_selection(conn, current['id'], payload, actor)
             return result
 
     work_id=_id(); number=str(entry['item_number'])
@@ -2074,6 +2077,9 @@ def create_work_order(conn, entry_id, payload, actor):
     }
     if documento_os_id is not None:
         result['documento_os_id'] = documento_os_id
+    if payload.get('commercial_program_id'):
+        from erp_commercial_proposals import apply_selection
+        apply_selection(conn, work_id, payload, actor)
     reconcile_purchase_order_allocations(conn, actor, "ABERTURA_OS")
     return result
 
@@ -2186,6 +2192,9 @@ def update_work_order(conn, work_id, payload, actor):
     }
     if documento_os_id is not None:
         result["documento_os_id"] = documento_os_id
+    if payload.get('commercial_program_id'):
+        from erp_commercial_proposals import apply_selection
+        apply_selection(conn, work_id, payload, actor)
     reconcile_purchase_order_allocations(conn, actor, "EDICAO_OS")
     return result
 

@@ -30,6 +30,7 @@ templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 import database, models
 import erp_service
 import erp_catalogs
+import erp_commercial_proposals
 from erp_operators import OPERATOR_REFERENCES, operator_names, normalize_operators
 import erp_report
 import authz
@@ -188,6 +189,7 @@ async def healthz():
             "auth_mode": authz.auth_mode(),
             "legacy_schema": legacy_operational_schema_available(),
             "auth_schema": auth_schema_ready,
+            "commit": os.getenv("RENDER_GIT_COMMIT", ""),
         }
         if authz.shared_auth_enabled() and not auth_schema_ready:
             payload["ok"] = False
@@ -2887,6 +2889,19 @@ async def exportar_controle_producao(request: Request, db: Session = Depends(dat
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
+@app.get("/api/erp/vehicle-entries/{entry_id}/commercial-proposals")
+async def erp_entry_commercial_proposals(entry_id: str, request: Request, search: str = "", db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    user = require_login(request, db)
+    if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE): return permission_denied(api=True)
+    try:
+        with database.engine.connect() as conn:
+            rows = erp_commercial_proposals.options(conn, entry_id=entry_id, search=search)
+        return {"ok": True, "rows": rows}
+    except ValueError as exc: return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+
+
 @app.post("/api/erp/vehicle-entries/{entry_id}/work-orders")
 async def erp_work_order(entry_id: str, request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
     if not erp_feature_enabled(): return erp_disabled_response()
@@ -3161,6 +3176,37 @@ async def erp_work_order_material_cockpit(
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
 
+@app.get("/api/erp/work-orders/{work_id}/commercial-proposals")
+async def erp_commercial_proposal_options(work_id: str, request: Request, search: str = "", db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    user = require_login(request, db)
+    if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE): return permission_denied(api=True)
+    try:
+        with database.engine.connect() as conn:
+            return {"ok": True, "rows": erp_commercial_proposals.options(conn,work_id,search)}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)},status_code=409)
+
+
+@app.patch("/api/erp/work-orders/{work_id}/commercial-proposal")
+async def erp_select_commercial_proposal(work_id: str, request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    user = require_login(request, db)
+    if not user: return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE): return permission_denied(api=True)
+    # Browser writes are same-origin. Internal integrations use their own API.
+    origin=request.headers.get('origin')
+    if origin and not erp_commercial_proposals.same_origin(origin,str(request.base_url)):
+        return JSONResponse({"ok": False, "error": "Origem não permitida."},status_code=403)
+    try:
+        with database.engine.begin() as conn:
+            result=erp_commercial_proposals.select_proposal(conn,work_id,data,user.nome)
+        return {"ok": True, **result}
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)},status_code=409)
+
+
 @app.put("/api/erp/work-orders/{work_id}")
 async def erp_update_work_order(work_id: str, request: Request, data: dict = Body(...), db: Session = Depends(database.get_db)):
     if not erp_feature_enabled(): return erp_disabled_response()
@@ -3405,6 +3451,17 @@ async def erp_internal_delete_vehicle_entry(
         return {"ok": True, **result}
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+@app.get("/api/erp/internal/vehicle-entries/{entry_id}/commercial-proposals")
+async def erp_internal_entry_commercial_proposals(entry_id: str, request: Request, search: str = ""):
+    if not erp_feature_enabled(): return erp_disabled_response()
+    if not erp_backend_actor(request): return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
+    try:
+        with database.engine.connect() as conn:
+            rows = erp_commercial_proposals.options(conn, entry_id=entry_id, search=search)
+        return {"ok": True, "rows": rows}
+    except ValueError as exc: return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
+
 
 @app.post("/api/erp/internal/vehicle-entries/{entry_id}/work-orders")
 async def erp_internal_work_order(entry_id: str, request: Request, data: dict = Body(...)):
