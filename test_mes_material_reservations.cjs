@@ -53,3 +53,10 @@ test('unconfirmed positive balance is not painted as available when reservation 
    status:'RESERVA_INCOMPLETA',status_label:'Conferir composições anteriores',previsoes:[]}]});
  assert.doesNotMatch(e['materials-cockpit-content'].innerHTML,/class="material-balance-cell available/);
 });
+
+test('material table has its own bounded scroll area and an opaque sticky header',()=>{
+ assert.match(html,/\.material-table-wrap\s*\{[^}]*overflow:auto/);
+ assert.match(html,/\.material-table-wrap\s*\{[^}]*max-height:min\(60vh,560px\)/);
+ assert.match(html,/\.material-table thead th\s*\{[^}]*position:sticky;top:0;z-index:2;background:#f8fafc/);
+ assert.match(html,/\.material-table\s*\{[^}]*border-collapse:separate;border-spacing:0/);
+});
