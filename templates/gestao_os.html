@@ -421,6 +421,7 @@ function materialStatusIcon(status){
 
 function renderMaterialCockpit(data){
   const summary=data?.summary||{};
+  const sequence=data?.reserva_sequencia||{};
   const kpis=document.getElementById('materials-kpis');
   const content=document.getElementById('materials-cockpit-content');
   const status=document.getElementById('materials-cockpit-status');
@@ -431,7 +432,8 @@ function renderMaterialCockpit(data){
     content.innerHTML='<div class="empty">A O.S. ainda não possui uma composição vinculada no Suprimentos.</div>';
     return;
   }
-  if(status)status.textContent=`Documento ${data.documento_numero||'—'} · consulta atualizada agora · sem alterações de estoque`;
+  const sequenceText=sequence.aplicavel?` · sequência ${sequence.sequencia??sequence.posicao}${sequence.completa?'':' · reserva incompleta'}`:'';
+  if(status)status.textContent=`Documento ${data.documento_numero||'—'}${sequenceText} · consulta atualizada agora · sem alterações de estoque`;
   kpis.innerHTML=[
     ['Componentes',summary.total||0,''],
     ['Atendidos na O.S.',summary.atendidos||0,'material-available','good'],
@@ -440,23 +442,28 @@ function renderMaterialCockpit(data){
     ['Em trânsito',materialQuantity(summary.em_transito_total||0),'','info'],
     ['Com previsão',summary.com_previsao||0,'','info'],
     ['Sem previsão',summary.sem_previsao||0,'material-missing','bad'],
-    ['Falta total',materialQuantity(summary.faltante_total||0),'material-missing','bad'],
+    [sequence.aplicavel&&!sequence.completa?'Falta identificada':'Falta total',materialQuantity(summary.faltante_total||0),'material-missing','bad'],
   ].map(([label,value,klass,cardClass])=>`<div class="material-kpi ${cardClass||''}"><span>${label}</span><strong class="${klass}">${value}</strong></div>`).join('');
   const rows=data.items||[];
   if(!rows.length){
     content.innerHTML='<div class="empty">A composição vinculada não possui componentes.</div>';
     return;
   }
-    content.innerHTML=`<div class="material-cockpit-toolbar"><span class="material-cockpit-note"><strong>Saldo disponível</strong> = físico − compromissos ativos de todas as O.S.; é o saldo livre para novo empenho.</span><span class="material-cockpit-note"><strong>Atendido</strong> considera empenho direto do material ou de um conjunto com B.O.M. vinculado a esta O.S.; conjuntos com B.O.M. são exibidos pelos componentes. A baixa vinculada mantém o atendimento. Entradas pendentes aparecem como trânsito.</span></div><div class="material-table-wrap"><table class="material-table"><thead><tr><th>Item pai</th><th>Componente</th><th>Necessário</th><th>Saldo físico</th><th>Empenhado na O.S.</th><th>Saldo disponível</th><th>Em trânsito</th><th>Previsão / situação</th></tr></thead><tbody>${rows.map(row=>{
+  const incomplete=(sequence.ordens_sem_composicao||[]).map(row=>esc(row.numero_os||row.work_order_id)).join(', ');
+  const sequenceWarning=incomplete?`<p class="material-missing">Reserva incompleta: conferir a composição das O.S. ${incomplete}. O saldo exibido ainda pode diminuir.</p>`:sequence.aviso?`<p class="material-cockpit-note">${esc(sequence.aviso)}</p>`:'';
+    content.innerHTML=`<div class="material-cockpit-toolbar"><span class="material-cockpit-note"><strong>Reserva</strong> = saldo livre destinado à necessidade ainda não atendida das O.S. anteriores na sequência WIP completa, independentemente dos filtros. É planejamento; não cria empenho.</span><span class="material-cockpit-note"><strong>Disponível na sequência</strong> = saldo físico − empenhos pendentes globais − reserva anterior. Empenhos e baixas desta O.S. continuam protegidos e não são descontados novamente como demanda. Trânsito é previsão, não saldo físico.</span></div>${sequenceWarning}<div class="material-table-wrap"><table class="material-table"><thead><tr><th>Item pai</th><th>Componente</th><th>Necessário</th><th>Saldo físico</th><th>Empenhado na O.S.</th><th>Reserva</th><th>Disponível na sequência</th><th>Falta na O.S.</th><th>Em trânsito</th><th>Previsão / situação</th></tr></thead><tbody>${rows.map(row=>{
     const statusClass=materialStatusClass(row.status),icon=materialStatusIcon(row.status);
     const planned=row.sku_planejado&&row.sku_planejado!==row.codigo?`Planejado: ${esc(row.sku_planejado)} · selecionado: ${esc(row.sku_selecionado||row.codigo)}`:'';
     const arrivals=(row.previsoes||[]).map(item=>{const source=item.sku_origem&&item.sku_origem!==row.codigo?` · Pedido do SKU ${esc(item.sku_origem)}`:'';const allocation=item.vinculada_a_esta_os?'Vinculado a esta O.S.':'Trânsito geral · não reservado';return `<div><strong>O.C. ${esc(item.numero_oc||'—')} · ${esc(item.fornecedor||'Fornecedor não informado')}</strong><small>${item.previsao?`Chegada: ${esc(date(item.previsao))}`:'Data não informada'} · ${materialQuantity(item.quantidade)} ${esc(row.unidade||'UN')}${source}<br>${allocation}</small></div>`}).join('');
     const arrivalHtml=arrivals?`<div class="material-arrival-list">${arrivals}</div>`:'';
     const forecastDate=row.previsao_chegada?`<span class="material-forecast-date">${esc(date(row.previsao_chegada))}</span>`:`<span class="material-forecast-date empty">${Number(row.em_chegada||0)>0?'Data não informada':'Sem previsão de chegada'}</span>`;
     const forecastMeta=Number(row.em_chegada||0)>0?`<span class="material-forecast-meta">${materialQuantity(row.em_chegada)} ${esc(row.unidade||'UN')} em trânsito</span>`:'';
-    const available=Number(row.saldo_disponivel||0);
-    const availableClass=available>0?'available':'available negative';
-    return `<tr><td>${esc(row.item||'—')}</td><td class="material-description"><span>${esc(row.codigo||'Sem SKU')} · ${esc(row.descricao||'Sem descrição')}</span>${planned?`<small>${planned}</small>`:''}</td><td class="material-balance-cell"><strong>${materialQuantity(row.necessario)} ${esc(row.unidade||'')}</strong><small>demanda da O.S.</small></td><td class="material-balance-cell"><strong>${materialQuantity(row.saldo_atual)}</strong><small>Comprometido total: ${materialQuantity(row.saldo_empenhado)}</small></td><td class="material-balance-cell"><strong>${materialQuantity(row.empenhado_na_os||0)}</strong><small>vinculado a esta O.S.</small></td><td class="material-balance-cell ${availableClass}"><strong>${materialQuantity(row.saldo_disponivel)}</strong><small>livre para novo empenho</small></td><td class="material-balance-cell transit"><strong>${materialQuantity(row.em_chegada)}</strong><small>pedido pendente</small></td><td class="material-arrival material-forecast"><span class="material-row-status ${statusClass}"><span aria-hidden="true">${icon}</span>${esc(row.status_label||'—')}</span>${forecastDate}${forecastMeta}${arrivalHtml}</td></tr>`;
+    const available=Number(row.saldo_disponivel_sequencia??row.saldo_disponivel??0);
+    const availableClass=sequence.aplicavel&&!sequence.completa?'':available>0?'available':'available negative';
+    const reserved=sequence.aplicavel?materialQuantity(row.reserva):'—';
+    const reservationDetail=sequence.aplicavel?`demanda anterior: ${materialQuantity(row.demanda_anterior)}`:'não aplicada à fila';
+    const shortage=Number(row.faltante||0);
+    return `<tr><td>${esc(row.item||'—')}</td><td class="material-description"><span>${esc(row.codigo||'Sem SKU')} · ${esc(row.descricao||'Sem descrição')}</span>${planned?`<small>${planned}</small>`:''}</td><td class="material-balance-cell"><strong>${materialQuantity(row.necessario)} ${esc(row.unidade||'')}</strong><small>demanda da O.S.</small></td><td class="material-balance-cell"><strong>${materialQuantity(row.saldo_atual)}</strong><small>Comprometido total: ${materialQuantity(row.saldo_empenhado)}</small></td><td class="material-balance-cell"><strong>${materialQuantity(row.empenhado_na_os||0)}</strong><small>vinculado a esta O.S.${Number(row.baixado_direto_na_os||0)>0?` · baixado diretamente: ${materialQuantity(row.baixado_direto_na_os)}`:''}</small></td><td class="material-balance-cell"><strong>${reserved}</strong><small>${reservationDetail}</small></td><td class="material-balance-cell ${availableClass}"><strong>${materialQuantity(available)}</strong><small>livre global: ${materialQuantity(row.saldo_disponivel)}</small></td><td class="material-balance-cell ${shortage>0?'material-missing':''}"><strong>${materialQuantity(shortage)}</strong><small>${sequence.aplicavel&&!sequence.completa?'mínimo identificado':'após atendimento e reserva'}</small></td><td class="material-balance-cell transit"><strong>${materialQuantity(row.em_chegada)}</strong><small>pedido pendente</small></td><td class="material-arrival material-forecast"><span class="material-row-status ${statusClass}"><span aria-hidden="true">${icon}</span>${esc(row.status_label||'—')}</span>${forecastDate}${forecastMeta}${arrivalHtml}</td></tr>`;
   }).join('')}</tbody></table></div>`;
 }
 

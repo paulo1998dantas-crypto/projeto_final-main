@@ -11,7 +11,7 @@ from uuid import uuid4
 import re
 import unicodedata
 from zoneinfo import ZoneInfo
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from erp_catalogs import (
     REQUIRED_WORK_ORDER_FIELDS, VENDEDORES, MERCADOS, TIPOS_VEICULO, LINHAS,
     AR_FORNECEDORES, SIM_NAO, TRANSFORMACOES,
@@ -136,14 +136,130 @@ def _material_cockpit_document(conn, work):
     """), {"work_id": work["id"], "numero": work["numero_os"]}))
 
 
+def _material_cockpit_composition(document):
+    raw = document.get("composicao") or []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("A composição da O.S. está inválida.") from exc
+    if not isinstance(raw, list) or any(not isinstance(row, dict) for row in raw):
+        raise ValueError("A composição da O.S. está inválida.")
+    return [
+        {**row, "codigo": sku} for row in raw
+        if (sku := erp_stock_closure.code(
+            row.get("codigo") or row.get("sku_selecionado") or row.get("sku_planejado")
+        ))
+    ]
+
+
+def _material_cockpit_sequence_context(conn, work_id):
+    """Read the same unfiltered WIP order as active_cards; never recalculate it."""
+    context = {"disponivel": False, "aplicavel": False, "completa": False,
+               "posicao": None, "sequencia": None, "ordens_anteriores": 0,
+               "ordens_sem_composicao": []}
+    schema = inspect(conn)
+    if not schema.has_table("erp_work_order_sequences") or not schema.has_table("erp_vehicle_entries"):
+        context["aviso"] = "Sequenciamento indisponível; exibido apenas o saldo global."
+        return context, []
+    queue = list(conn.execute(text("""
+        select w.id,w.numero_os,seq.sequencia
+          from erp_work_orders w
+          join erp_vehicle_entries e on e.id=w.vehicle_entry_id
+          left join erp_work_order_sequences seq on seq.work_order_id=w.id and seq.ativo=true
+         where w.status in ('ATIVA','EM_PRODUÇÃO') and w.is_current=true
+           and coalesce(w.technical_status,'ABERTA') <> 'CONCLUIDA'
+         order by seq.sequencia nulls last,w.data_comercial_prevista nulls last,e.item_number,w.id
+    """)).mappings())
+    context.update(disponivel=True, completa=True)
+    position = next((index for index, row in enumerate(queue)
+                     if erp_stock_closure.same_uuid(row["id"], work_id)), None)
+    if position is None:
+        context["aviso"] = "O.S. fora do WIP de materiais; reserva de planejamento não se aplica."
+        return context, []
+    context.update(aplicavel=True, posicao=position + 1,
+                   sequencia=queue[position]["sequencia"], ordens_anteriores=position)
+    if not position:
+        return context, []
+    ids = {f"prior_{i}": row["id"] for i, row in enumerate(queue[:position])}
+    placeholders = ",".join(f":{name}" for name in ids)
+    # One document per UUID, preserving the direct-link-first/latest-revision
+    # rule used for this card. Empty/cancelled documents remain visible gaps.
+    documents = list(conn.execute(text(f"""
+        select * from (
+            select w.id as material_work_id,d.id,d.numero,d.status,d.composicao,
+                   row_number() over (
+                       partition by w.id
+                       order by case when d.erp_work_order_id=w.id then 0 else 1 end,
+                                d.updated_at desc,d.id desc
+                   ) as document_rank
+              from erp_work_orders w
+              left join suprimentos_documentos d on d.tipo='os' and (
+                  d.erp_work_order_id=w.id
+                  or (d.erp_work_order_id is null and d.numero=w.numero_os)
+              )
+             where w.id in ({placeholders})
+        ) ranked where document_rank=1
+    """), ids).mappings())
+    documents_by_work = {erp_stock_closure.code(row["material_work_id"]): dict(row)
+                         for row in documents}
+    return context, [
+        {**dict(row), "document": documents_by_work.get(erp_stock_closure.code(row["id"]))}
+        for row in queue[:position]
+    ]
+
+
+def _material_cockpit_sequence_reservations(prior_orders, children, requested_codes,
+                                           coverage_by_work, free_by_code, context):
+    """Allocate only remaining demand, limited by stock actually free now."""
+    remaining = {sku: max(amount, Decimal("0")) for sku, amount in free_by_code.items()}
+    reserved = defaultdict(lambda: Decimal("0"))
+    previous_demand = defaultdict(lambda: Decimal("0"))
+    allocation = defaultdict(list)
+    for prior in prior_orders:
+        document = prior.get("document")
+        try:
+            if not document or not document.get("id") or _token(document.get("status")) == "CANCELADO":
+                raise ValueError("Documento ausente ou cancelado")
+            composition = _material_cockpit_composition(document)
+            if not composition:
+                raise ValueError("Composição vazia")
+            demand = erp_stock_closure._normalize_required_composition(composition, children)
+            if not demand:
+                raise ValueError("Composição sem quantidades válidas")
+        except ValueError:
+            context["completa"] = False
+            context["ordens_sem_composicao"].append({
+                "work_order_id": str(prior["id"]), "numero_os": prior["numero_os"],
+            })
+            continue
+        covered = coverage_by_work.get(erp_stock_closure.code(prior["id"]), {})
+        for sku in requested_codes:
+            residual = max(demand.get(sku, Decimal("0")) - covered.get(sku, Decimal("0")), Decimal("0"))
+            if residual <= 0:
+                continue
+            amount = min(residual, remaining.get(sku, Decimal("0")))
+            remaining[sku] = remaining.get(sku, Decimal("0")) - amount
+            reserved[sku] += amount
+            previous_demand[sku] += residual
+            allocation[sku].append({
+                "work_order_id": str(prior["id"]), "numero_os": prior["numero_os"],
+                "sequencia": prior["sequencia"],
+                "necessidade_residual": _material_cockpit_number(residual),
+                "quantidade_reservada": _material_cockpit_number(amount),
+            })
+    return reserved, previous_demand, allocation
+
+
 def work_order_material_cockpit(conn, work_id):
     """Return a read-only material cockpit for one O.S.
 
     The composition remains the source selected in Suprimentos.  Availability
     follows the Stock rule (physical balance minus active EMPENHO/SAIDA,
-    already reduced by active BAIXA records). Purchase-order lines linked to
-    the O.S. provide the optional incoming forecast; this endpoint never
-    reserves, changes, or automatically replaces a component.
+    already reduced by active BAIXA records). Earlier WIP orders virtually
+    reserve free stock for their remaining demand, without creating movements.
+    Purchase-order lines provide the optional incoming forecast; this endpoint
+    never commits stock, changes, or automatically replaces a component.
     """
     work = _one(conn.execute(text("""
         select id,numero_os,vehicle_entry_id
@@ -166,16 +282,7 @@ def work_order_material_cockpit(conn, work_id):
             "items": [],
         }
 
-    raw_composition = document.get("composicao") or []
-    if isinstance(raw_composition, str):
-        try:
-            raw_composition = json.loads(raw_composition)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("A composição da O.S. está inválida.") from exc
-    if not isinstance(raw_composition, list):
-        raise ValueError("A composição da O.S. está inválida.")
-
-    composition = [dict(row) for row in raw_composition if isinstance(row, dict)]
+    composition = _material_cockpit_composition(document)
     # The Suprimentos snapshot can contain both a BOM parent and its already
     # exploded descendants. Normalize it the same way as technical close:
     # BOM parents are phantom rows and only their leaf materials are demand.
@@ -256,6 +363,8 @@ def work_order_material_cockpit(conn, work_id):
 
     pending_by_sku = defaultdict(lambda: Decimal("0"))
     empenhado_na_os_by_sku = defaultdict(lambda: Decimal("0"))
+    coverage_by_work = defaultdict(lambda: defaultdict(lambda: Decimal("0")))
+    direct_baixa_by_work = defaultdict(lambda: defaultdict(lambda: Decimal("0")))
     if coverage_ids:
         bind_names = [f"sku_id_{index}" for index in range(len(coverage_ids))]
         bind_values = dict(zip(bind_names, coverage_ids))
@@ -307,12 +416,44 @@ def work_order_material_cockpit(conn, work_id):
             for leaf, amount in remaining.items():
                 if leaf in sku_by_code:
                     pending_by_sku[sku_by_code[leaf]["id"]] += amount
+            if row.get("work_order_id"):
+                for leaf, amount in gross.items():
+                    coverage_by_work[erp_stock_closure.code(row["work_order_id"])][leaf] += amount
             if erp_stock_closure.same_uuid(row.get("work_order_id"), work["id"]):
                 # Keep the full allocation visible for this O.S. after its
                 # linked BAIXA: the materials remain attended by this kit.
                 for leaf, amount in gross.items():
                     if leaf in sku_by_code:
                         empenhado_na_os_by_sku[sku_by_code[leaf]["id"]] += amount
+
+        # A direct BAIXA, including appropriation of an unallocated commitment,
+        # also fulfils its O.S. Do not add linked consumption a second time when
+        # the same O.S.'s gross commitment already covers it.
+        baixas = {row["id"]: row for row in movements + linked_baixas if row["tipo"] == "BAIXA"}
+        for baixa in baixas.values():
+            work_ref = baixa.get("work_order_id")
+            parent = commitments_by_id.get(baixa.get("related_movement_id"))
+            if not work_ref or (parent and erp_stock_closure.same_uuid(parent.get("work_order_id"), work_ref)):
+                continue
+            sku_row = sku_by_id.get(baixa["sku_id"])
+            if not sku_row:
+                continue
+            consumed = erp_stock_closure._leaf_requirements(
+                erp_stock_closure.code(sku_row["sku"]), _material_cockpit_quantity(baixa["quantidade"]), children,
+            )
+            for leaf, amount in consumed.items():
+                coverage_by_work[erp_stock_closure.code(work_ref)][leaf] += amount
+                direct_baixa_by_work[erp_stock_closure.code(work_ref)][leaf] += amount
+
+    sequence_context, prior_orders = _material_cockpit_sequence_context(conn, work_id)
+    free_by_code = {
+        sku: _material_cockpit_quantity(sku_by_code[sku].get("saldo_atual"))
+             - pending_by_sku.get(sku_by_code[sku]["id"], Decimal("0"))
+        for sku in requested_codes if sku in sku_by_code
+    }
+    reserved_before, previous_demand, reservations = _material_cockpit_sequence_reservations(
+        prior_orders, children, requested_codes, coverage_by_work, free_by_code, sequence_context,
+    )
 
     incoming_by_code = defaultdict(list)
     incoming_rows = conn.execute(text("""
@@ -390,9 +531,11 @@ def work_order_material_cockpit(conn, work_id):
             if sku_row else Decimal("0")
         )
         available = physical - committed
-        # Global available balance is the amount free for a new empenho. The
-        # O.S.'s own linked commitment also covers this card's demand.
-        shortage = max(required - (available + empenhado_na_os), Decimal("0"))
+        reserved = reserved_before.get(sku, Decimal("0"))
+        sequence_available = max(available, Decimal("0")) - reserved
+        direct_consumed = direct_baixa_by_work.get(erp_stock_closure.code(work["id"]), {}).get(sku, Decimal("0"))
+        own_coverage = empenhado_na_os + direct_consumed
+        shortage = max(required - own_coverage - sequence_available, Decimal("0"))
         arrivals = sorted(
             incoming_by_code.get(sku, []),
             key=lambda item: (item.get("previsao") is None, item.get("previsao") or "9999-12-31"),
@@ -403,15 +546,21 @@ def work_order_material_cockpit(conn, work_id):
         if not sku_row:
             status, status_label = "NAO_CADASTRADO", "SKU não cadastrado"
             counters["sem_previsao"] += 1
-        elif required > 0 and empenhado_na_os >= required:
-            status, status_label = "ATENDIDO", "Atendido — empenhado na O.S."
+        elif required > 0 and own_coverage >= required:
+            status, status_label = "ATENDIDO", "Atendido — empenho/baixa na O.S."
             counters["atendidos"] += 1
+        elif sequence_context["aplicavel"] and not sequence_context["completa"]:
+            status, status_label = "RESERVA_INCOMPLETA", "Reserva incompleta — conferir composições anteriores"
+            counters["sem_previsao"] += 1
         elif empenhado_na_os > 0:
             status, status_label = "EMPENHO_PARCIAL", "Empenho parcial na O.S."
             counters["empenho_parcial"] += 1
-        elif available > 0:
-            status, status_label = "HA_SALDO", "Há saldo"
+        elif sequence_available > 0 and shortage <= 0:
+            status, status_label = "HA_SALDO", "Há saldo na sequência"
             counters["ha_saldo"] += 1
+        elif sequence_available > 0:
+            status, status_label = "SALDO_PARCIAL", "Saldo parcial na sequência"
+            counters["sem_previsao"] += 1
         elif incoming > 0 and forecast:
             status = "PREVISAO_TOTAL" if incoming >= shortage else "PREVISAO_PARCIAL"
             status_label = "Cobertura programada" if incoming >= shortage else "Previsão parcial"
@@ -435,6 +584,12 @@ def work_order_material_cockpit(conn, work_id):
             "saldo_empenhado": _material_cockpit_number(committed),
             "empenhado_na_os": _material_cockpit_number(empenhado_na_os),
             "saldo_disponivel": _material_cockpit_number(available),
+            "reserva": _material_cockpit_number(reserved),
+            "demanda_anterior": _material_cockpit_number(previous_demand.get(sku, Decimal("0"))),
+            "reservas_anteriores": reservations.get(sku, []),
+            "saldo_disponivel_sequencia": _material_cockpit_number(sequence_available),
+            "baixado_direto_na_os": _material_cockpit_number(direct_consumed),
+            "atendido_na_os_total": _material_cockpit_number(own_coverage),
             "faltante": _material_cockpit_number(shortage),
             "em_chegada": _material_cockpit_number(incoming),
             "previsao_chegada": forecast,
@@ -459,6 +614,7 @@ def work_order_material_cockpit(conn, work_id):
         "documento_encontrado": True,
         "documento_numero": document.get("numero"),
         "documento_status": document.get("status"),
+        "reserva_sequencia": sequence_context,
         "summary": {
             "total": len(items),
             "atendidos": counters["atendidos"],
