@@ -32,6 +32,8 @@ MES_SCHEDULE_MANAGE = "mes.schedule.manage"
 MES_FINALIZE = "mes.finalize"
 MES_LEGACY_IMPORT = "mes.legacy.import"
 MES_USERS_MANAGE = "mes.users.manage"
+MES_QUALITY_READ = "mes.quality.read"
+MES_QUALITY_WRITE = "mes.quality.write"
 
 ALL_MES_PERMISSIONS = frozenset({
     MES_DASHBOARD_READ,
@@ -45,6 +47,8 @@ ALL_MES_PERMISSIONS = frozenset({
     MES_FINALIZE,
     MES_LEGACY_IMPORT,
     MES_USERS_MANAGE,
+    MES_QUALITY_READ,
+    MES_QUALITY_WRITE,
 })
 
 VIEW_ONLY_PERMISSIONS = frozenset({
@@ -64,6 +68,7 @@ OPERATIONAL_MANAGEMENT_PERMISSIONS = frozenset({
 })
 
 ROLE_DEFAULT_PERMISSIONS = {
+    "QUALIDADE": frozenset({MES_DASHBOARD_READ, MES_QUALITY_READ, MES_QUALITY_WRITE}),
     "ADMIN": ALL_MES_PERMISSIONS,
     "ADM": ALL_MES_PERMISSIONS,
     # O operador acompanha o MES e registra somente a execução das etapas.

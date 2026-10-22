@@ -3602,6 +3602,9 @@ async def erp_internal_schedule(work_id: str, request: Request, data: dict = Bod
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
+import quality_routes
+quality_routes.register(app, database.engine, database.SessionLocal, require_login, templates, erp_service.STAGES)
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8010))
     host = os.environ.get("HOST", "0.0.0.0")

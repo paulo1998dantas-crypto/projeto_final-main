@@ -88,6 +88,7 @@
                 <button id="botao-tela-cheia" type="button" onclick="alternarTelaCheia()" class="rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1.5 font-bold hover:bg-slate-700">⛶ Tela cheia</button>
                 {% if current_user.can("mes.dashboard.read") %}
                 <a href="/gestao-os" class="rounded-md bg-cyan-700 px-2.5 py-1.5 font-bold hover:bg-cyan-600">O.S. / Histórico</a>
+                {% if current_user.can("mes.quality.read") %}<a href="/ftt" class="rounded-md bg-cyan-700 px-2.5 py-1.5 font-bold hover:bg-cyan-600">FTT</a>{% endif %}
                 {% endif %}
                 {% if current_user.can("mes.work_orders.manage") %}
                 <a href="/sequenciamento" class="rounded-md bg-blue-700 px-2.5 py-1.5 font-bold hover:bg-blue-600">Sequenciamento WIP</a>
@@ -116,6 +117,7 @@
                 {% endif %}
                 {% if current_user.can("mes.dashboard.read") %}
                 <a href="/gestao-os" class="bg-cyan-700 px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold hover:bg-cyan-600 transition">O.S. / Histórico</a>
+                {% if current_user.can("mes.quality.read") %}<a href="/ftt" class="bg-cyan-700 px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold hover:bg-cyan-600">FTT</a>{% endif %}
                 {% endif %}
                 {% if current_user.can("mes.work_orders.manage") %}
                 <a href="/sequenciamento" class="bg-blue-700 px-3 md:px-4 py-2 rounded text-xs md:text-sm font-bold hover:bg-blue-600 transition">Sequenciamento WIP</a>
