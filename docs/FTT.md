@@ -11,9 +11,8 @@ apontamento produtivo nem administração de O.S. ADMIN também tem acesso.
   preserva os defeitos da mesma entrada. Chassis repetidos em entradas diferentes
   (por exemplo pós-vendas) são unidades distintas.
 - Produzida: etapa aplicável atualmente CONCLUÍDA, com término vigente no período.
-- Com defeito: unidade com pelo menos uma ocorrência DEFEITO desde o início.
-- Refugada: unidade com pelo menos uma ocorrência REFUGO. Tem precedência sobre defeito.
-- Aprovada de primeira: produzida sem defeito nem refugo registrado.
+- Com defeito: unidade com pelo menos uma ocorrência desde o início.
+- Aprovada de primeira: produzida sem defeito registrado.
 - FTT = aprovadas / produzidas × 100; sem denominador retorna Sem base.
 - O total entre áreas é a média ponderada de passagens; não é contagem de carros
   únicos da fábrica. Percentuais não são somados nem usam média simples.
@@ -27,20 +26,26 @@ apontamento produtivo nem administração de O.S. ADMIN também tem acesso.
 - Referências visuais iniciais: >=95 Classe Mundial; >=90 Atenção; <90 Crítico.
   São convenções locais, não uma certificação.
 - Relatórios atualizam após salvar, ao voltar à aba e a cada 60 segundos visíveis.
-- Excel exporta Pareto, FTT por área e rastreabilidade para o período selecionado.
+- Liberação mantém seu papel de encerrar a O.S., mas não é uma área calculada no
+  FTT. O filtro semanal preenche automaticamente o intervalo de datas.
+- Excel exporta Pareto, FTT por área e os apontamentos do período selecionado.
 
 ## Persistência e segurança
 Dados aditivos nas tabelas erp_quality_defects, erp_quality_reports e
 erp_quality_issues. Não altera O.S., etapas, apontamentos produtivos ou estoque.
-Data, usuário, O.S., área, classificação e descrição do defeito são persistidos.
+Data, usuário, O.S., área e descrição do defeito são persistidos. A tela não
+expõe classificação, refugo ou rastreabilidade; eventuais registros legados são
+tratados como defeito, sem duplicar a mesma unidade/área.
 UUID idempotente evita duplicação no reenvio da mesma operação; reutilização
 com dados diferentes é rejeitada. Catálogo normaliza acentos/caixa para impedir
 descrições equivalentes duplicadas. Escritas exigem permissão e requisição da
 mesma origem; tabelas possuem RLS e acesso exclusivo do backend.
 
 ## Publicação
-1. Aplicar migrations/20261022_mes_quality_ftt.sql ao banco compartilhado.
-   A migração cria somente estruturas FTT, catálogo e permissões aditivas.
+1. Aplicar migrations/20261022_mes_quality_ftt.sql e
+   migrations/20261023_mes_quality_ftt_simplify.sql ao banco compartilhado.
+   A segunda remove somente os dez textos de catálogo fornecidos pelo sistema
+   que ainda não tenham ocorrência vinculada.
 2. Publicar o MES com quality_ftt.py, quality_routes.py, tela e script.
 3. Publicar a alteração de estoque_app/auth.py no Estoque para exibir QUALIDADE
    no cadastro de acessos. Não atribui o novo perfil automaticamente a ninguém.

@@ -58,13 +58,20 @@ class FTTTests(unittest.TestCase):
     def test_idempotent_retry_and_different_payload_rejected(self):
         p=self.payload();self.save(p);self.assertTrue(self.save(p)["replayed"])
         p["issues"][0]["disposition"]="REFUGO"
+        self.assertTrue(self.save(p)["replayed"])
+        p["issues"][0]["stage_code"]="ELÉTRICA"
         with self.assertRaises(ValueError):self.save(p)
         self.assertEqual(1,self.report()["total_failures"])
-    def test_scrap_and_defect_same_vehicle_are_disjoint(self):
+    def test_multiple_defect_reports_reject_the_same_unit_once(self):
         self.save(self.payload())
         p=self.payload();p["issues"][0]["disposition"]="REFUGO";self.save(p)
         area=self.report()["areas"][0]
-        self.assertEqual((0,1,0),(area["defective"],area["scrapped"],area["first_pass"]))
+        self.assertEqual((1,0),(area["defective"],area["first_pass"]))
+
+    def test_new_report_forces_defect_even_when_a_legacy_value_is_sent(self):
+        p=self.payload();p["issues"][0]["disposition"]="REFUGO";self.save(p)
+        with self.engine.connect() as c:
+            self.assertEqual("DEFEITO",c.execute(select(q.issues.c.disposition)).scalar_one())
     def test_pending_area_occurrences_only_enter_ftt_after_completion(self):
         p=self.payload();p["issues"][0]["stage_code"]="ELÉTRICA";self.save(p)
         self.assertEqual(1,self.report()["pending"])
@@ -139,6 +146,15 @@ class FTTTests(unittest.TestCase):
         self.assertTrue(self.user.can("mes.quality.write"))
         self.assertFalse(self.user.can("mes.stage.write"))
         self.assertFalse(self.user.can("mes.work_orders.manage"))
+
+    def test_release_is_never_offered_as_an_ftt_area(self):
+        app=FastAPI()
+        class DB:
+            def close(self):pass
+        quality_routes.register(app,self.engine,DB,lambda request,db:self.user,
+            Jinja2Templates(directory="templates"),[("BCO",1,[]),("LIBERAÇÃO",2,[])])
+        options=TestClient(app).get("/api/ftt/options").json()
+        self.assertEqual(["BCO"],options["stages"])
 
 if __name__=="__main__":unittest.main()
 

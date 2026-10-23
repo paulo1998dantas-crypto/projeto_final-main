@@ -13,7 +13,8 @@ import authz
 log = logging.getLogger(__name__)
 
 def register(app, engine, get_db, require_login, templates, stages):
-    codes = [code for code, _, _ in stages]
+    # Liberação encerra a ordem, mas não mede qualidade de execução.
+    codes = [code for code, _, _ in stages if code not in ftt.FTT_EXCLUDED_STAGES]
     def principal(request, db, write=False):
         user = require_login(request, db)
         if not user:
@@ -89,11 +90,11 @@ def register(app, engine, get_db, require_login, templates, stages):
                 ("Pareto",["Rank","Descrição do defeito","Área","Ocorrências","% acumulado"],
                  [[r[k] for k in ("rank","description","area","frequency","accumulated")] for r in data["pareto"]]
                  + [["","TOTAL DE FALHAS","",data["total_failures"],None]]),
-                ("FTT por área",["Área","Produzidas","Com defeito","Refugadas","Aprovadas de primeira","FTT (%)","Situação"],
-                 [[ftt.AREA_NAMES.get(r["area"],r["area"])]+[r[k] for k in ("produced","defective","scrapped","first_pass","ftt","status")] for r in data["areas"]]
-                 + [["TOTAL / PASSAGENS"]+[data["totals"][k] for k in ("produced","defective","scrapped","first_pass","ftt")]+["Média ponderada"]]),
-                ("Apontamentos",["O.S.","Chassi","Data de detecção","Defeito","Área","Classificação","Responsável","Registrado em"],
-                 [[str(r.get(k) or "") if k!="stage_code" else ftt.AREA_NAMES.get(r[k],r[k]) for k in ("numero_os","chassi","observed_on","description","stage_code","disposition","actor","created_at")] for r in data["records"]])
+                ("FTT por área",["Área","Produzidas","Com defeito","Aprovadas de primeira","FTT (%)","Situação"],
+                 [[ftt.AREA_NAMES.get(r["area"],r["area"])]+[r[k] for k in ("produced","defective","first_pass","ftt","status")] for r in data["areas"]]
+                 + [["TOTAL / PASSAGENS"]+[data["totals"][k] for k in ("produced","defective","first_pass","ftt")]+["Média ponderada"]]),
+                ("Apontamentos",["O.S.","Chassi","Data de detecção","Defeito","Área","Responsável","Registrado em"],
+                 [[str(r.get(k) or "") if k!="stage_code" else ftt.AREA_NAMES.get(r[k],r[k]) for k in ("numero_os","chassi","observed_on","description","stage_code","actor","created_at")] for r in data["records"]])
             ]):
                 sheet=book.active if index==0 else book.create_sheet()
                 sheet.title=name

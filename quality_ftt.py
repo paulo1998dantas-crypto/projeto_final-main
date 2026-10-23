@@ -12,6 +12,8 @@ AREA_NAMES = {"PREP":"Preparação", "EXPE":"Expedição", "SERRA":"Serralheria"
               "A/C":"Ar-condicionado", "DESMONT":"Desmontagem", "REVEST":"Revestimento",
               "ELÉTRICA":"Elétrica", "BCO":"Bancos", "ACESSÓRIO":"Acessório",
               "PLOTAGEM":"Plotagem", "LIBERAÇÃO":"Liberação"}
+# LIBERAÇÃO encerra a O.S.; não é uma área auditável do FTT.
+FTT_EXCLUDED_STAGES = frozenset({"LIBERAÇÃO"})
 metadata = MetaData()
 defects = Table("erp_quality_defects", metadata,
     Column("id", String(36), primary_key=True), Column("description", String(200), nullable=False),
@@ -25,13 +27,6 @@ issues = Table("erp_quality_issues", metadata,
     Column("id", String(36), primary_key=True), Column("report_id", String(36), nullable=False),
     Column("defect_id", String(36), nullable=False), Column("description", String(200), nullable=False),
     Column("stage_code", String(40), nullable=False), Column("disposition", String(12), nullable=False))
-DEFAULT_DEFECTS = [
-    "Água no assoalho traseiro", "Conector do painel solto / mau contato",
-    "Guarnição das portas com entrada de água", "Bolhas de ar na colagem do para-brisa",
-    "Ruído interno no chicote elétrico da porta", "Tecido do banco enrugado ou desalinhado",
-    "Falta de estanqueidade / Vazamento de gás", "Vazamento de água no vidro lateral",
-    "Trilho do banco dianteiro travando", "Display do ar condicionado sem iluminação",
-]
 def normalize(value):
     return "".join(c for c in unicodedata.normalize("NFKD", str(value).strip().upper())
                    if not unicodedata.combining(c))
@@ -109,7 +104,7 @@ def create_report(conn, data, user, stage_codes):
     old = conn.execute(select(reports).where(reports.c.id == identifier)).mappings().first()
     if old:
         existing = list(conn.execute(select(issues).where(issues.c.report_id == identifier)).mappings())
-        requested = sorted((str(x.get("defect_id")), str(x.get("stage_code")), str(x.get("disposition", "DEFEITO")))
+        requested = sorted((str(x.get("defect_id")), str(x.get("stage_code")), "DEFEITO")
                            for x in data.get("issues", []))
         saved = sorted((x["defect_id"], x["stage_code"], x["disposition"]) for x in existing)
         if old["actor_id"] != user.id or old["work_order_id"] != work_id or old["observed_on"] != observed or requested != saved:
@@ -130,9 +125,11 @@ def create_report(conn, data, user, stage_codes):
         if not isinstance(entry, dict):
             raise ValueError("Cada problema deve conter defeito, área e classificação.")
         code, defect_id = str(entry.get("stage_code", "")), str(entry.get("defect_id", ""))
-        disposition = str(entry.get("disposition", "DEFEITO"))
-        if code not in stage_codes or defect_id not in valid or disposition not in {"DEFEITO", "REFUGO"}:
-            raise ValueError("Selecione defeito, área e classificação válidos.")
+        # A classificação única da regra atual é defeito. O valor legado do
+        # cliente é ignorado para manter repetição idempotente.
+        disposition = "DEFEITO"
+        if code not in stage_codes or defect_id not in valid:
+            raise ValueError("Selecione defeito e área válidos.")
         if (code, defect_id) in seen:
             raise ValueError("O mesmo defeito/área está repetido neste apontamento.")
         applicable = conn.execute(text("select aplicavel from erp_work_order_stages where work_order_id=:work and stage_code=:code"),
@@ -152,7 +149,7 @@ def calculate(completions, occurrences, stage_codes, first, last):
     for row in completions:
         if row["stage_code"] in stage_codes and row.get("termino") and first <= day(row["termino"]) <= last:
             completed[row["stage_code"]].add(str(row.get("unit_id") or row["work_order_id"]))
-    failed, scrapped = defaultdict(set), defaultdict(set)
+    failed = defaultdict(set)
     counts = Counter()
     defect_areas = defaultdict(set)
     records = []
@@ -162,7 +159,9 @@ def calculate(completions, occurrences, stage_codes, first, last):
         if code not in stage_codes:
             continue
         if day(row["observed_on"]) >= START and work in completed[code]:
-            (scrapped if row["disposition"] == "REFUGO" else failed)[code].add(work)
+            # Registros legados REFUGO também representam uma falha na regra
+            # atual, sem criar uma segunda reprovação da mesma passagem.
+            failed[code].add(work)
         if first <= day(row["observed_on"]) <= last:
             counts[row["description"]] += 1
             defect_areas[row["description"]].add(code)
@@ -172,11 +171,10 @@ def calculate(completions, occurrences, stage_codes, first, last):
     areas = []
     for code in stage_codes:
         total = len(completed[code])
-        scrap = len(scrapped[code])
-        bad = len(failed[code] - scrapped[code])
-        good = total - bad - scrap
+        bad = len(failed[code])
+        good = total - bad
         ftt = round(100 * good / total, 2) if total else None
-        areas.append(dict(area=code, produced=total, defective=bad, scrapped=scrap, first_pass=good,
+        areas.append(dict(area=code, produced=total, defective=bad, first_pass=good,
                           ftt=ftt, status="Sem base" if ftt is None else
                           "Classe Mundial" if ftt >= 95 else "Atenção" if ftt >= 90 else "Crítico"))
     total_failures = sum(counts.values())
@@ -185,7 +183,7 @@ def calculate(completions, occurrences, stage_codes, first, last):
         cumulative += count
         pareto.append(dict(rank=rank, description=description, area=" · ".join(AREA_NAMES.get(c,c) for c in sorted(defect_areas[description])), frequency=count,
                            accumulated=round(100*cumulative/total_failures, 2)))
-    totals = {key: sum(r[key] for r in areas) for key in ("produced","defective","scrapped","first_pass")}
+    totals = {key: sum(r[key] for r in areas) for key in ("produced","defective","first_pass")}
     totals["ftt"] = round(100*totals["first_pass"]/totals["produced"],2) if totals["produced"] else None
     return dict(areas=areas, totals=totals, pareto=pareto, total_failures=total_failures,
                 records=records, pending=pending, start=first.isoformat(), end=last.isoformat())
