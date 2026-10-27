@@ -210,7 +210,8 @@ def _material_cockpit_sequence_context(conn, work_id):
 
 
 def _material_cockpit_sequence_reservations(prior_orders, children, requested_codes,
-                                           coverage_by_work, free_by_code, context):
+                                           coverage_by_work, free_by_code, context,
+                                           canonical_code=None):
     """Allocate only remaining demand, limited by stock actually free now."""
     remaining = {sku: max(amount, Decimal("0")) for sku, amount in free_by_code.items()}
     reserved = defaultdict(lambda: Decimal("0"))
@@ -224,9 +225,13 @@ def _material_cockpit_sequence_reservations(prior_orders, children, requested_co
             composition = _material_cockpit_composition(document)
             if not composition:
                 raise ValueError("Composição vazia")
-            demand = erp_stock_closure._normalize_required_composition(composition, children)
-            if not demand:
+            raw_demand = erp_stock_closure._normalize_required_composition(composition, children)
+            if not raw_demand:
                 raise ValueError("Composição sem quantidades válidas")
+            canonical_code = canonical_code or (lambda value: value)
+            demand = defaultdict(lambda: Decimal("0"))
+            for code, amount in raw_demand.items():
+                demand[canonical_code(code)] += amount
         except ValueError:
             context["completa"] = False
             context["ordens_sem_composicao"].append({
@@ -251,7 +256,83 @@ def _material_cockpit_sequence_reservations(prior_orders, children, requested_co
     return reserved, previous_demand, allocation
 
 
-def work_order_material_cockpit(conn, work_id):
+def _material_cockpit_bank_equivalences(conn):
+    """Return exact, unambiguous bank SKU substitutions for report-only costing."""
+    columns = {column["name"] for column in inspect(conn).get_columns("skus")}
+    optional = [name for name in ("grupo", "categoria") if name in columns]
+    select_optional = ",".join(f"s.{name}" for name in optional)
+    if select_optional:
+        select_optional = "," + select_optional
+    rows = [dict(row) for row in conn.execute(text(f"""
+        select s.sku,s.descricao,s.unidade,s.active{select_optional}
+          from skus s
+    """)).mappings()]
+
+    def normalize(value):
+        return " ".join(str(value or "").strip().upper().split())
+
+    by_description = defaultdict(list)
+    by_code = {}
+    for row in rows:
+        code = erp_stock_closure.code(row.get("sku"))
+        if not code:
+            continue
+        row["sku"] = code
+        row["descricao"] = str(row.get("descricao") or "").strip()
+        by_code[code] = row
+        by_description[normalize(row["descricao"])].append(row)
+
+    equivalences = {}
+    outcomes = {}
+    for code, row in by_code.items():
+        description = row["descricao"]
+        upper = normalize(description)
+        group = normalize(row.get("grupo"))
+        category = normalize(row.get("categoria"))
+        is_bank = "BANCO" in group or "BANCO" in category or upper.startswith(("BCO ", "BANCO "))
+        if not is_bank:
+            continue
+        target = upper
+        rules = []
+        if re.search(r"\bPME\b", target):
+            target = re.sub(r"\bPME\b", "NORMAL", target)
+            target = re.sub(r"\b\d+(?:[.,]\d+)?\s*MM\b", "370 MM", target)
+            rules.append("PME → NORMAL / pé 370 mm")
+        if re.search(r"\bBJD\b|\bB\s*/\s*J\s*/\s*D\b", target):
+            target = re.sub(r"\bBJD\b|\bB\s*/\s*J\s*/\s*D\b", "NORMAL", target)
+            rules.append("BJD → NORMAL, pé equivalente")
+        if re.search(r"\bC\s*/\s*TRILHO\b", target):
+            if re.search(r"\b[12]\s*L\b", target):
+                target = re.sub(r"\bC\s*/\s*TRILHO\b", "S/ TRILHO", target)
+                rules.append("1L/2L C/TRILHO → S/TRILHO")
+            else:
+                target = re.sub(r"\bC\s*/\s*TRILHO\b", "NORMAL", target)
+                rules.append("Demais bancos C/TRILHO → NORMAL")
+        if not rules:
+            continue
+        candidates = by_description.get(normalize(target), [])
+        active = [candidate for candidate in candidates if candidate.get("active") in (True, 1, "1", "ATIVO")]
+        candidates = active if active else candidates
+        if len(candidates) == 1:
+            target_code = erp_stock_closure.code(candidates[0].get("sku"))
+            equivalences[code] = target_code
+            outcomes[code] = {
+                "sku_origem": code, "descricao_origem": description,
+                "sku_consolidado": target_code,
+                "descricao_consolidada": candidates[0].get("descricao") or "",
+                "regra": "; ".join(rules), "resultado": "Equivalente cadastrado",
+            }
+        else:
+            outcomes[code] = {
+                "sku_origem": code, "descricao_origem": description,
+                "sku_consolidado": code, "descricao_consolidada": description,
+                "regra": "; ".join(rules),
+                "resultado": "Sem equivalente inequívoco" if not candidates else "Equivalente ambíguo",
+            }
+    return equivalences, outcomes
+
+
+def work_order_material_cockpit(conn, work_id, sku_equivalences=None):
     """Return a read-only material cockpit for one O.S.
 
     The composition remains the source selected in Suprimentos.  Availability
@@ -282,6 +363,14 @@ def work_order_material_cockpit(conn, work_id):
             "items": [],
         }
 
+    sku_equivalences = {
+        erp_stock_closure.code(source): erp_stock_closure.code(target)
+        for source, target in (sku_equivalences or {}).items()
+        if erp_stock_closure.code(source) and erp_stock_closure.code(target)
+    }
+    canonical_code = lambda value: sku_equivalences.get(
+        erp_stock_closure.code(value), erp_stock_closure.code(value)
+    )
     composition = _material_cockpit_composition(document)
     # The Suprimentos snapshot can contain both a BOM parent and its already
     # exploded descendants. Normalize it the same way as technical close:
@@ -294,8 +383,13 @@ def work_order_material_cockpit(conn, work_id):
         if sku:
             normalized_composition.append({**row, "codigo": sku})
 
-    sku_rows = [dict(row) for row in conn.execute(text("""
-        select s.id,s.sku,s.descricao,s.unidade,s.active,
+    sku_columns = {column["name"] for column in inspect(conn).get_columns("skus")}
+    optional_sku_columns = [name for name in ("grupo", "categoria") if name in sku_columns]
+    optional_sku_select = ",".join(f"s.{name}" for name in optional_sku_columns)
+    if optional_sku_select:
+        optional_sku_select = "," + optional_sku_select
+    sku_rows = [dict(row) for row in conn.execute(text(f"""
+        select s.id,s.sku,s.descricao,s.unidade,s.active{optional_sku_select},
                coalesce(b.saldo_atual,0) as saldo_atual
           from skus s
           left join stock_balances b on b.sku_id=s.id
@@ -320,13 +414,25 @@ def work_order_material_cockpit(conn, work_id):
         if parent and component and amount > 0:
             children[parent].append((component, amount))
 
-    required_by_code = erp_stock_closure._normalize_required_composition(
+    raw_required_by_code = erp_stock_closure._normalize_required_composition(
         normalized_composition, children,
     )
+    required_by_code = defaultdict(lambda: Decimal("0"))
+    source_codes_by_code = defaultdict(set)
+    for code, amount in raw_required_by_code.items():
+        canonical = canonical_code(code)
+        required_by_code[canonical] += amount
+        source_codes_by_code[canonical].add(code)
     requested_codes = list(required_by_code)
     # A commitment can be on a BOM parent instead of the leaf material shown
     # in the cockpit. Include every BOM ancestor that covers a requested leaf.
+    aliases_by_code = defaultdict(set)
+    for row in sku_rows:
+        source_code = erp_stock_closure.code(row.get("sku"))
+        aliases_by_code[canonical_code(source_code)].add(source_code)
     coverage_codes = set(requested_codes)
+    for code in requested_codes:
+        coverage_codes.update(aliases_by_code.get(code, {code}))
     while True:
         ancestors = {
             parent for parent, components in children.items()
@@ -346,7 +452,7 @@ def work_order_material_cockpit(conn, work_id):
             row.get("codigo") or row.get("sku_selecionado") or row.get("sku_planejado")
         )
         if sku and sku not in children:
-            metadata_by_code.setdefault(sku, row)
+            metadata_by_code.setdefault(canonical_code(sku), row)
         item = str(row.get("item") or "").strip()
         if item:
             item_code = erp_stock_closure.code(item)
@@ -356,13 +462,18 @@ def work_order_material_cockpit(conn, work_id):
             item_row = sku_by_code.get(item_code)
             item_label = item_row.get("descricao") if item_row and item_code in children else item
             if item_label:
+                row_leaves = erp_stock_closure._leaf_requirements(sku, 1, children)
+                row_leaves = {canonical_code(leaf) for leaf in row_leaves}
                 for leaf in requested_codes:
-                    if leaf == sku or leaf in erp_stock_closure._leaf_requirements(sku, 1, children):
+                    if leaf in row_leaves:
                         if item_label not in parent_display_by_code[leaf]:
                             parent_display_by_code[leaf].append(item_label)
 
-    pending_by_sku = defaultdict(lambda: Decimal("0"))
-    empenhado_na_os_by_sku = defaultdict(lambda: Decimal("0"))
+    pending_by_code = defaultdict(lambda: Decimal("0"))
+    physical_by_code = defaultdict(lambda: Decimal("0"))
+    empenhado_na_os_by_code = defaultdict(lambda: Decimal("0"))
+    for sku_code, sku_row in sku_by_code.items():
+        physical_by_code[canonical_code(sku_code)] += _material_cockpit_quantity(sku_row.get("saldo_atual"))
     coverage_by_work = defaultdict(lambda: defaultdict(lambda: Decimal("0")))
     direct_baixa_by_work = defaultdict(lambda: defaultdict(lambda: Decimal("0")))
     if coverage_ids:
@@ -400,9 +511,12 @@ def work_order_material_cockpit(conn, work_id):
             source_code = erp_stock_closure.code(source_sku.get("sku") if source_sku else "")
             if not source_code:
                 continue
-            gross = erp_stock_closure._leaf_requirements(
+            gross_source = erp_stock_closure._leaf_requirements(
                 source_code, _material_cockpit_quantity(row["quantidade"]), children,
             )
+            gross = defaultdict(lambda: Decimal("0"))
+            for leaf, amount in gross_source.items():
+                gross[canonical_code(leaf)] += amount
             remaining = dict(gross)
             for baixa in baixas_by_parent.get(row["id"], []):
                 baixa_sku = sku_by_id.get(baixa["sku_id"])
@@ -411,11 +525,11 @@ def work_order_material_cockpit(conn, work_id):
                     baixa_code, _material_cockpit_quantity(baixa["quantidade"]), children,
                 ) if baixa_code else {}
                 for leaf, amount in consumed.items():
-                    if leaf in remaining:
-                        remaining[leaf] = max(Decimal("0"), remaining[leaf] - amount)
+                    canonical_leaf = canonical_code(leaf)
+                    if canonical_leaf in remaining:
+                        remaining[canonical_leaf] = max(Decimal("0"), remaining[canonical_leaf] - amount)
             for leaf, amount in remaining.items():
-                if leaf in sku_by_code:
-                    pending_by_sku[sku_by_code[leaf]["id"]] += amount
+                pending_by_code[leaf] += amount
             if row.get("work_order_id"):
                 for leaf, amount in gross.items():
                     coverage_by_work[erp_stock_closure.code(row["work_order_id"])][leaf] += amount
@@ -423,8 +537,8 @@ def work_order_material_cockpit(conn, work_id):
                 # Keep the full allocation visible for this O.S. after its
                 # linked BAIXA: the materials remain attended by this kit.
                 for leaf, amount in gross.items():
-                    if leaf in sku_by_code:
-                        empenhado_na_os_by_sku[sku_by_code[leaf]["id"]] += amount
+                    if leaf in requested_codes:
+                        empenhado_na_os_by_code[leaf] += amount
 
         # A direct BAIXA, including appropriation of an unallocated commitment,
         # also fulfils its O.S. Do not add linked consumption a second time when
@@ -442,17 +556,18 @@ def work_order_material_cockpit(conn, work_id):
                 erp_stock_closure.code(sku_row["sku"]), _material_cockpit_quantity(baixa["quantidade"]), children,
             )
             for leaf, amount in consumed.items():
-                coverage_by_work[erp_stock_closure.code(work_ref)][leaf] += amount
-                direct_baixa_by_work[erp_stock_closure.code(work_ref)][leaf] += amount
+                canonical_leaf = canonical_code(leaf)
+                coverage_by_work[erp_stock_closure.code(work_ref)][canonical_leaf] += amount
+                direct_baixa_by_work[erp_stock_closure.code(work_ref)][canonical_leaf] += amount
 
     sequence_context, prior_orders = _material_cockpit_sequence_context(conn, work_id)
     free_by_code = {
-        sku: _material_cockpit_quantity(sku_by_code[sku].get("saldo_atual"))
-             - pending_by_sku.get(sku_by_code[sku]["id"], Decimal("0"))
-        for sku in requested_codes if sku in sku_by_code
+        sku: max(physical_by_code.get(sku, Decimal("0")) - pending_by_code.get(sku, Decimal("0")), Decimal("0"))
+        for sku in requested_codes
     }
     reserved_before, previous_demand, reservations = _material_cockpit_sequence_reservations(
         prior_orders, children, requested_codes, coverage_by_work, free_by_code, sequence_context,
+        canonical_code=canonical_code,
     )
 
     incoming_by_code = defaultdict(list)
@@ -489,6 +604,7 @@ def work_order_material_cockpit(conn, work_id):
         for component_code, component_quantity in erp_stock_closure._leaf_requirements(
             sku, pending, children,
         ).items():
+            component_code = canonical_code(component_code)
             if component_code not in required_by_code or component_quantity <= 0:
                 continue
             linked_to_work_order = (
@@ -524,12 +640,9 @@ def work_order_material_cockpit(conn, work_id):
         row = metadata_by_code.get(sku, {})
         required = max(_material_cockpit_quantity(required), Decimal("0"))
         sku_row = sku_by_code.get(sku)
-        physical = _material_cockpit_quantity(sku_row.get("saldo_atual") if sku_row else 0)
-        committed = pending_by_sku.get(sku_row["id"], Decimal("0")) if sku_row else Decimal("0")
-        empenhado_na_os = (
-            empenhado_na_os_by_sku.get(sku_row["id"], Decimal("0"))
-            if sku_row else Decimal("0")
-        )
+        physical = physical_by_code.get(sku, Decimal("0"))
+        committed = pending_by_code.get(sku, Decimal("0"))
+        empenhado_na_os = empenhado_na_os_by_code.get(sku, Decimal("0"))
         available = physical - committed
         reserved = reserved_before.get(sku, Decimal("0"))
         sequence_available = max(available, Decimal("0")) - reserved
@@ -597,8 +710,9 @@ def work_order_material_cockpit(conn, work_id):
             "status": status,
             "status_label": status_label,
             "ativo": bool(sku_row.get("active")) if sku_row else False,
-            "sku_planejado": erp_stock_closure.code(row.get("sku_planejado")),
-            "sku_selecionado": erp_stock_closure.code(row.get("sku_selecionado") or sku),
+            "sku_planejado": canonical_code(row.get("sku_planejado")),
+            "sku_selecionado": canonical_code(row.get("sku_selecionado") or sku),
+            "sku_origens": sorted(source_codes_by_code.get(sku, {sku})),
             "destino": row.get("setor") or "",
         })
     # The same SKU can appear in more than one exploded composition line;
@@ -626,6 +740,120 @@ def work_order_material_cockpit(conn, work_id):
             "em_transito_total": _material_cockpit_number(em_transito_total),
         },
         "items": items,
+    }
+
+
+def material_shortage_report(conn):
+    """Build a live, read-only shortage view from the official O.S. cockpit.
+
+    Each card is evaluated by ``work_order_material_cockpit`` so the report
+    inherits recursive BOM demand, active commitments/baixas, incoming PO
+    forecasts and the persisted WIP reservation order. Bank equivalents are
+    passed into that calculation, not applied as a display-only SKU rename.
+    """
+    schema = inspect(conn)
+    has_sequence = schema.has_table("erp_work_order_sequences")
+    sequence_columns = {column["name"] for column in schema.get_columns("erp_work_order_sequences")} if has_sequence else set()
+    sequence_select = ",".join(
+        f"seq.{name}" if name in sequence_columns else f"null as {name}"
+        for name in ("sequencia", "semana_planejada")
+    )
+    sequence_join = (
+        "left join erp_work_order_sequences seq on seq.work_order_id=w.id and seq.ativo=true"
+        if has_sequence else ""
+    )
+    orders = [dict(row) for row in conn.execute(text(f"""
+        select w.id as work_order_id,w.numero_os,w.status,w.proposta_numero,
+               w.transformacao,w.data_comercial_prevista,e.item_number,
+               e.cliente_nome,v.chassi,v.marca,v.modelo,v.versao,
+               {sequence_select}
+          from erp_work_orders w
+          join erp_vehicle_entries e on e.id=w.vehicle_entry_id
+          join erp_vehicles v on v.id=e.vehicle_id
+          {sequence_join}
+         where w.status in ('ATIVA','EM_PRODUÇÃO') and w.is_current=true
+           and coalesce(w.technical_status,'ABERTA') <> 'CONCLUIDA'
+         order by sequencia nulls last,w.data_comercial_prevista nulls last,
+                  e.item_number,w.id
+    """)).mappings()]
+    equivalences, bank_outcomes = _material_cockpit_bank_equivalences(conn)
+
+    rows = []
+    chassis = []
+    incomplete = {}
+    observed_bank_codes = set()
+    for order in orders:
+        cockpit = work_order_material_cockpit(
+            conn, order["work_order_id"], sku_equivalences=equivalences,
+        )
+        sequence = cockpit.get("reserva_sequencia") or {}
+        for missing_order in sequence.get("ordens_sem_composicao") or []:
+            key = str(missing_order.get("work_order_id") or missing_order.get("numero_os") or "")
+            incomplete[key] = missing_order
+        if not cockpit.get("documento_encontrado"):
+            key = str(order["work_order_id"])
+            incomplete[key] = {"work_order_id": key, "numero_os": order.get("numero_os")}
+
+        order_rows = []
+        for item in cockpit.get("items") or []:
+            origins = item.get("sku_origens") or [item.get("codigo")]
+            observed_bank_codes.update(code for code in origins if code in bank_outcomes)
+            result = {
+                **item,
+                "work_order_id": str(order["work_order_id"]),
+                "numero_os": order.get("numero_os"),
+                "item_number": order.get("item_number"),
+                "chassi": order.get("chassi"),
+                "cliente_nome": order.get("cliente_nome"),
+                "proposta_numero": order.get("proposta_numero"),
+                "status_os": order.get("status"),
+                "data_entrega": _material_cockpit_date(order.get("data_comercial_prevista")),
+                "sequencia": order.get("sequencia"),
+                "veiculo": " ".join(str(order.get(field) or "").strip() for field in ("marca", "modelo", "versao") if order.get(field)),
+                "transformacao": order.get("transformacao") or "",
+                "reserva_completa": bool(sequence.get("completa", True)),
+                "documento_encontrado": bool(cockpit.get("documento_encontrado")),
+            }
+            order_rows.append(result)
+            if _material_cockpit_quantity(item.get("faltante")) > 0:
+                rows.append(result)
+        chassis.append({
+            "chassi": order.get("chassi") or "",
+            "work_order_id": str(order["work_order_id"]),
+            "numero_os": order.get("numero_os"),
+            "item_number": order.get("item_number"),
+            "cliente_nome": order.get("cliente_nome"),
+            "proposta_numero": order.get("proposta_numero"),
+            "status": order.get("status"),
+            "data_entrega": _material_cockpit_date(order.get("data_comercial_prevista")),
+            "sequencia": order.get("sequencia"),
+            "veiculo": " ".join(str(order.get(field) or "").strip() for field in ("marca", "modelo", "versao") if order.get(field)),
+            "transformacao": order.get("transformacao") or "",
+            "summary": cockpit.get("summary") or {},
+            "documento_encontrado": bool(cockpit.get("documento_encontrado")),
+            "reserva_sequencia": sequence,
+            "items": order_rows,
+        })
+
+    rows.sort(key=lambda row: (
+        row.get("sequencia") is None,
+        row.get("sequencia") or 0,
+        _material_cockpit_date(row.get("data_entrega")) or "9999-12-31",
+        int(row.get("item_number") or 0),
+        str(row.get("codigo") or ""),
+    ))
+    used_bank_outcomes = [bank_outcomes[code] for code in sorted(observed_bank_codes)]
+    return {
+        "gerado_em": datetime.now(ZoneInfo("America/Sao_Paulo")).isoformat(timespec="seconds"),
+        "wip_count": len(orders),
+        "chassi_count": len({str(order.get("chassi") or "").strip() for order in orders if order.get("chassi")}),
+        "shortage_lines": len(rows),
+        "shortage_skus": len({(row.get("codigo"), row.get("unidade")) for row in rows}),
+        "incomplete_count": len(incomplete),
+        "incomplete_orders": list(incomplete.values()),
+        "chassis": chassis,
+        "rows": rows,
+        "bank_equivalences": used_bank_outcomes,
     }
 
 

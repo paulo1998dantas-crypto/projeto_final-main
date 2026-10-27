@@ -98,6 +98,90 @@ class MaterialReservationTests(unittest.TestCase):
         self.assertEqual(5, row['reserva'])
         self.assertEqual(1, row['faltante'])
 
+    def test_bank_equivalence_recalculates_grouped_stock_and_prior_reservation(self):
+        source = '10200170'
+        target = '10200085'
+        source_description = 'BCO MC LB FIXO 4 L PME S/ AP BRACO 100 MM 3P TECIDO'
+        target_description = 'BCO MC LB FIXO 4 L NORMAL S/ AP BRACO 370 MM 3P TECIDO'
+        with self.engine.begin() as conn:
+            conn.execute(text('alter table skus add column grupo text'))
+            conn.execute(text('alter table skus add column categoria text'))
+            conn.execute(text("""
+                insert into skus(id,sku,descricao,unidade,active,grupo,categoria) values
+                  (10,:source,:source_description,'CJ',1,'BCO','20 - BANCOS'),
+                  (11,:target,:target_description,'CJ',1,'BCO','20 - BANCOS')
+            """), {'source': source, 'target': target,
+                   'source_description': source_description, 'target_description': target_description})
+            conn.execute(text('insert into stock_balances(sku_id,saldo_atual) values(10,2),(11,3)'))
+            conn.execute(text('update suprimentos_documentos set composicao=:value where id=1'),
+                         {'value': json.dumps([{'codigo': source, 'qtd': 1}])})
+        prior = self.add_order(5, composition=[{'codigo': source, 'qtd': 1}])
+        self.movement(None, 1, sku_id=11)
+
+        with self.engine.connect() as conn:
+            equivalences, outcomes = erp_service._material_cockpit_bank_equivalences(conn)
+            result = erp_service.work_order_material_cockpit(
+                conn, WORK, sku_equivalences=equivalences,
+            )
+
+        self.assertEqual(target, equivalences[source])
+        self.assertEqual('Equivalente cadastrado', outcomes[source]['resultado'])
+        row = next(item for item in result['items'] if item['codigo'] == target)
+        self.assertEqual(5, row['saldo_atual'])
+        self.assertEqual(1, row['saldo_empenhado'])
+        self.assertEqual(1, row['reserva'])
+        self.assertEqual(3, row['saldo_disponivel_sequencia'])
+        self.assertEqual(0, row['faltante'])
+
+    def test_bank_equivalence_rules_keep_the_requested_specificity(self):
+        descriptions = {
+            '10201001': 'BCO JL BJD 2 L S/ AP BRACO 100 MM NORMAL',
+            '10201002': 'BCO JL NORMAL 2 L S/ AP BRACO 100 MM NORMAL',
+            '10201003': 'BCO MC 1 L C/ TRILHO LD COURVIN',
+            '10201004': 'BCO MC 1 L S/ TRILHO LD COURVIN',
+            '10201005': 'BCO MC 3 L C/ TRILHO LD COURVIN',
+            '10201006': 'BCO MC 3 L NORMAL LD COURVIN',
+        }
+        with self.engine.begin() as conn:
+            conn.execute(text('alter table skus add column grupo text'))
+            conn.execute(text('alter table skus add column categoria text'))
+            conn.execute(text("""
+                insert into skus(id,sku,descricao,unidade,active,grupo,categoria)
+                values(:id,:sku,:descricao,'CJ',1,'BCO','20 - BANCOS')
+            """), [
+                {'id': 20+i, 'sku': sku, 'descricao': description}
+                for i, (sku, description) in enumerate(descriptions.items())
+            ])
+
+        with self.engine.connect() as conn:
+            equivalents, _ = erp_service._material_cockpit_bank_equivalences(conn)
+
+        self.assertEqual('10201002', equivalents['10201001'])
+        self.assertEqual('10201004', equivalents['10201003'])
+        self.assertEqual('10201006', equivalents['10201005'])
+
+    def test_native_shortage_report_returns_live_chassis_rows(self):
+        with self.engine.begin() as conn:
+            conn.execute(text('alter table erp_vehicle_entries add column vehicle_id text'))
+            conn.execute(text('alter table erp_vehicle_entries add column cliente_nome text'))
+            conn.execute(text('alter table erp_work_orders add column proposta_numero text'))
+            conn.execute(text('alter table erp_work_orders add column transformacao text'))
+            conn.execute(text('create table erp_vehicles(id text primary key,chassi text,marca text,modelo text,versao text)'))
+            conn.execute(text("update erp_vehicle_entries set vehicle_id='vehicle-1',cliente_nome='CLIENTE',item_number=45 where id='entry-1'"))
+            conn.execute(text("insert into erp_vehicles values('vehicle-1','9TESTCHASSI000001','MARCA','MODELO','VERSAO')"))
+            conn.execute(text("update erp_work_orders set proposta_numero='P-45',transformacao='TRANSFORMACAO',data_comercial_prevista='2026-11-05' where id=:id"), {'id': WORK})
+            conn.execute(text('update stock_balances set saldo_atual=0 where sku_id=1'))
+
+        with self.engine.connect() as conn:
+            result = erp_service.material_shortage_report(conn)
+
+        self.assertEqual(1, result['wip_count'])
+        self.assertEqual(1, result['chassi_count'])
+        self.assertEqual(1, result['shortage_lines'])
+        self.assertEqual('9TESTCHASSI000001', result['rows'][0]['chassi'])
+        self.assertEqual('4100', result['rows'][0]['numero_os'])
+        self.assertEqual('2026-11-05', result['rows'][0]['data_entrega'])
+
     def test_partial_own_commitment_only_reserves_residual(self):
         prior = self.add_order(1, amount=3)
         self.movement(prior, 1)

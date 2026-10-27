@@ -2868,6 +2868,42 @@ async def erp_sequencing_screen(request: Request, db: Session = Depends(database
         return permission_denied()
     return templates.TemplateResponse(request, "sequenciamento.html", {"request": request, "current_user": user})
 
+
+@app.get("/relatorio-faltas-materiais", response_class=HTMLResponse)
+async def erp_material_shortage_report_screen(request: Request, db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled():
+        return HTMLResponse("Integração ERP desativada pela feature flag.", status_code=404)
+    user = require_login(request, db)
+    if not user:
+        return RedirectResponse(url="/login", status_code=303)
+    if not has_permission(user, authz.MES_DASHBOARD_READ):
+        return permission_denied()
+    if is_production_only(user):
+        return RedirectResponse(url="/producao", status_code=303)
+    return templates.TemplateResponse(request, "material_faltas.html", {
+        "request": request, "current_user": user,
+    })
+
+
+@app.get("/api/erp/material-shortages")
+async def erp_material_shortage_report_api(request: Request, db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled():
+        return erp_disabled_response()
+    user = require_login(request, db)
+    if not user:
+        return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
+    if not has_permission(user, authz.MES_DASHBOARD_READ):
+        return permission_denied(api=True)
+    try:
+        with database.engine.connect() as conn:
+            return {"ok": True, **erp_service.material_shortage_report(conn)}
+    except Exception:
+        logger.exception("Falha ao calcular relatório de faltas de materiais do MES")
+        return JSONResponse({
+            "ok": False,
+            "error": "Não foi possível recalcular as faltas. Atualize a tela e, se persistir, informe o suporte.",
+        }, status_code=500)
+
 @app.get("/exportar_controle_producao")
 async def exportar_controle_producao(request: Request, db: Session = Depends(database.get_db)):
     if not erp_feature_enabled():
