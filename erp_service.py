@@ -748,8 +748,9 @@ def material_shortage_report(conn):
 
     Each card is evaluated by ``work_order_material_cockpit`` so the report
     inherits recursive BOM demand, active commitments/baixas, incoming PO
-    forecasts and the persisted WIP reservation order. Bank equivalents are
-    passed into that calculation, not applied as a display-only SKU rename.
+    forecasts and the persisted WIP reservation order. It intentionally keeps
+    the exact SKU in each O.S. composition; this report does not convert PME,
+    BJD, or rail variants into another bank SKU.
     """
     schema = inspect(conn)
     has_sequence = schema.has_table("erp_work_order_sequences")
@@ -776,16 +777,11 @@ def material_shortage_report(conn):
          order by sequencia nulls last,w.data_comercial_prevista nulls last,
                   e.item_number,w.id
     """)).mappings()]
-    equivalences, bank_outcomes = _material_cockpit_bank_equivalences(conn)
-
     rows = []
     chassis = []
     incomplete = {}
-    observed_bank_codes = set()
     for order in orders:
-        cockpit = work_order_material_cockpit(
-            conn, order["work_order_id"], sku_equivalences=equivalences,
-        )
+        cockpit = work_order_material_cockpit(conn, order["work_order_id"])
         sequence = cockpit.get("reserva_sequencia") or {}
         for missing_order in sequence.get("ordens_sem_composicao") or []:
             key = str(missing_order.get("work_order_id") or missing_order.get("numero_os") or "")
@@ -796,8 +792,6 @@ def material_shortage_report(conn):
 
         order_rows = []
         for item in cockpit.get("items") or []:
-            origins = item.get("sku_origens") or [item.get("codigo")]
-            observed_bank_codes.update(code for code in origins if code in bank_outcomes)
             result = {
                 **item,
                 "work_order_id": str(order["work_order_id"]),
@@ -842,7 +836,6 @@ def material_shortage_report(conn):
         int(row.get("item_number") or 0),
         str(row.get("codigo") or ""),
     ))
-    used_bank_outcomes = [bank_outcomes[code] for code in sorted(observed_bank_codes)]
     return {
         "gerado_em": datetime.now(ZoneInfo("America/Sao_Paulo")).isoformat(timespec="seconds"),
         "wip_count": len(orders),
@@ -853,7 +846,6 @@ def material_shortage_report(conn):
         "incomplete_orders": list(incomplete.values()),
         "chassis": chassis,
         "rows": rows,
-        "bank_equivalences": used_bank_outcomes,
     }
 
 
