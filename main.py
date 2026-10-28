@@ -13,6 +13,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy import or_, func, cast, String, text, inspect
@@ -33,6 +34,7 @@ import erp_catalogs
 import erp_commercial_proposals
 from erp_operators import OPERATOR_REFERENCES, operator_names, normalize_operators
 import erp_report
+import erp_material_shortage_export
 import authz
 import portal_sso
 
@@ -2882,6 +2884,7 @@ async def erp_material_shortage_report_screen(request: Request, db: Session = De
         return RedirectResponse(url="/producao", status_code=303)
     return templates.TemplateResponse(request, "material_faltas.html", {
         "request": request, "current_user": user,
+        "can_export": has_permission(user, authz.MES_EXPORTS_READ) or has_permission(user, authz.MES_CONTROL_EXPORT_READ),
     })
 
 
@@ -2903,6 +2906,38 @@ async def erp_material_shortage_report_api(request: Request, db: Session = Depen
             "ok": False,
             "error": "Não foi possível recalcular as faltas. Atualize a tela e, se persistir, informe o suporte.",
         }, status_code=500)
+
+@app.post("/api/erp/material-shortages/export")
+async def erp_material_shortage_export_api(request: Request, db: Session = Depends(database.get_db)):
+    if not erp_feature_enabled():
+        return erp_disabled_response()
+    user = require_login(request, db)
+    if not user:
+        return JSONResponse({"error": "Login necessário."}, status_code=401)
+    if not has_permission(user, authz.MES_DASHBOARD_READ) or not (
+        has_permission(user, authz.MES_EXPORTS_READ) or has_permission(user, authz.MES_CONTROL_EXPORT_READ)
+    ):
+        return permission_denied(api=True)
+    # Apenas formata a fotografia exibida. Não consulta nem modifica dados operacionais.
+    body = await request.body()
+    if len(body) > 32 * 1024 * 1024:
+        return JSONResponse({"error": "Fotografia muito grande para exportação."}, status_code=413)
+    try:
+        import json
+        payload = json.loads(body)
+        output = await run_in_threadpool(
+            erp_material_shortage_export.build_workbook,
+            payload.get("report"), payload.get("query", ""), payload.get("active_key", "__ALL__")
+        )
+    except (ValueError, TypeError, AttributeError):
+        return JSONResponse({"error": "Fotografia inválida. Recalcule o relatório e tente novamente."}, status_code=400)
+    filename = f"Faltas_por_chassi_MES_{datetime.datetime.now(LOCAL_TZ):%Y%m%d_%H%M}.xlsx"
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "no-store"},
+    )
+
 
 @app.get("/exportar_controle_producao")
 async def exportar_controle_producao(request: Request, db: Session = Depends(database.get_db)):
