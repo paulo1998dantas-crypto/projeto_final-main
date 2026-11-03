@@ -137,7 +137,7 @@ class FTTTests(unittest.TestCase):
         response=client.post("/api/ftt/reports",json=self.payload(),headers={"X-FTT-Request":"1","Origin":"http://testserver"})
         self.assertEqual(200,response.status_code,response.text)
         book=load_workbook(BytesIO(client.get("/api/ftt/export.xlsx?from=2026-10-26&to=2026-10-31").content))
-        self.assertEqual(["Pareto","FTT por área","Apontamentos"],book.sheetnames)
+        self.assertEqual(["Pareto","FTT por área","Apontamentos","Auditorias e histórico"],book.sheetnames)
         self.user=authz.Principal(8,"OPERADOR","OPERADOR",True,1,frozenset({"APONTAMENTO"}),
                                  authz._default_permissions({"APONTAMENTO"}))
         self.assertEqual(403,client.get("/api/ftt").status_code)

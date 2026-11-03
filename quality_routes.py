@@ -62,12 +62,32 @@ def register(app, engine, get_db, require_login, templates, stages):
     async def report(request:Request):
         return await execute(request,lambda conn,user: ftt.dashboard(conn,codes,request.query_params.get("from"),request.query_params.get("to")))
 
+    @app.get("/api/ftt/quality")
+    async def quality_report(request:Request):
+        return await execute(request,lambda conn,user: ftt.quality_dashboard(conn,codes,request.query_params.get("from"),request.query_params.get("to")))
+
+    @app.get("/api/ftt/history")
+    async def quality_history(request:Request):
+        return await execute(request,lambda conn,user: ftt.history(conn,request.query_params.get("work_order_id"),request.query_params.get("day"),include_voided=request.query_params.get("include_voided")=="1"))
+
+    @app.post("/api/ftt/reports/{report_id}/edit")
+    async def edit_report(report_id:str, request:Request, data:dict=Body(...)):
+        return await execute(request,lambda conn,user:ftt.change_report(conn,report_id,data,user,codes),True)
+
+    @app.post("/api/ftt/reports/{report_id}/delete")
+    async def delete_report(report_id:str, request:Request, data:dict=Body(...)):
+        return await execute(request,lambda conn,user:ftt.change_report(conn,report_id,data,user,codes,delete=True),True)
+
+    @app.post("/api/ftt/issues/{issue_id}/area")
+    async def correct_area(issue_id:str, request:Request, data:dict=Body(...)):
+        return await execute(request,lambda conn,user:ftt.correct_issue(conn,issue_id,data,user,codes),True)
+
     @app.get("/api/ftt/options")
     async def options(request:Request):
         def load(conn,user):
             ftt.require_ready(conn)
             return {"defects":[dict(r) for r in conn.execute(select(ftt.defects).order_by(ftt.defects.c.description)).mappings()],
-                    "stages":codes,"work_orders":ftt.work_options(conn,request.query_params.get("q",""))}
+                    "stages":codes,"work_orders":ftt.work_options(conn,request.query_params.get("q",""),request.query_params.get("history")=="1")}
         return await execute(request,load)
 
     @app.post("/api/ftt/defects")
@@ -84,17 +104,24 @@ def register(app, engine, get_db, require_login, templates, stages):
         try:
             principal(request,db)
             with engine.connect() as conn:
-                data = ftt.dashboard(conn,codes,request.query_params.get("from"),request.query_params.get("to"))
+                data = ftt.quality_dashboard(conn,codes,request.query_params.get("from"),request.query_params.get("to"))
+                audit_history = ftt.history(conn,start=data["start"],end=data["end"])["reports"]
             book=Workbook()
             for index,(name,headers,rows) in enumerate([
                 ("Pareto",["Rank","Descrição do defeito","Área","Ocorrências","% acumulado"],
                  [[r[k] for k in ("rank","description","area","frequency","accumulated")] for r in data["pareto"]]
                  + [["","TOTAL DE FALHAS","",data["total_failures"],None]]),
-                ("FTT por área",["Área","Produzidas","Com defeito","Aprovadas de primeira","FTT (%)","Situação"],
-                 [[ftt.AREA_NAMES.get(r["area"],r["area"])]+[r[k] for k in ("produced","defective","first_pass","ftt","status")] for r in data["areas"]]
-                 + [["TOTAL / PASSAGENS"]+[data["totals"][k] for k in ("produced","defective","first_pass","ftt")]+["Média ponderada"]]),
+                ("FTT por área",["Área","Produzidas no MES","Auditadas pela Qualidade","Com defeito","Aprovadas de primeira","FTT (%)","Situação"],
+                 [[ftt.AREA_NAMES.get(r["area"],r["area"])]+[r[k] for k in ("produced","audited","defective","first_pass","ftt","status")] for r in data["areas"]]
+                 + [["TOTAL / PASSAGENS"]+[data["totals"][k] for k in ("produced","audited","defective","first_pass","ftt")]+["Média ponderada"]]),
                 ("Apontamentos",["O.S.","Chassi","Data de detecção","Defeito","Área","Responsável","Registrado em"],
-                 [[str(r.get(k) or "") if k!="stage_code" else ftt.AREA_NAMES.get(r[k],r[k]) for k in ("numero_os","chassi","observed_on","description","stage_code","actor","created_at")] for r in data["records"]])
+                 [[str(r.get(k) or "") if k!="stage_code" else ftt.AREA_NAMES.get(r[k],r[k]) for k in ("numero_os","chassi","observed_on","description","stage_code","actor","created_at")] for r in data["records"]]),
+                ("Auditorias e histórico",["O.S.","Item","Chassi","Data da auditoria","Tipo","Defeitos","Áreas auditadas","Responsável","Registrado em","Correções"],
+                 [[r["numero_os"],r["item_number"],r["chassi"],str(r["observed_on"]),
+                   "Auditoria completa" if r["audit_complete"] else "Histórico de defeitos",len(r["issues"]),
+                   " · ".join(ftt.AREA_NAMES.get(c,c) for c in r["areas"]),r["actor"],str(r["created_at"]),
+                   " | ".join([f'{c["from_stage"]} → {c["to_stage"]}: {c["reason"]} ({c["actor"]}, {c["created_at"]})' for c in r["corrections"]]
+                              + [f'{e["action"]}: {e["reason"]} ({e["actor"]}, {e["created_at"]})' for e in r["events"]])] for r in audit_history])
             ]):
                 sheet=book.active if index==0 else book.create_sheet()
                 sheet.title=name
