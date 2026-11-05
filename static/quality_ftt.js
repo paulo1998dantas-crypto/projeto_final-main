@@ -49,7 +49,7 @@ async function refresh(){
  $("pareto-total").textContent=number(data.total_failures);
  $("areas").innerHTML=data.areas.map(r=>"<tr>"+cell(labels[r.area]||r.area)+["produced","audited","defective","first_pass"].map(k=>cell(number(r[k]),"num")).join("")+cell(pct(r.ftt),"num")+cell(r.status,"status "+(r.ftt===null?"":r.ftt>=95?"good":r.ftt>=90?"warn":"bad"))+"</tr>").join("");
  $("area-total").innerHTML="<tr>"+cell("TOTAL / PASSAGENS")+["produced","audited","defective","first_pass"].map(k=>cell(number(data.totals[k]),"num")).join("")+cell(pct(data.totals.ftt),"num")+cell("Média ponderada")+"</tr>";
- $("pending").textContent=data.pending+" ocorrência(s) do período em veículos sem auditoria completa registrada até a data final. Permanecem no Pareto e no histórico; não presumem aprovação de outras áreas.";
+ $("pending").textContent=data.pending+" ocorrência(s) do período sem etapas aplicáveis identificadas na O.S. Confira a parametrização do MES.";
  $("export").href="/api/ftt/export.xlsx?"+query();
  }catch(e){message(e.message,true);}
 }
@@ -127,14 +127,14 @@ if(canWrite){
   $("delete-confirm-label").hidden=!deleting;$("delete-confirm").required=deleting;
   $("edit-fields").hidden=deleting;$("edit-issues").replaceChildren();r.issues.forEach(addEditIssue);
   $("edit-observed").value=String(r.observed_on).slice(0,10);$("edit-observed").max=today;
-  $("edit-complete").checked=r.audit_complete;$("edit-clean").checked=r.issues.length===0;$("edit-clean").onchange();
+  $("edit-clean").checked=r.issues.length===0;$("edit-clean").onchange();
   $("edit-fields").querySelectorAll("input,select").forEach(el=>el.disabled=deleting||(el.closest('#edit-issues')&&$("edit-clean").checked));
   $("save-report-edit").textContent=deleting?"Excluir apontamento":"Salvar alterações";$("report-dialog").showModal();
  });
  $("report-edit-form").onsubmit=async event=>{event.preventDefault();$("save-report-edit").disabled=true;try{
   const m=reportMutation,data={idempotency_key:m.key,version:m.version,reason:$("edit-reason").value};
   if(m.deleting)data.confirm=$("delete-confirm").checked;
-  else{data.observed_on=$("edit-observed").value;data.audit_complete=$("edit-complete").checked;
+  else{data.observed_on=$("edit-observed").value;data.audit_complete=true;
    data.issues=$("edit-clean").checked?[]:[...$("edit-issues").querySelectorAll('.edit-issue')].map(row=>({id:row.dataset.id,defect_id:row.querySelector('.edit-defect').value,stage_code:row.querySelector('.edit-area').value}));
    if(!$("edit-clean").checked&&!data.issues.length)throw Error("Inclua um defeito ou marque Auditoria sem defeitos.");
   }

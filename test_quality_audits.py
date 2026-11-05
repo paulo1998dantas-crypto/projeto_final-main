@@ -58,15 +58,16 @@ class AuditTests(unittest.TestCase):
     def test_failure_does_not_wait_for_production_completion(self):
         p=self.audit();p["issues"][0]["stage_code"]="ELÉTRICA";self.save(p)
         r=self.quality()
-        self.assertEqual((0,1,1,0),(r["areas"][1]["produced"],r["areas"][1]["audited"],r["areas"][1]["defective"],r["areas"][1]["ftt"]))
+        self.assertEqual((1,1,1,0),(r["areas"][1]["produced"],r["areas"][1]["audited"],r["areas"][1]["defective"],r["areas"][1]["ftt"]))
         self.assertEqual(0,r["vehicles"]["ftt"])
         self.assertEqual(50,r["totals"]["ftt"])
 
-    def test_legacy_defect_does_not_approve_other_areas(self):
+    def test_defect_registration_establishes_passage_for_applicable_areas(self):
         self.save(self.payload());r=self.quality()
         self.assertEqual(1,r["total_failures"])
-        self.assertEqual(0,r["vehicles"]["audited"])
-        self.assertEqual(1,r["pending"])
+        self.assertEqual(1,r["vehicles"]["audited"])
+        self.assertEqual(0,r["pending"])
+        self.assertEqual((2,2),(r["totals"]["produced"],r["totals"]["audited"]))
         # A subsequent explicit full audit uses existing known failures too.
         self.save(self.audit(clean=True,when="2026-10-28"))
         self.assertEqual(1,self.quality()["vehicles"]["defective"])
@@ -106,7 +107,48 @@ class AuditTests(unittest.TestCase):
         with self.engine.begin() as c:
             c.execute(text("update erp_work_order_stages set aplicavel=false,status='PENDENTE',termino=null"))
         self.assertEqual(2,self.quality()["totals"]["audited"])
-        self.assertEqual(0,self.quality()["totals"]["produced"])
+        self.assertEqual(2,self.quality()["totals"]["produced"])
+
+    def test_historical_defect_only_report_uses_its_mes_route_without_rewriting(self):
+        saved=self.save(self.payload())
+        with self.engine.begin() as c:
+            c.execute(q.audit_areas.delete())
+            c.execute(q.reports.update().values(audit_complete=False))
+            before=list(c.execute(text("select * from erp_work_order_stages")))
+        result=self.quality()
+        self.assertEqual((2,2,1),(result['totals']['produced'],result['totals']['audited'],result['vehicles']['defective']))
+        with self.engine.connect() as c:
+            report=q.history(c,work_id=self.work)['reports'][0]
+            self.assertTrue(report['audit_complete'])
+            self.assertEqual({'BCO','ELÉTRICA'},set(report['areas']))
+            self.assertEqual(before,list(c.execute(text("select * from erp_work_order_stages"))))
+            self.assertFalse(c.execute(select(q.reports.c.audit_complete)).scalar_one())
+            self.assertEqual(1,c.execute(select(q.reports.c.version)).scalar_one())
+
+    def test_only_applicable_stages_and_never_release_are_inferred(self):
+        with self.engine.begin() as c:
+            c.execute(text("insert into erp_work_order_stages values(:id,'VIDROS','PENDENTE',false,null),(:id,'LIBERAÇÃO','PENDENTE',true,null)"),{'id':self.work})
+            q.create_report(c,self.audit(clean=True),self.user,['BCO','ELÉTRICA','VIDROS','LIBERAÇÃO'])
+        with self.engine.connect() as c:
+            r=q.quality_dashboard(c,['BCO','ELÉTRICA','VIDROS','LIBERAÇÃO'],'2026-10-26','2026-10-31')
+        self.assertEqual((0,0),[(a['produced'],a['audited']) for a in r['areas'] if a['area']=='VIDROS'][0])
+        self.assertNotIn('LIBERAÇÃO',[a['area'] for a in r['areas']])
+
+    def test_mes_completion_and_reaudit_do_not_duplicate_quality_passage(self):
+        self.save(self.audit());self.save(self.audit(clean=True,when='2026-10-28'))
+        with self.engine.begin() as c:
+            c.execute(text("update erp_work_order_stages set status='CONCLUÍDA',termino='2026-10-29T15:00:00+00:00'"))
+        self.assertEqual((2,2),(self.quality()['totals']['produced'],self.quality()['totals']['audited']))
+        self.assertEqual(0,self.quality('2026-10-28','2026-10-28')['totals']['produced'])
+
+    def test_audit_infers_pending_route_without_changing_mes_and_respects_period(self):
+        with self.engine.begin() as c:
+            c.execute(text("update erp_work_order_stages set status='PENDENTE',termino=null"))
+        self.save(self.audit(clean=True,when='2026-10-28'))
+        self.assertEqual(0,self.quality(end='2026-10-27')['totals']['produced'])
+        self.assertEqual(2,self.quality('2026-10-28','2026-10-28')['totals']['produced'])
+        with self.engine.connect() as c:
+            self.assertEqual(2,c.execute(text("select count(*) from erp_work_order_stages where status='PENDENTE' and termino is null")).scalar_one())
 
     def test_correction_moves_one_failure_and_preserves_audit_evidence(self):
         p=self.audit();self.save(p);i=self.issue()

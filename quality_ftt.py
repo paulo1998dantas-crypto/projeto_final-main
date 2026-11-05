@@ -1,4 +1,4 @@
-"""Quality occurrences and FTT over current MES stage completions."""
+"""Quality occurrences and FTT over applicable MES stages and quality passage."""
 from datetime import date, datetime, time, timezone, timedelta
 from zoneinfo import ZoneInfo
 from uuid import UUID, uuid4
@@ -144,7 +144,7 @@ def create_report(conn, data, user, stage_codes):
         requested = sorted((str(x.get("defect_id")), str(x.get("stage_code")), "DEFEITO")
                            for x in data.get("issues", []))
         saved = sorted((x["defect_id"], x["stage_code"], x["disposition"]) for x in existing)
-        if old["actor_id"] != user.id or old["work_order_id"] != work_id or old["observed_on"] != observed or old["audit_complete"] != complete or requested != saved:
+        if old["actor_id"] != user.id or old["work_order_id"] != work_id or old["observed_on"] != observed or requested != saved:
             raise ValueError("Identificador já usado em outro lançamento. Atualize a tela.")
         return {"id": identifier, "replayed": True}
     if observed < START or observed > today():
@@ -156,6 +156,8 @@ def create_report(conn, data, user, stage_codes):
     entries = data.get("issues")
     if not (0 if complete else 1) <= len(entries) <= 100:
         raise ValueError("Inclua até 100 problemas; sem defeitos, confirme a auditoria completa.")
+    # A Quality registration establishes passage through the applicable route.
+    complete = True
     applicable_codes = set(conn.execute(text("select stage_code from erp_work_order_stages where work_order_id=:work and aplicavel=true"),
                                         {"work": work_id}).scalars()) & set(stage_codes) - FTT_EXCLUDED_STAGES
     if complete and not applicable_codes:
@@ -329,6 +331,7 @@ def change_report(conn, report_id, data, user, stage_codes, delete=False):
         complete = data.get("audit_complete")
         if not isinstance(complete, bool) or not isinstance(raw, list) or not (0 if complete else 1) <= len(raw) <= 100 or not all(isinstance(x,dict) for x in raw):
             raise ValueError("Informe os defeitos ou confirme uma auditoria completa sem defeitos.")
+        complete = True
         request.update(observed_on=str(data.get("observed_on", "")), audit_complete=complete,
             issues=[{k:str(x.get(k) or "") for k in ("id","defect_id","stage_code")} for x in raw])
     if conn.dialect.name == "postgresql":
@@ -440,34 +443,55 @@ def history(conn, work_id=None, observed_on=None, start=None, end=None, include_
         changes[change["report_id"]].append(dict(change))
     for area in conn.execute(select(audit_areas).where(audit_areas.c.report_id.in_(ids))).mappings():
         areas[area["report_id"]].append(area["stage_code"])
+    missing = {r["id"] for r in rows if not r["voided"] and not areas[r["id"]]}
+    if missing:
+        for passage in quality_passages(conn, max(day(r["observed_on"]) for r in rows)):
+            if passage["id"] in missing and passage["stage_code"] not in FTT_EXCLUDED_STAGES:
+                areas[passage["id"]].append(passage["stage_code"])
     for event in conn.execute(select(report_events).where(report_events.c.report_id.in_(ids)).order_by(report_events.c.created_at)).mappings():
         events[event["report_id"]].append(dict(event))
     for row in rows:
-        row["audit_complete"] = bool(row["audit_complete"])
+        row["audit_complete"] = bool(row["audit_complete"] or (not row["voided"] and areas[row["id"]]))
         row["voided"] = bool(row["voided"])
         row.update(issues=by_report[row["id"]], corrections=changes[row["id"]], areas=areas[row["id"]], events=events[row["id"]])
     return {"reports": rows, "vehicles": len({r["unit_id"] for r in rows if not r["voided"]})}
 
 
-def quality_dashboard(conn, stage_codes, start=None, end=None):
-    """Quality cohort is first complete audit, independent of productive completions.
+def quality_passages(conn, last):
+    """Existing snapshots win; legacy reports use the route of their own O.S.
 
-    Legacy defect-only records never imply approval of uninspected areas.
-    Reaudits cannot turn a previously failed first pass into an approval.
+    Read-time inference also applies to historical registrations. Production
+    dates, statuses and pointings are never manufactured or rewritten.
+    """
+    return [dict(r) for r in conn.execute(text("""
+        select r.id as id,r.work_order_id,r.observed_on,r.created_at,
+               w.vehicle_entry_id as unit_id,a.stage_code
+        from erp_quality_reports r join erp_work_orders w on w.id=r.work_order_id
+        join erp_quality_report_areas a on a.report_id=r.id
+        where r.voided=false and r.observed_on>=:cutoff and r.observed_on<=:until
+        union all
+        select r.id,r.work_order_id,r.observed_on,r.created_at,
+               w.vehicle_entry_id as unit_id,s.stage_code
+        from erp_quality_reports r join erp_work_orders w on w.id=r.work_order_id
+        join erp_work_order_stages s on s.work_order_id=r.work_order_id
+        where r.voided=false and r.observed_on>=:cutoff and r.observed_on<=:until
+          and s.aplicavel=true
+          and not exists(select 1 from erp_quality_report_areas a where a.report_id=r.id)
+        order by observed_on,created_at,id,stage_code
+    """), {"cutoff": START, "until": last}).mappings()]
+
+
+def quality_dashboard(conn, stage_codes, start=None, end=None):
+    """First Quality registration confirms passage through applicable stages.
+
+    Reaudits never duplicate a vehicle or erase its failed first pass.
     Each vehicle ENTRY is a unit: repeated chassis are not merged.
     """
     require_audits(conn)
     first, last = period(start, end)
     codes = [c for c in stage_codes if c not in FTT_EXCLUDED_STAGES]
-    # Reuse production data only; do not load every historical issue twice.
-    production_counts = calculate(production_completions(conn, first, last), [], codes, first, last)
-    audited = [dict(r) for r in conn.execute(text("""
-        select r.id,r.observed_on,r.created_at,w.vehicle_entry_id as unit_id,a.stage_code
-        from erp_quality_reports r join erp_work_orders w on w.id=r.work_order_id
-        join erp_quality_report_areas a on a.report_id=r.id
-        where r.audit_complete=true and r.voided=false and r.observed_on>=:cutoff and r.observed_on<=:until
-        order by r.observed_on,r.created_at,r.id,a.stage_code
-    """), {"cutoff": START, "until": last}).mappings()]
+    completions = production_completions(conn, first, last)
+    audited = [r for r in quality_passages(conn, last) if r["stage_code"] in codes]
     first_audits, first_areas = {}, defaultdict(set)
     for row in audited:
         unit = str(row["unit_id"])
@@ -475,6 +499,12 @@ def quality_dashboard(conn, stage_codes, start=None, end=None):
         if row["id"] == first_audits[unit]["id"] and row["stage_code"] in codes:
             first_areas[unit].add(row["stage_code"])
     cohort = {unit for unit, r in first_audits.items() if first <= day(r["observed_on"]) <= last}
+    # Quality is evidence of passage, including stages without a MES finish.
+    # calculate() deduplicates MES + audit evidence per vehicle and stage.
+    completions.extend(dict(work_order_id=first_audits[unit]["work_order_id"],
+        unit_id=unit, stage_code=code, termino=first_audits[unit]["observed_on"])
+        for unit in cohort for code in first_areas[unit])
+    production_counts = calculate(completions, [], codes, first, last)
     all_issues = [dict(r) for r in conn.execute(text("""
         select i.*,r.work_order_id,r.observed_on,r.actor,r.created_at,w.numero_os,
                w.vehicle_entry_id as unit_id,v.chassi
@@ -507,6 +537,6 @@ def quality_dashboard(conn, stage_codes, start=None, end=None):
     vehicles["ftt"] = round(100 * vehicles["first_pass"] / vehicles["audited"], 2) if vehicles["audited"] else None
     result.update(areas=areas, totals=totals, vehicles=vehicles,
         pending=sum(str(r["unit_id"]) not in first_audits for r in result["records"]),
-        basis="first_complete_quality_audit")
+        basis="first_quality_registration_applicable_route")
     return result
 

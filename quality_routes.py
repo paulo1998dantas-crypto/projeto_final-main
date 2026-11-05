@@ -111,7 +111,7 @@ def register(app, engine, get_db, require_login, templates, stages):
                 ("Pareto",["Rank","Descrição do defeito","Área","Ocorrências","% acumulado"],
                  [[r[k] for k in ("rank","description","area","frequency","accumulated")] for r in data["pareto"]]
                  + [["","TOTAL DE FALHAS","",data["total_failures"],None]]),
-                ("FTT por área",["Área","Produzidas no MES","Auditadas pela Qualidade","Com defeito","Aprovadas de primeira","FTT (%)","Situação"],
+                ("FTT por área",["Área","Passagens por etapa","Auditadas pela Qualidade","Com defeito","Aprovadas de primeira","FTT (%)","Situação"],
                  [[ftt.AREA_NAMES.get(r["area"],r["area"])]+[r[k] for k in ("produced","audited","defective","first_pass","ftt","status")] for r in data["areas"]]
                  + [["TOTAL / PASSAGENS"]+[data["totals"][k] for k in ("produced","audited","defective","first_pass","ftt")]+["Média ponderada"]]),
                 ("Apontamentos",["O.S.","Chassi","Data de detecção","Defeito","Área","Responsável","Registrado em"],
