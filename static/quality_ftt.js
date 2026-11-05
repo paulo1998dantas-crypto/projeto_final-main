@@ -44,7 +44,7 @@ function setWeek(value){
 }
 async function refresh(){
  try{const seq=++reportSeq;const data=await api("/api/ftt/quality?"+query());if(seq!==reportSeq)return;
- $("k-failures").textContent=number(data.total_failures);$("k-audited").textContent=number(data.vehicles.audited);$("k-defective").textContent=number(data.vehicles.defective);$("k-ftt").textContent=pct(data.vehicles.ftt);
+ $("k-failures").textContent=number(data.total_failures);$("k-audited").textContent=number(data.vehicles.audited);$("k-defective").textContent=number(data.vehicles.defective);$("k-ftt").textContent=pct(data.totals.ftt);
  $("pareto").innerHTML=data.pareto.map(r=>"<tr>"+cell(r.rank)+cell(r.description)+cell(labels[r.area]||r.area)+cell(r.frequency,"num")+cell(pct(r.accumulated),"num")+"</tr>").join("")||'<tr><td colspan="5">Sem ocorrências neste período.</td></tr>';
  $("pareto-total").textContent=number(data.total_failures);
  $("areas").innerHTML=data.areas.map(r=>"<tr>"+cell(labels[r.area]||r.area)+["produced","audited","defective","first_pass"].map(k=>cell(number(r[k]),"num")).join("")+cell(pct(r.ftt),"num")+cell(r.status,"status "+(r.ftt===null?"":r.ftt>=95?"good":r.ftt>=90?"warn":"bad"))+"</tr>").join("");
