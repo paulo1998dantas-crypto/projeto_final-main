@@ -160,6 +160,46 @@ class MaterialCockpitTests(unittest.TestCase):
         self.assertEqual("ATENDIDO", rows["2002"]["status"])
         self.assertEqual("ATENDIDO", rows["CJ-DIRETO"]["status"])
 
+    def test_supplied_bank_keeps_its_stock_commitment_and_transit_without_internal_materials(self):
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                insert into skus values
+                  (5,'CJ-BANCOS','Conjunto de bancos','CJ',1),
+                  (6,'10200999','BCO MC LB NORMAL FIXO','PC',1),
+                  (7,'ESTRUTURA','ESTRUTURA BCO MC','PC',1),
+                  (8,'ESPUMA','ESPUMA BCO MC','PC',1),
+                  (9,'TECIDO','TECIDO BCO MC','M',1)
+            """))
+            conn.execute(text("""
+                insert into bom_components values
+                  (1,5,6,2),(2,6,7,1),(3,6,8,2),(4,6,9,3)
+            """))
+            conn.execute(text("insert into stock_balances(sku_id,saldo_atual) values(6,5)"))
+            conn.execute(text("insert into movements values(10,6,'EMPENHO',2,null,:work,'ATIVA')"),
+                         {"work": WORK})
+            composition = [
+                {"codigo": "CJ-BANCOS", "qtd": 1, "level": 0},
+                {"item": "CJ-BANCOS", "codigo": "10200999", "qtd": 2, "level": 1},
+                {"item": "10200999", "codigo": "ESTRUTURA", "qtd": 2, "level": 2},
+                {"item": "10200999", "codigo": "ESPUMA", "qtd": 4, "level": 2},
+                {"item": "10200999", "codigo": "TECIDO", "qtd": 6, "level": 2},
+            ]
+            conn.execute(text("update suprimentos_documentos set composicao=:value where id=1"),
+                         {"value": json.dumps(composition)})
+            conn.execute(text("""
+                update erp_purchase_order_lines set sku_id=6,sku_codigo='10200999',
+                       quantidade_pedida=1 where id=1
+            """))
+        with self.engine.connect() as conn:
+            result = erp_service.work_order_material_cockpit(conn, WORK)
+        self.assertEqual(["10200999"], [row["codigo"] for row in result["items"]])
+        bank = result["items"][0]
+        self.assertEqual(2, bank["necessario"])
+        self.assertEqual(5, bank["saldo_atual"])
+        self.assertEqual(2, bank["empenhado_na_os"])
+        self.assertEqual(1, bank["em_chegada"])
+        self.assertEqual("ATENDIDO", bank["status"])
+
     def test_bom_commitment_from_another_work_order_reduces_leaf_free_balance(self):
         with self.engine.begin() as conn:
             conn.execute(text("""

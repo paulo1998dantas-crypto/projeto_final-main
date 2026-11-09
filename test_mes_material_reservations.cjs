@@ -60,3 +60,17 @@ test('material table has its own bounded scroll area and an opaque sticky header
  assert.match(html,/\.material-table thead th\s*\{[^}]*position:sticky;top:0;z-index:2;background:#f8fafc/);
  assert.match(html,/\.material-table\s*\{[^}]*border-collapse:separate;border-spacing:0/);
 });
+
+test('ten incoming orders start inside a collapsed disclosure while totals stay visible',()=>{
+ const e=render({items:[{codigo:'1001',unidade:'pc',necessario:10,em_chegada:10,
+  previsao_chegada:'2026-11-10',status:'PREVISAO_TOTAL',status_label:'Cobertura programada',
+  previsoes:Array.from({length:10},(_,i)=>({numero_oc:`OC-${i+1}`,fornecedor:'Fornecedor <seguro>',
+   quantidade:1,previsao:'2026-11-10'}))}]});
+ const s=e['materials-cockpit-content'].innerHTML;
+ assert.match(s,/<details class="material-transit-details">/);
+ assert.doesNotMatch(s,/<details[^>]*\bopen\b/);
+ assert.match(s,/Ver 10 pedidos em trânsito/);
+ assert.match(s,/10 pc em trânsito/);
+ assert.match(s,/<details[^>]*>[\s\S]*O.C. OC-10[\s\S]*<\/details>/);
+ assert.match(s,/Fornecedor &lt;seguro&gt;/);
+});

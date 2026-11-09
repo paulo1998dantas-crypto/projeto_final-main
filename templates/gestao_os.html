@@ -30,6 +30,7 @@ dialog{width:min(1480px,98vw);max-height:96vh;border:0;border-radius:9px;padding
 .material-table-wrap{max-height:min(60vh,560px)}
 .material-table{border-collapse:separate;border-spacing:0}
 .material-table thead th{position:sticky;top:0;z-index:2;background:#f8fafc;box-shadow:0 1px 0 #cbd5e1}
+.material-transit-details{margin-top:7px}.material-transit-details summary{cursor:pointer;color:#1d4ed8;font-size:11px;font-weight:750;padding:4px 0}.material-transit-details summary:focus-visible{outline:2px solid #2563eb;outline-offset:2px}.material-transit-collapse{display:none}.material-transit-details[open] .material-transit-expand{display:none}.material-transit-details[open] .material-transit-collapse{display:inline}.material-transit-details .material-arrival-list{max-height:240px;overflow:auto}
 </style>
 </head>
 <body>
@@ -459,7 +460,8 @@ function renderMaterialCockpit(data){
     const statusClass=materialStatusClass(row.status),icon=materialStatusIcon(row.status);
     const planned=row.sku_planejado&&row.sku_planejado!==row.codigo?`Planejado: ${esc(row.sku_planejado)} · selecionado: ${esc(row.sku_selecionado||row.codigo)}`:'';
     const arrivals=(row.previsoes||[]).map(item=>{const source=item.sku_origem&&item.sku_origem!==row.codigo?` · Pedido do SKU ${esc(item.sku_origem)}`:'';const allocation=item.vinculada_a_esta_os?'Vinculado a esta O.S.':'Trânsito geral · não reservado';return `<div><strong>O.C. ${esc(item.numero_oc||'—')} · ${esc(item.fornecedor||'Fornecedor não informado')}</strong><small>${item.previsao?`Chegada: ${esc(date(item.previsao))}`:'Data não informada'} · ${materialQuantity(item.quantidade)} ${esc(row.unidade||'UN')}${source}<br>${allocation}</small></div>`}).join('');
-    const arrivalHtml=arrivals?`<div class="material-arrival-list">${arrivals}</div>`:'';
+    const arrivalCount=(row.previsoes||[]).length;
+    const arrivalHtml=arrivals?`<details class="material-transit-details"><summary><span class="material-transit-expand">Ver ${arrivalCount} ${arrivalCount===1?'pedido':'pedidos'} em trânsito</span><span class="material-transit-collapse">Recolher pedidos em trânsito</span></summary><div class="material-arrival-list">${arrivals}</div></details>`:'';
     const forecastDate=row.previsao_chegada?`<span class="material-forecast-date">${esc(date(row.previsao_chegada))}</span>`:`<span class="material-forecast-date empty">${Number(row.em_chegada||0)>0?'Data não informada':'Sem previsão de chegada'}</span>`;
     const forecastMeta=Number(row.em_chegada||0)>0?`<span class="material-forecast-meta">${materialQuantity(row.em_chegada)} ${esc(row.unidade||'UN')} em trânsito</span>`:'';
     const available=Number(row.saldo_disponivel_sequencia??row.saldo_disponivel??0);
