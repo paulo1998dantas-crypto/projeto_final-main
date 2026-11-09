@@ -414,6 +414,68 @@ def work_order_material_cockpit(conn, work_id, sku_equivalences=None):
         if parent and component and amount > 0:
             children[parent].append((component, amount))
 
+    # A bank is a supplied product in the material cockpit. Its BOM describes
+    # internal upholstery/structure (fabric, foam, frame, etc.), rather than
+    # separate materials the production team should pick for the vehicle.
+    # Keep the original BOM for identifying those expanded rows, then treat
+    # each bank SKU as an atomic cockpit item for demand and availability.
+    bank_codes = set()
+    for sku_code, sku_row in sku_by_code.items():
+        group = str(sku_row.get("grupo") or "").strip().upper()
+        category = str(sku_row.get("categoria") or "").strip().upper()
+        description = str(sku_row.get("descricao") or "").strip().upper()
+        if (
+            "BANCO" in group or "BANCO" in category
+            or description.startswith(("BCO ", "BANCO "))
+        ):
+            bank_codes.add(sku_code)
+
+    bom_children = children
+    bank_descendants = set()
+    for bank_code in bank_codes:
+        if bom_children.get(bank_code):
+            bank_descendants.update(
+                _code for _code in erp_stock_closure._coverage(bank_code, bom_children)
+                if _code != bank_code
+            )
+    composition_codes = {
+        erp_stock_closure.code(row.get("codigo")) for row in normalized_composition
+    }
+    banks_in_composition = set(composition_codes & bank_codes)
+    for source in composition_codes - bank_codes:
+        if not bom_children.get(source):
+            continue
+        covered = erp_stock_closure._coverage(source, bom_children)
+        banks_in_composition.update(bank_codes & covered.keys())
+    if banks_in_composition and bank_descendants:
+        visible_composition = []
+        bank_level = None
+        for row in normalized_composition:
+            sku = erp_stock_closure.code(row.get("codigo"))
+            parent = erp_stock_closure.code(row.get("item"))
+            try:
+                level = int(row.get("level") or 0)
+            except (TypeError, ValueError):
+                level = 0
+            if bank_level is not None:
+                if level > bank_level:
+                    continue
+                bank_level = None
+            is_bank_component = sku in bank_descendants
+            parent_is_in_bank_branch = (
+                not parent or parent in bank_codes or parent in bank_descendants
+            )
+            if is_bank_component and parent_is_in_bank_branch:
+                continue
+            visible_composition.append(row)
+            if sku in banks_in_composition and bom_children.get(sku):
+                bank_level = level
+        normalized_composition = visible_composition
+    children = defaultdict(list, {
+        parent: components for parent, components in bom_children.items()
+        if parent not in banks_in_composition
+    })
+
     raw_required_by_code = erp_stock_closure._normalize_required_composition(
         normalized_composition, children,
     )
