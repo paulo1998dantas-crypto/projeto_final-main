@@ -211,7 +211,7 @@ def _material_cockpit_sequence_context(conn, work_id):
 
 def _material_cockpit_sequence_reservations(prior_orders, children, requested_codes,
                                            coverage_by_work, free_by_code, context,
-                                           canonical_code=None):
+                                           canonical_code=None, composition_filter=None):
     """Allocate only remaining demand, limited by stock actually free now."""
     remaining = {sku: max(amount, Decimal("0")) for sku, amount in free_by_code.items()}
     reserved = defaultdict(lambda: Decimal("0"))
@@ -223,6 +223,8 @@ def _material_cockpit_sequence_reservations(prior_orders, children, requested_co
             if not document or not document.get("id") or _token(document.get("status")) == "CANCELADO":
                 raise ValueError("Documento ausente ou cancelado")
             composition = _material_cockpit_composition(document)
+            if composition_filter:
+                composition = composition_filter(composition)
             if not composition:
                 raise ValueError("Composição vazia")
             raw_demand = erp_stock_closure._normalize_required_composition(composition, children)
@@ -254,6 +256,37 @@ def _material_cockpit_sequence_reservations(prior_orders, children, requested_co
                 "quantidade_reservada": _material_cockpit_number(amount),
             })
     return reserved, previous_demand, allocation
+
+
+def _material_cockpit_bank_composition(composition, bom_children, bank_codes):
+    """Keep supplied banks atomic without hiding kit children or other roots.
+
+    Suprimentos can flatten/reorder rows and omit kit roots. `level` alone is
+    therefore not evidence that a later row belongs to the preceding bank.
+    Only suppress internal components with a bank-branch parent. A supplied
+    bank remains demand even when another bank's BOM references the same SKU.
+    """
+    normalized = []
+    for row in composition:
+        sku = erp_stock_closure.code(
+            row.get("codigo") or row.get("sku_selecionado") or row.get("sku_planejado")
+        )
+        if sku:
+            normalized.append({**row, "codigo": sku})
+    sources = {row["codigo"] for row in normalized}
+    present_banks = sources & bank_codes
+    for source in sources - bank_codes:
+        if bom_children.get(source):
+            present_banks.update(bank_codes & erp_stock_closure._coverage(source, bom_children).keys())
+    descendants = set()
+    for bank in present_banks:
+        descendants.update(erp_stock_closure._coverage(bank, bom_children).keys() - {bank})
+    return [row for row in normalized if (
+        row["codigo"] in bank_codes
+        or row["codigo"] not in descendants
+        or (erp_stock_closure.code(row.get("item"))
+            and erp_stock_closure.code(row.get("item")) not in (present_banks | descendants))
+    )]
 
 
 def _material_cockpit_bank_equivalences(conn):
@@ -421,59 +454,20 @@ def work_order_material_cockpit(conn, work_id, sku_equivalences=None):
     # each bank SKU as an atomic cockpit item for demand and availability.
     bank_codes = set()
     for sku_code, sku_row in sku_by_code.items():
-        group = str(sku_row.get("grupo") or "").strip().upper()
-        category = str(sku_row.get("categoria") or "").strip().upper()
         description = str(sku_row.get("descricao") or "").strip().upper()
-        if (
-            "BANCO" in group or "BANCO" in category
-            or description.startswith(("BCO ", "BANCO "))
-        ):
+        # The category "20 - BANCOS" also includes CJ bank kits. Those kits
+        # must still expand into individual supplied banks, never hide them.
+        if description.startswith(("BCO ", "BANCO ")):
             bank_codes.add(sku_code)
 
     bom_children = children
-    bank_descendants = set()
-    for bank_code in bank_codes:
-        if bom_children.get(bank_code):
-            bank_descendants.update(
-                _code for _code in erp_stock_closure._coverage(bank_code, bom_children)
-                if _code != bank_code
-            )
-    composition_codes = {
-        erp_stock_closure.code(row.get("codigo")) for row in normalized_composition
-    }
-    banks_in_composition = set(composition_codes & bank_codes)
-    for source in composition_codes - bank_codes:
-        if not bom_children.get(source):
-            continue
-        covered = erp_stock_closure._coverage(source, bom_children)
-        banks_in_composition.update(bank_codes & covered.keys())
-    if banks_in_composition and bank_descendants:
-        visible_composition = []
-        bank_level = None
-        for row in normalized_composition:
-            sku = erp_stock_closure.code(row.get("codigo"))
-            parent = erp_stock_closure.code(row.get("item"))
-            try:
-                level = int(row.get("level") or 0)
-            except (TypeError, ValueError):
-                level = 0
-            if bank_level is not None:
-                if level > bank_level:
-                    continue
-                bank_level = None
-            is_bank_component = sku in bank_descendants
-            parent_is_in_bank_branch = (
-                not parent or parent in bank_codes or parent in bank_descendants
-            )
-            if is_bank_component and parent_is_in_bank_branch:
-                continue
-            visible_composition.append(row)
-            if sku in banks_in_composition and bom_children.get(sku):
-                bank_level = level
-        normalized_composition = visible_composition
+    composition_filter = lambda rows: _material_cockpit_bank_composition(
+        rows, bom_children, bank_codes,
+    )
+    normalized_composition = composition_filter(normalized_composition)
     children = defaultdict(list, {
         parent: components for parent, components in bom_children.items()
-        if parent not in banks_in_composition
+        if parent not in bank_codes
     })
 
     raw_required_by_code = erp_stock_closure._normalize_required_composition(
@@ -630,6 +624,7 @@ def work_order_material_cockpit(conn, work_id, sku_equivalences=None):
     reserved_before, previous_demand, reservations = _material_cockpit_sequence_reservations(
         prior_orders, children, requested_codes, coverage_by_work, free_by_code, sequence_context,
         canonical_code=canonical_code,
+        composition_filter=composition_filter,
     )
 
     incoming_by_code = defaultdict(list)
