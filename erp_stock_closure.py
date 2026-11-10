@@ -103,9 +103,14 @@ def _normalize_required_composition(composition, children):
             raise ValueError("Linha inválida na composição da O.S.")
         item, amount = code(line.get("codigo")), quantity(line.get("qtd", line.get("quantidade")))
         if item and amount > 0:
-            raw.append((item, amount))
+            parent = code(line.get("item"))
+            try:
+                level = int(line.get("level") or 0)
+            except (TypeError, ValueError):
+                level = 0
+            raw.append((item, amount, parent, level))
 
-    bom_sources = {item for item, _ in raw if children.get(item)}
+    bom_sources = {item for item, _, _, _ in raw if children.get(item)}
     root_sources = set(bom_sources)
     for source in bom_sources:
         for other in bom_sources - {source}:
@@ -117,14 +122,17 @@ def _normalize_required_composition(composition, children):
         rendered_descendants.update(_coverage(source, children))
 
     required = defaultdict(lambda: ZERO)
-    for item, amount in raw:
+    for item, amount, parent, level in raw:
         if item in root_sources:
             for leaf, factor in _leaf_requirements(item, amount, children).items():
                 required[leaf] += factor
-        elif item in rendered_descendants:
+        elif item in rendered_descendants and (
+            parent in rendered_descendants or not parent
+        ):
             # The application stores the parent's exploded children in the
             # document too; those rows are presentation detail, not extra
-            # demand, whenever the source parent is present.
+            # demand, whenever the source parent is present. The parent link
+            # distinguishes these detail rows from independent extra items.
             continue
         else:
             required[item] += amount

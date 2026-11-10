@@ -251,6 +251,42 @@ class MaterialReservationTests(unittest.TestCase):
         self.assertEqual(1.5, row['reserva'])
         self.assertEqual(3.5, row['saldo_disponivel'])
 
+    def test_independent_extra_is_added_even_when_same_sku_is_a_kit_component(self):
+        with self.engine.begin() as conn:
+            conn.execute(text("insert into skus values(5,'CJ-100','Conjunto','CJ',1)"))
+            conn.execute(text('insert into bom_components values(1,5,1,2)'))
+            conn.execute(text("update suprimentos_documentos set composicao=:value where id=1"), {
+                'value': json.dumps([
+                    {'item': 'CJ-100', 'codigo': 'CJ-100', 'qtd': 1, 'level': 0},
+                    {'item': 'CJ-100', 'codigo': '1001', 'qtd': 2, 'level': 1},
+                    {'item': 'EXTRA', 'codigo': '1001', 'qtd': 3, 'level': 0},
+                ])
+            })
+        row = self.item()
+        self.assertEqual(5, row['necessario'])
+
+    def test_set_commitment_covers_every_component_of_the_kit(self):
+        with self.engine.begin() as conn:
+            conn.execute(text("""
+                insert into skus values
+                  (5,'30240032','CJ EXTINTOR','CJ',1),
+                  (6,'10240044','ACESSORIO EXTINTOR','PC',1),
+                  (7,'10240045','SUPORTE EXTINTOR','PC',1)
+            """))
+            conn.execute(text("insert into bom_components values(1,5,6,1),(2,5,7,1)"))
+            conn.execute(text("insert into stock_balances(sku_id,saldo_atual) values(6,0),(7,0)"))
+            conn.execute(text("update suprimentos_documentos set composicao=:value where id=1"), {
+                'value': json.dumps([{'item': '30240032', 'codigo': '30240032', 'qtd': 1, 'level': 0}])
+            })
+            conn.execute(text("insert into movements values(10,5,'EMPENHO',1,null,:work,'ATIVA')"),
+                         {'work': WORK})
+        rows = {row['codigo']: row for row in self.cockpit()['items']}
+        self.assertEqual({'10240044', '10240045'}, set(rows))
+        self.assertEqual(1, rows['10240044']['empenhado_na_os'])
+        self.assertEqual(1, rows['10240045']['empenhado_na_os'])
+        self.assertEqual(0, rows['10240044']['faltante'])
+        self.assertEqual(0, rows['10240045']['faltante'])
+
     def test_direct_baixa_covers_prior_demand_and_current_card(self):
         prior = self.add_order(1)
         self.movement(prior, 1, 'BAIXA')
