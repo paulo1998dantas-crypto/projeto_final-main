@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import inspect, text
 from erp_catalogs import (
     REQUIRED_WORK_ORDER_FIELDS, VENDEDORES, MERCADOS, TIPOS_VEICULO, LINHAS,
-    AR_FORNECEDORES, SIM_NAO, TRANSFORMACOES,
+    AR_FORNECEDORES, SIM_NAO, transformation_options,
 )
 
 STAGES = [
@@ -2820,7 +2820,7 @@ def correct_closed_work_order(conn, work_id, payload, actor):
     }
 
 
-def _invalid_controlled_work_order_fields(work):
+def _invalid_controlled_work_order_fields(work, conn=None):
     controlled = {
         "vendedor": VENDEDORES,
         "mercado": MERCADOS,
@@ -2838,10 +2838,13 @@ def _invalid_controlled_work_order_fields(work):
         and _token(work.get("ar_condicionado")) not in {_token(option) for option in AR_FORNECEDORES}
     ):
         invalid.append("ar_condicionado")
-    transformations = {str(code): description for code, description in TRANSFORMACOES}
     transformation_code = str(work.get("transformacao_codigo") or "").strip()
     transformation_description = str(work.get("transformacao") or "").strip()
     if transformation_code or transformation_description:
+        transformations = {
+            option["codigo"]: option["descricao"]
+            for option in transformation_options(conn)
+        }
         if (
             transformation_code not in transformations
             or _token(transformations.get(transformation_code, ""))
@@ -2875,7 +2878,7 @@ def activate_work_order(conn, work_id, actor):
         missing.append("ar_condicionado")
     if missing:
         raise ValueError("Campos obrigatórios pendentes para ativar: " + ", ".join(missing) + ".")
-    invalid = _invalid_controlled_work_order_fields(work)
+    invalid = _invalid_controlled_work_order_fields(work, conn)
     if invalid:
         raise ValueError("Valores fora das listas controladas: " + ", ".join(invalid) + ".")
     has_started = bool(conn.execute(text("""

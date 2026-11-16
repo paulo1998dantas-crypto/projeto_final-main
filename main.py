@@ -2428,7 +2428,7 @@ async def erp_catalogs_api(request: Request, db: Session = Depends(database.get_
         return JSONResponse({"ok": False, "error": "Login necessario."}, status_code=401)
     if not has_permission(user, authz.MES_WORK_ORDERS_MANAGE):
         return permission_denied(api=True)
-    catalogs = erp_catalogs.payload()
+    catalogs = erp_catalogs.payload(db)
     catalogs["clientes_recentes"] = erp_service.recent_entry_clients(db, limit=40)
     return {"ok": True, **catalogs}
 
@@ -3422,7 +3422,8 @@ async def erp_internal_catalogs(request: Request):
     actor = erp_backend_actor(request)
     if not actor:
         return JSONResponse({"ok": False, "error": "Token interno invalido."}, status_code=401)
-    return {"ok": True, **erp_catalogs.payload()}
+    with database.engine.connect() as conn:
+        return {"ok": True, **erp_catalogs.payload(conn)}
 
 @app.get("/api/erp/internal/work-orders")
 async def erp_internal_work_orders(

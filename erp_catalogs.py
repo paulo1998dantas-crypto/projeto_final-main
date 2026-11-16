@@ -1,8 +1,10 @@
 """Catálogos operacionais compartilhados pelo Suprimentos e pelo MES.
 
-Enquanto esses dados ainda não possuem manutenção no ModuloCadastro, o MES
-publica uma única cópia por API. Isso evita listas divergentes nos frontends.
+As transformações são consultadas no Cadastro a cada solicitação. Os demais
+catálogos operacionais são compartilhados por API entre Suprimentos e MES.
 """
+
+from sqlalchemy import text
 
 NOT_APPLICABLE = "N/A"
 
@@ -72,65 +74,29 @@ VERSOES = [
     "ORIGINAL 16L",
 ]
 
-TRANSFORMACOES = [
-    (NOT_APPLICABLE, NOT_APPLICABLE),
-    ("40340002", "JI CONFORT 517 14 M SELADO PLUS"),
-    ("40340003", "JI CONFORT 517 14 M VISTA ESSENCIAL"),
-    ("40340004", "JI CONFORT 517 14 M VISTA PLUS"),
-    ("40340005", "JI CONFORT 517 14 M VITRE REVESTIDA"),
-    ("40340006", "JI CONFORT 517 15 M SELADO ESSENCIAL"),
-    ("40340007", "JI CONFORT E/J TA SELADO"),
-    ("40340008", "JI CONFORT E/J TA VISTA"),
-    ("40340009", "JI CONFORT 417 10 M SELADO ESSENCIAL"),
-    ("40340010", "JI CONFORT 417 10 M SELADO PLUS"),
-    ("40340011", "JI CONFORT 417 10 M VISTA ESSENCIAL"),
-    ("40340012", "JI CONFORT 417 10 M VISTA PLUS"),
-    ("40340013", "JI CONFORT 417 10 M VITRE REVESTIDA"),
-    ("40340014", "JI CONFORT 417 14 M SELADO ESSENCIAL"),
-    ("40340015", "JI CONFORT 417 14 M SELADO PLUS"),
-    ("40340016", "JI CONFORT 417 14 M VISTA ESSENCIAL"),
-    ("40340017", "JI CONFORT 417 14 M VISTA PLUS"),
-    ("40340018", "JI CONFORT 417 14 M VITRE REVESTIDA"),
-    ("40340019", "JI CONFORT 517 15 M SELADO PLUS"),
-    ("40340020", "JI CONFORT 517 15 M VISTA ESSENCIAL"),
-    ("40340021", "JI CONFORT 517 15 M VISTA PLUS"),
-    ("40340022", "JI CONFORT 517 15 M VITRE REVESTIDA"),
-    ("40340023", "JI CONFORT B/J/D SELADO"),
-    ("40340024", "JI CONFORT B/J/D VISTA"),
-    ("40340025", "JI CONFORT B/J/D VITRE"),
-    ("40340026", "JI CONFORT E/J TA VITRE"),
-    ("40340027", "JI CONFORT E/S/ J TB SELADO"),
-    ("40340028", "JI CONFORT E/S/ J TB VISTA"),
-    ("40340029", "JI CONFORT E/S/ J TB VITRE"),
-    ("40340030", "JI CONFORT IVECO 50 VITRE ESSENCIAL"),
-    ("40340031", "JI CONFORT MASTER L1H1 SELADO"),
-    ("40340032", "JI CONFORT MASTER L2H2 SELADO ESSENCIAL"),
-    ("40340033", "JI CONFORT MASTER L2H2 SELADO PLUS"),
-    ("40340034", "JI CONFORT MASTER L2H2 VISTA ESSENCIAL"),
-    ("40340035", "JI CONFORT MASTER L2H2 VISTA PLUS"),
-    ("40340036", "JI CONFORT MASTER L3H2 SELADO ESSENCIAL"),
-    ("40340037", "JI CONFORT MASTER L3H2 SELADO PLUS"),
-    ("40340038", "JI CONFORT MASTER L3H2 VISTA ESSENCIAL"),
-    ("40340039", "JI CONFORT MASTER L3H2 VISTA PLUS"),
-    ("40340040", "JI CONFORT MASTER L3H2 VITRE ESSENCIAL"),
-    ("40340041", "JI CONFORT MASTER L3H2 VITRE PLUS"),
-    ("40340042", "JI CONFORT TRANSIT L3H2 VITRE"),
-    ("40340043", "JI CONFORT TRANSIT L3H3 SELADO"),
-    ("40340044", "JI CONFORT TRANSIT L3H3 VISTA"),
-    ("40340045", "JI CONFORT TRANSIT L4H3 VITRE"),
-    ("40340046", "JI URBAN E/J TA SELADO"),
-    ("40340047", "JI URBAN E/J TA VISTA"),
-    ("40340048", "JI URBAN E/J TA VITRE"),
-    ("40340049", "JI URBAN E/S/ J TB SELADO"),
-    ("40340050", "JI URBAN E/S/ J TB VISTA"),
-    ("40340051", "JI URBAN E/S/ J TB VITRE"),
-    ("40340052", "JI URBAN TRANSIT L3H2 VITRE"),
-    ("40340053", "JI URBAN E/S/ J TB SELADO C/ VELUDO"),
-    ("40340054", "JI URBAN E/S/ J TB VISTA C/ VELUDO"),
-    ("40340055", "JI URBAN E/S/ J VITRE TB C/ VELUDO"),
-    ("40340056", "JI D-CLASS TB SELADO E/S/J"),
-    ("40340057", "JI D-CLASS TB VITRE E/S/J"),
-]
+def transformation_options(conn=None):
+    """Read active group-40 registrations, including renamed/new transformations.
+
+    The SKU prefix is the canonical structural group in Cadastro. Reading the
+    registrations directly avoids relying on the Estoque mirror or a code list
+    that needs a deployment for each new product. N/A remains an explicit choice.
+    """
+    options = [{"codigo": NOT_APPLICABLE, "descricao": NOT_APPLICABLE}]
+    if conn is None:
+        return options
+    rows = conn.execute(text("""
+        select sku, descricao_primaria
+          from cadastro_registros
+         where sku like '40%' and ativo is not false
+         order by sku
+    """)).mappings()
+    for row in rows:
+        code = str(row["sku"] or "").strip()
+        description = str(row["descricao_primaria"] or "").strip()
+        if len(code) == 8 and code.isdigit() and description:
+            options.append({"codigo": code, "descricao": description})
+    return options
+
 
 # Only the service type is structural.  The operational O.S. can be opened and
 # activated with the remaining commercial data blank or explicitly marked N/A;
@@ -138,7 +104,7 @@ TRANSFORMACOES = [
 REQUIRED_WORK_ORDER_FIELDS = ["tipo_servico"]
 
 
-def payload():
+def payload(conn=None):
     return {
         "vendedores": VENDEDORES,
         "mercados": MERCADOS,
@@ -150,9 +116,6 @@ def payload():
         "marcas": MARCAS,
         "modelos": MODELOS,
         "versoes": VERSOES,
-        "transformacoes": [
-            {"codigo": codigo, "descricao": descricao}
-            for codigo, descricao in TRANSFORMACOES
-        ],
+        "transformacoes": transformation_options(conn),
         "required_work_order_fields": REQUIRED_WORK_ORDER_FIELDS,
     }
