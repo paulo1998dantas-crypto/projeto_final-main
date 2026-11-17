@@ -2396,6 +2396,8 @@ def create_work_order(conn, entry_id, payload, actor):
         where vehicle_entry_id=:id and is_current=true
         for update
     """),{'id':entry_id}))
+    if not current and str(entry.get('status') or '').strip().upper() in {'CANCELADA', 'ARQUIVADA'}:
+        raise ValueError('Entrada cancelada ou arquivada. O sequencial permanece no histórico e não pode receber uma nova O.S.')
     create_replacement = payload.get('create_replacement') is True
     expected_previous_id = str(payload.get('supersedes_work_order_id') or '').strip()
     if current:

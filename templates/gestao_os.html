@@ -532,13 +532,13 @@ function render(){
       view==='DELIVERED_POST_SALE'?delivered(x)&&typeGroup(x)==='POS-VENDAS':
       view==='DELIVERED_OTHER'?delivered(x)&&typeGroup(x)==='OUTROS':
       view==='WITHDRAWN'?status==='RETIRADA':
-      view==='CANCELLED'?x.work_order_id&&status==='CANCELADA':true;
+      view==='CANCELLED'?status==='CANCELADA':true;
     const searchable=[x.item_number,x.numero_os,x.chassi,x.cliente_nome,x.entry_client,x.linha,x.transformacao,x.tipo_servico,x.situacao,x.latest_note].join(' ');
     return selected&&(!query||norm(searchable).includes(query));
   });
   document.getElementById('empty').hidden=rows.length>0;
   document.getElementById('cards').innerHTML=rows.map(x=>{
-    if(!x.work_order_id){const pointed=Number(x.etapas_pre_os_apontadas||0),done=Number(x.etapas_pre_os_concluidas||0),withdrawn=rowOperationalStatus(x)==='RETIRADA',canDelete=canDeleteEntries&&!withdrawn&&rowOperationalStatus(x)==='AGUARDANDO O S';return `<article class="card entry" onclick="openEntryDetail('${x.entry_id}')"><div class="line"><h3>ITEM ${esc(x.item_number)}</h3><span class="badge ${withdrawn?'RETIRADA':''}">${withdrawn?'RETIRADA':'AGUARDANDO O.S.'}</span></div><strong>${esc(String(x.chassi||'').slice(-8))}</strong><div class="muted">${esc(x.entry_client||'Cliente nao informado')}</div><div class="line"><span>${esc([x.marca,x.modelo,x.versao].filter(Boolean).join(' ')||'Veiculo nao detalhado')}</span><span>${date(x.data_chegada)}</span></div><div class="progress"><span style="width:${Math.round(done*100/12)}%"></span></div><div class="line muted"><span>${pointed}/12 etapas apontadas antes da O.S.</span><span>${withdrawn?'Veiculo retirado':'Abrir card'}</span></div>${latestNotePreview(x)}${canDelete?`<div class="entry-actions"><span class="field-help">Lançamento sem O.S.</span><button class="btn danger compact" type="button" onclick="event.stopPropagation();deleteVehicleEntry('${esc(x.entry_id)}','${esc(x.item_number)}')">Excluir lançamento</button></div>`:''}</article>`;}
+    if(!x.work_order_id){const pointed=Number(x.etapas_pre_os_apontadas||0),done=Number(x.etapas_pre_os_concluidas||0),withdrawn=rowOperationalStatus(x)==='RETIRADA',cancelled=rowOperationalStatus(x)==='CANCELADA',canDelete=canDeleteEntries&&!withdrawn&&rowOperationalStatus(x)==='AGUARDANDO O S';return `<article class="card entry" onclick="openEntryDetail('${x.entry_id}')"><div class="line"><h3>ITEM ${esc(x.item_number)}</h3><span class="badge ${withdrawn?'RETIRADA':cancelled?'CANCELADA':''}">${withdrawn?'RETIRADA':cancelled?'CANCELADA':'AGUARDANDO O.S.'}</span></div><strong>${esc(String(x.chassi||'').slice(-8))}</strong><div class="muted">${esc(x.entry_client||'Cliente nao informado')}</div><div class="line"><span>${esc([x.marca,x.modelo,x.versao].filter(Boolean).join(' ')||'Veiculo nao detalhado')}</span><span>${date(x.data_chegada)}</span></div><div class="progress"><span style="width:${Math.round(done*100/12)}%"></span></div><div class="line muted"><span>${pointed}/12 etapas apontadas antes da O.S.</span><span>${withdrawn?'Veiculo retirado':cancelled?'Entrada cancelada':'Abrir card'}</span></div>${latestNotePreview(x)}${canDelete?`<div class="entry-actions"><span class="field-help">Lançamento sem O.S.</span><button class="btn danger compact" type="button" onclick="event.stopPropagation();deleteVehicleEntry('${esc(x.entry_id)}','${esc(x.item_number)}')">Excluir lançamento</button></div>`:''}</article>`;}
     const total=Number(x.etapas_aplicaveis||0),done=Number(x.etapas_concluidas||0),pct=total?Math.round(done*100/total):0;
     const vehicle=[x.marca,x.modelo,x.versao].filter(Boolean).join(' ')||'Veiculo nao detalhado';
     return `<article class="card" onclick="openDetail('${x.work_order_id}')"><div class="line"><h3>ITEM ${esc(x.item_number)} · O.S. ${esc(x.numero_os)}</h3><span class="badge ${esc(x.status)}">${esc(displayStatus(x))}</span></div><strong>${esc(String(x.chassi||'').slice(-8))}</strong><div>${esc(vehicle)}</div><div class="muted">${esc(x.cliente_nome||x.entry_client||'Cliente nao informado')}</div><div class="line"><span>${esc(x.tipo_servico_grupo||'TRANSFORMAÇÃO')} · ${esc(x.linha||'—')}</span><span>${date(x.data_comercial_prevista)}</span></div><div class="progress"><span style="width:${pct}%"></span></div><div class="line muted"><span>${done}/${total} etapas concluidas</span></div><div class="card-material-footer"><span class="field-help">Saldo, empenhos e previsão dos materiais</span><button class="btn success compact" type="button" onclick="event.stopPropagation();openMaterialCockpit('${esc(x.work_order_id)}')">Cockpit materiais</button></div>${latestNotePreview(x)}</article>`;
@@ -558,9 +558,9 @@ function renderStages(){
   const work=state.detail.work_order||{status:'AGUARDANDO_O_S'};
   const stages=state.detail.stages||[];
   const closed=entryMode
-    ?operationalStatus(state.detail?.entry?.status)==='RETIRADA'
+    ?['RETIRADA','CANCELADA','ARQUIVADA'].includes(operationalStatus(state.detail?.entry?.status))
     :isClosedWork(work);
-  const hardLocked=['CANCELADA','ARQUIVADA'].includes(work.status);
+  const hardLocked=['CANCELADA','ARQUIVADA'].includes(entryMode?state.detail?.entry?.status:work.status);
   const configurationPending=work.stage_configuration_status!=='CONCLUIDA'||stages.some(s=>!s.parametrizado);
   const configuring=!entryMode&&!closed&&(
     ['RASCUNHO','AGUARDANDO_O_S'].includes(work.status)||configurationPending
@@ -722,9 +722,9 @@ async function openEntryDetail(entryId){
     const data=await api(`/api/erp/vehicle-entries/${entryId}/stages`);
     state.detail=data;
     const entry=data.entry;
-    const withdrawn=operationalStatus(entry.status)==='RETIRADA';
-    const entryStatus=withdrawn?'RETIRADA':'AGUARDANDO O.S.';
-    document.getElementById('detail-title').textContent=`ITEM ${entry.item_number} · ${withdrawn?'veículo retirado':'apontamento antes da O.S.'}`;
+    const withdrawn=operationalStatus(entry.status)==='RETIRADA',cancelled=operationalStatus(entry.status)==='CANCELADA';
+    const entryStatus=withdrawn?'RETIRADA':cancelled?'CANCELADA':'AGUARDANDO O.S.';
+    document.getElementById('detail-title').textContent=`ITEM ${entry.item_number} · ${withdrawn?'veículo retirado':cancelled?'entrada cancelada':'apontamento antes da O.S.'}`;
     document.getElementById('detail-subtitle').textContent=`${entry.chassi} · ${entry.cliente_nome||'Cliente não informado'} · ${entryStatus}`;
     document.getElementById('summary').innerHTML=[
       datum('Situação',entryStatus),
@@ -747,7 +747,7 @@ async function openEntryDetail(entryId){
     if(materialsSection)materialsSection.hidden=true;
     const withdrawal=document.getElementById('entry-withdrawal-section');
     if(withdrawal){
-      withdrawal.hidden=withdrawn;
+      withdrawal.hidden=withdrawn||cancelled;
       const dateControl=document.getElementById('entry-withdrawal-date');
       const reasonControl=document.getElementById('entry-withdrawal-reason');
       if(dateControl)dateControl.value=new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16);

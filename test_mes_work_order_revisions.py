@@ -42,6 +42,14 @@ class RevisionConnection:
 
 
 class WorkOrderRevisionTests(unittest.TestCase):
+    def test_cancelled_entry_without_order_cannot_be_allocated(self):
+        conn = RevisionConnection(None)
+        with self.assertRaisesRegex(ValueError, "Entrada cancelada"):
+            erp_service.create_work_order(conn, "cancelled-entry", {}, "PCP")
+        self.assertFalse(any(
+            sql.startswith("insert") or sql.startswith("update") for sql, _ in conn.calls
+        ))
+
     @patch("erp_service._promote_entry_stage_pointings")
     @patch("erp_service._ensure_stage_rows")
     @patch("erp_service._id", return_value="new-work")
