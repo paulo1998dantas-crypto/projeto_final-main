@@ -609,8 +609,10 @@ def resumir_mmv(value) -> str:
 
 def normalize_linha(value) -> str:
     linha = normalize_filter(value)
-    if linha in ["LB", "LAB", "LE", "LAE"]:
+    if linha in ["LB", "LAB", "LE", "LAE", "LL"]:
         return linha
+    if linha in ["LUXO", "LINHA LUXO"]:
+        return "LL"
     if linha in ["BASICA", "LINHA BASICA", "BASIC"]:
         return "BÁSICA"
     if linha in ["EXECUTIVA", "LINHA EXECUTIVA", "EXEC"]:
